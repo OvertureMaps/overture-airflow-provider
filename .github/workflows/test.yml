@@ -42,7 +42,7 @@ jobs:
       - name: Run pytest
         run: uv run pytest -v
 
-  all-tests-pass:
+  all-pass:
     name: All pytest versions passed
     runs-on: ubuntu-latest
     needs: pytest
@@ -50,4 +50,4 @@ jobs:
     steps:
       - uses: lowlydba/are-we-good@bb8ee9e793e4233fac1992bb880e2a28bed7f42f # v1.0.3
         with:
-          needs-context: ${{ toJson(needs) }}
+          jobs: ${{ toJson(needs) }}

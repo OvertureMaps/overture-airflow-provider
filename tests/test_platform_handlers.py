@@ -616,8 +616,8 @@ class TestWherobotsExecuteJob:
 
         mock_operator = MagicMock()
         if simulate_submit:
-            mock_operator.execute.side_effect = (
-                lambda ctx: ctx["ti"].xcom_push(key="run_id", value="wb_run_123")
+            mock_operator.execute.side_effect = lambda ctx: ctx["ti"].xcom_push(
+                key="run_id", value="wb_run_123"
             )
         else:
             mock_operator.execute.return_value = None

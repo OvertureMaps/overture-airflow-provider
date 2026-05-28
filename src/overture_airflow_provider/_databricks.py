@@ -276,7 +276,9 @@ def execute_databricks_job(
             nonlocal early_xcom_pushed
             result = original_xcom_push(*args, **kwargs)
             key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
-            value = kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
+            value = (
+                kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
+            )
             if key == "run_page_url" and value and not early_xcom_pushed:
                 original_xcom_push(
                     key="spark_agnostic",

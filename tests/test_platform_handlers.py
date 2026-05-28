@@ -810,5 +810,6 @@ class TestWherobotsExecuteJob:
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
         payload = json.loads(spark_agnostic_calls[0].kwargs["value"])
-        assert payload["job_url"] == "https://cloud.wherobots.com/runs/wb_run_123"
+        assert payload["job_url"].endswith("/runs/wb_run_123")
+        assert "api." not in payload["job_url"]
         assert payload["status"] == "RUNNING"

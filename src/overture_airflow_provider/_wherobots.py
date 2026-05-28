@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+from typing import Any
 
 from overture_airflow_provider._airflow_compat import AirflowException, BaseHook
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
@@ -19,6 +20,7 @@ except ImportError:
 
 MAX_TIMEOUT_HOURS = 8
 WHEROBOTS_PROVIDER = "com.wherobots.awssdk.auth.WherobotsAssumeRoleCredentialsProvider"
+_API_SUBDOMAIN_PREFIX = "api."
 
 
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
@@ -37,14 +39,14 @@ def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     )
 
 
-def _build_wherobots_run_url(platform_operator, run_id: str) -> str | None:
+def _build_wherobots_run_url(platform_operator: Any, run_id: str) -> str | None:
     conn = BaseHook.get_connection(platform_operator.wherobots_conn_id)
     host = (conn.host or "").strip()
     if not host:
         return None
     host = host.removeprefix("https://").removeprefix("http://").rstrip("/")
-    if host.startswith("api."):
-        host = host[4:]
+    if host.startswith(_API_SUBDOMAIN_PREFIX):
+        host = host[len(_API_SUBDOMAIN_PREFIX) :]
     return f"https://{host}/runs/{run_id}"
 
 

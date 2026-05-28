@@ -53,9 +53,9 @@ class AwsGlueClusterSize:
 
     @classmethod
     def resolve_execution_class(cls, execution_class: str, worker_type: str) -> str:
-        if execution_class == "FLEX" and worker_type not in cls.FLEX_COMPATIBLE_WORKER_TYPES:
-            return "STANDARD"
-        return execution_class
+        if worker_type in cls.FLEX_COMPATIBLE_WORKER_TYPES:
+            return "FLEX"
+        return "STANDARD"
 
     @classmethod
     def from_cluster_size(cls, cluster_size: ClusterSize) -> dict:

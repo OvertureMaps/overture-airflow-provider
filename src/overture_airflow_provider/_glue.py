@@ -14,6 +14,22 @@ from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 MAX_TIMEOUT_HOURS = 8
 
 
+def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
+    return json.dumps(
+        {
+            "spark_impl": setup_info.get("spark_impl_name"),
+            "spark_family": setup_info.get(
+                "spark_family_name",
+                str(setup_info.get("spark_family", "")),
+            ),
+            "spark_version": setup_info.get("spark_version"),
+            "sedona_version": setup_info.get("sedona_version"),
+            "job_url": job_url,
+            "status": "RUNNING",
+        }
+    )
+
+
 def download_python_packages_glue(
     setup_info: dict,
     python_packages: str,
@@ -399,8 +415,38 @@ def execute_glue_job(
             **built["create_job_kwargs"],
             "Tags": built["tags"],
         }
+    ti = context.get("ti") if isinstance(context, dict) else None
+    original_xcom_push = getattr(ti, "xcom_push", None)
+    early_xcom_pushed = False
 
-    platform_operator.execute(context)
+    if callable(original_xcom_push):
+
+        def _xcom_push_with_early_agnostic(*args, **kwargs):
+            nonlocal early_xcom_pushed
+            result = original_xcom_push(*args, **kwargs)
+            key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
+            value = kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
+            if key == "glue_job_run_id" and value and not early_xcom_pushed:
+                region = setup_info["aws_region"]
+                job_name = setup_info["job_name"]
+                job_url = (
+                    f"https://{region}.console.aws.amazon.com/gluestudio/home?region={region}"
+                    f"#/job/{job_name}/run/{value}"
+                )
+                original_xcom_push(
+                    key="spark_agnostic",
+                    value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
+                )
+                early_xcom_pushed = True
+            return result
+
+        ti.xcom_push = _xcom_push_with_early_agnostic
+
+    try:
+        platform_operator.execute(context)
+    finally:
+        if callable(original_xcom_push):
+            ti.xcom_push = original_xcom_push
 
     job_result = _get_glue_job_url_and_status(platform_operator, context, setup_info)
 

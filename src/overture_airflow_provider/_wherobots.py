@@ -4,7 +4,7 @@ import json
 import re
 import shutil
 
-from overture_airflow_provider._airflow_compat import AirflowException
+from overture_airflow_provider._airflow_compat import AirflowException, BaseHook
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
@@ -19,6 +19,33 @@ except ImportError:
 
 MAX_TIMEOUT_HOURS = 8
 WHEROBOTS_PROVIDER = "com.wherobots.awssdk.auth.WherobotsAssumeRoleCredentialsProvider"
+
+
+def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
+    return json.dumps(
+        {
+            "spark_impl": setup_info.get("spark_impl_name"),
+            "spark_family": setup_info.get(
+                "spark_family_name",
+                str(setup_info.get("spark_family", "")),
+            ),
+            "spark_version": setup_info.get("spark_version"),
+            "sedona_version": setup_info.get("sedona_version"),
+            "job_url": job_url,
+            "status": "RUNNING",
+        }
+    )
+
+
+def _build_wherobots_run_url(platform_operator, run_id: str) -> str | None:
+    conn = BaseHook.get_connection(platform_operator.wherobots_conn_id)
+    host = (conn.host or "").strip()
+    if not host:
+        return None
+    host = host.removeprefix("https://").removeprefix("http://").rstrip("/")
+    if host.startswith("api."):
+        host = host[4:]
+    return f"https://{host}/runs/{run_id}"
 
 
 def _resolve_wherobots_region(aws_region: str):
@@ -375,6 +402,33 @@ def execute_wherobots_job(
     )
 
     platform_operator = WherobotsRunOperator(**built["operator_kwargs"])
-    platform_operator.execute(context)
+    ti = context.get("ti") if isinstance(context, dict) else None
+    original_xcom_push = getattr(ti, "xcom_push", None)
+    early_xcom_pushed = False
+
+    if callable(original_xcom_push):
+
+        def _xcom_push_with_early_agnostic(*args, **kwargs):
+            nonlocal early_xcom_pushed
+            result = original_xcom_push(*args, **kwargs)
+            key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
+            value = kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
+            if key == "run_id" and value and not early_xcom_pushed:
+                job_url = _build_wherobots_run_url(platform_operator, str(value))
+                if job_url:
+                    original_xcom_push(
+                        key="spark_agnostic",
+                        value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
+                    )
+                    early_xcom_pushed = True
+            return result
+
+        ti.xcom_push = _xcom_push_with_early_agnostic
+
+    try:
+        platform_operator.execute(context)
+    finally:
+        if callable(original_xcom_push):
+            ti.xcom_push = original_xcom_push
 
     return {"platform_operator": platform_operator}

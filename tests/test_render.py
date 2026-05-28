@@ -1,0 +1,121 @@
+"""Tests for the Airflow-free render module."""
+
+import json
+import os
+
+import pytest
+
+from overture_airflow_provider.render import (
+    RenderResult,
+    _jsonify,
+    render_spark_job,
+)
+from overture_airflow_provider.spark import SparkFamily, SparkImpl
+
+_COMMON_KWARGS = dict(
+    module_name="my_module",
+    class_name="MyJob",
+    parameters={"date": "2024-01-01"},
+    job_name="snapshot",
+)
+
+
+@pytest.mark.parametrize(
+    "spark_impl_name, platform",
+    [
+        ("GLUE_v5", "glue"),
+        ("DATABRICKS_v15", "databricks"),
+        ("WHEROBOTS_v1_5_0", "wherobots"),
+    ],
+)
+def test_render_returns_complete_result(spark_impl_name, platform):
+    result = render_spark_job(spark_impl_name=spark_impl_name, **_COMMON_KWARGS)
+
+    assert isinstance(result, RenderResult)
+    assert result.platform == platform
+    assert result.spark_impl_name == spark_impl_name
+    assert isinstance(result.operator_kwargs, dict) and result.operator_kwargs
+    assert isinstance(result.merged_spark_conf, dict)
+    assert result.submit_payload is not None
+    assert isinstance(result.cli, list) and result.cli
+
+    # to_dict must be JSON-serialisable (enums coerced via _jsonify).
+    json.dumps(result.to_dict(), default=str)
+
+
+def test_render_glue_emits_create_job_and_script_args():
+    result = render_spark_job(spark_impl_name="GLUE_v5", **_COMMON_KWARGS)
+
+    payload = result.submit_payload
+    assert "create_job_kwargs" in payload
+    assert "script_args" in payload
+    assert payload["script_location"].startswith("s3://")
+    # Parameters propagate as JSON string in script args.
+    assert "--params" in payload["script_args"]
+    assert json.loads(payload["script_args"]["--params"])["date"] == "2024-01-01"
+
+
+def test_render_databricks_emits_submit_payload():
+    result = render_spark_job(spark_impl_name="DATABRICKS_v15", **_COMMON_KWARGS)
+
+    payload = result.submit_payload
+    assert "new_cluster" in payload
+    assert payload["new_cluster"]["spark_version"] == "15.4.x-scala2.12"
+    assert payload["run_name"].endswith("_render")
+
+
+def test_render_wherobots_skips_region_resolution():
+    """Render mode must work even when the wherobots SDK is unavailable."""
+    result = render_spark_job(spark_impl_name="WHEROBOTS_v1_5_0", **_COMMON_KWARGS)
+    # Wherobots payload has no AWS Region enum — region stays a plain string.
+    region = result.operator_kwargs.get("region") or result.submit_payload.get("region")
+    assert isinstance(region, str)
+
+
+def test_render_write_to_creates_files(tmp_path):
+    result = render_spark_job(spark_impl_name="GLUE_v5", **_COMMON_KWARGS)
+    written = result.write_to(str(tmp_path))
+
+    assert set(written) >= {"operator_kwargs.json", "merged_spark_conf.json", "cli.sh"}
+    for name, path in written.items():
+        assert os.path.exists(path)
+        if name.endswith(".json"):
+            with open(path) as fh:
+                json.load(fh)  # must be valid JSON
+        if name == "cli.sh":
+            with open(path) as fh:
+                content = fh.read()
+            assert content.startswith("#!/usr/bin/env bash")
+
+
+def test_render_accepts_pre_resolved_package_info():
+    overrides = {
+        "py_files": "s3://my-bucket/wheels/my-pkg-1.0.0.whl",
+        "script_location": "s3://my-bucket/scripts/runner.py",
+        "scala_script_location": "s3://my-bucket/scripts/runner.scala",
+        "s3_bucket": "my-bucket",
+        "s3_prefix": "prefix",
+        "native_packages": [],
+    }
+    result = render_spark_job(
+        spark_impl_name="GLUE_v5",
+        pre_resolved_package_info=overrides,
+        **_COMMON_KWARGS,
+    )
+    assert result.submit_payload["script_location"] == "s3://my-bucket/scripts/runner.py"
+
+
+def test_jsonify_handles_enums_and_nesting():
+    obj = {
+        "family": SparkFamily.GLUE,
+        "impl": SparkImpl.GLUE_v5,
+        "nested": [{"x": SparkFamily.WHEROBOTS}],
+        "plain": "string",
+    }
+    out = _jsonify(obj)
+    assert out["family"] == "GLUE"
+    assert out["impl"] == "GLUE_v5"
+    assert out["nested"][0]["x"] == "WHEROBOTS"
+    assert out["plain"] == "string"
+    # Result must round-trip through JSON.
+    json.dumps(out)

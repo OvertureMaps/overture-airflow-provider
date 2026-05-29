@@ -14,6 +14,7 @@ _SPARK_TO_ICEBERG_VERSION_MAP = {
     "3.5": "1.10.2",
 }
 
+
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     return json.dumps(
         {
@@ -98,21 +99,20 @@ def setup_databricks_cluster(
             {"pypi": {"package": f"apache-sedona=={sedona_version}"}},
         ]
         + [
-        # Iceberg Spark catalog plugin (SparkCatalog / RESTCatalog) + SigV4 support
-        {
-            "maven": {
-                "coordinates": f"org.apache.iceberg:iceberg-spark-runtime-{spark_major_minor_version}_{scala_version}:{iceberg_version}"
-            }
-        },
-        {
-            "maven": {
-                "coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{spark_major_minor_version}"
-            }
-        },
+            # Iceberg Spark catalog plugin (SparkCatalog / RESTCatalog) + SigV4 support
+            {
+                "maven": {
+                    "coordinates": f"org.apache.iceberg:iceberg-spark-runtime-{spark_major_minor_version}_{scala_version}:{iceberg_version}"
+                }
+            },
+            {
+                "maven": {
+                    "coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{spark_major_minor_version}"
+                }
+            },
         ]
         + list(extra_libraries)
         + _databricks_jar_libraries(spark_jar_paths)
-        
     )
 
     databricks_conf = setup_info["databricks_conf"]

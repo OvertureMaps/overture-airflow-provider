@@ -227,6 +227,7 @@ class TestGlueExecuteJob:
         desired_worker_cores="40",
         desired_workers="",
         iam_role_name="AWSGlueServiceRole",
+        simulate_submit=False,
     ):
         from overture_airflow_provider._glue import execute_glue_job
 
@@ -248,7 +249,8 @@ class TestGlueExecuteJob:
         captured = {}
 
         def fake_execute(context):
-            pass
+            if simulate_submit:
+                context["ti"].xcom_push(key="glue_job_run_id", value="jr_early123")
 
         mock_operator = MagicMock()
         mock_operator.execute.side_effect = fake_execute
@@ -275,6 +277,7 @@ class TestGlueExecuteJob:
                 },
             ),
         ):
+            context = self._make_context()
             result = execute_glue_job(
                 setup_info=setup_info,
                 package_info=package_info,
@@ -286,9 +289,10 @@ class TestGlueExecuteJob:
                 spark_cluster_desired_workers=desired_workers,
                 iam_role_name=iam_role_name,
                 task_id="execute_spark_job",
-                context=self._make_context(),
+                context=context,
             )
             captured["call_kwargs"] = MockOperator.call_args[1]
+            captured["context"] = context
 
         return result, captured
 
@@ -337,6 +341,15 @@ class TestGlueExecuteJob:
     def test_result_contains_job_url(self):
         result, _ = self._run_glue()
         assert "job_url" in result
+
+    def test_pushes_spark_agnostic_xcom_after_submission(self):
+        _, captured = self._run_glue(simulate_submit=True)
+        calls = captured["context"]["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls
+        payload = json.loads(spark_agnostic_calls[0].kwargs["value"])
+        assert payload["job_url"].endswith("/run/jr_early123")
+        assert payload["status"] == "RUNNING"
 
 
 class TestGetGlueJobUrlAndStatus:
@@ -458,6 +471,66 @@ class TestDatabricksSetupCluster:
         assert handler.download_jars() is None
 
 
+class TestDatabricksExecuteJob:
+    def test_pushes_spark_agnostic_xcom_after_submission(self):
+        from overture_airflow_provider._databricks import execute_databricks_job
+
+        setup_info = _databricks_setup_info()
+        cluster_info = {
+            "new_cluster": {"spark_version": "15.4.x-scala2.12"},
+            "libraries": [],
+            "databricks_conf": {"databricks_conn_id": "databricks_default"},
+            "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
+        }
+        context = {"ti": MagicMock()}
+
+        mock_operator = MagicMock()
+
+        def fake_execute(ctx):
+            ctx["ti"].xcom_push(key="run_id", value="12345")
+            ctx["ti"].xcom_push(key="run_page_url", value="https://dbc.example/runs/12345")
+
+        mock_operator.execute.side_effect = fake_execute
+        mock_operator.xcom_pull.side_effect = lambda _ctx, key: {
+            "run_id": "12345",
+            "run_page_url": "https://dbc.example/runs/12345",
+        }[key]
+
+        mock_conn = MagicMock()
+        mock_conn.host = "https://dbc.example"
+        mock_conn.password = "token"
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"state": {"result_state": "SUCCESS"}}
+
+        with (
+            patch(
+                "airflow.providers.databricks.operators.databricks.DatabricksSubmitRunOperator",
+                return_value=mock_operator,
+            ),
+            patch(
+                "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
+                return_value=mock_conn,
+            ),
+            patch("overture_airflow_provider._databricks.requests.get", return_value=mock_resp),
+        ):
+            execute_databricks_job(
+                setup_info=setup_info,
+                cluster_info=cluster_info,
+                module_name="my_module",
+                class_name="MyClass",
+                parameters='{"key":"value"}',
+                task_id="execute_spark_job",
+                context=context,
+            )
+
+        calls = context["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls
+        payload = json.loads(spark_agnostic_calls[0].kwargs["value"])
+        assert payload["job_url"] == "https://dbc.example/runs/12345"
+        assert payload["status"] == "RUNNING"
+
+
 class TestWherobotsSetupCluster:
     def _run(self, extra_spark_conf=None, iceberg_spark_config=None):
         handler = WherobotsPlatformHandler(_wherobots_setup_info())
@@ -520,6 +593,7 @@ class TestWherobotsExecuteJob:
         package_info=None,
         jar_info=None,
         parameters='{"key": "value"}',
+        simulate_submit=False,
     ):
         from overture_airflow_provider._wherobots import execute_wherobots_job
 
@@ -538,9 +612,15 @@ class TestWherobotsExecuteJob:
             jar_info = {"jars_s3": []}
 
         captured_operator_kwargs = {}
+        context = {"ti": MagicMock()}
 
         mock_operator = MagicMock()
-        mock_operator.execute.return_value = None
+        if simulate_submit:
+            mock_operator.execute.side_effect = lambda ctx: ctx["ti"].xcom_push(
+                key="run_id", value="wb_run_123"
+            )
+        else:
+            mock_operator.execute.return_value = None
 
         mock_sts = MagicMock()
         mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
@@ -562,6 +642,10 @@ class TestWherobotsExecuteJob:
                 "overture_airflow_provider._wherobots._resolve_wherobots_region",
                 return_value="us-east-1",
             ),
+            patch(
+                "overture_airflow_provider._wherobots.BaseHook.get_connection",
+                return_value=MagicMock(host="api.cloud.wherobots.com"),
+            ),
         ):
             result = execute_wherobots_job(
                 setup_info=setup_info,
@@ -575,10 +659,11 @@ class TestWherobotsExecuteJob:
                 spark_cluster_desired_workers="",
                 wherobots_role_arn="arn:aws:iam::123456789012:role/wherobots-access",
                 task_id="execute_spark_job",
-                context={"ti": MagicMock()},
+                context=context,
             )
             if MockWherobots.called:
                 captured_operator_kwargs.update(MockWherobots.call_args[1])
+        captured_operator_kwargs["context"] = context
 
         return result, captured_operator_kwargs
 
@@ -718,3 +803,13 @@ class TestWherobotsExecuteJob:
                     task_id="t",
                     context={},
                 )
+
+    def test_pushes_spark_agnostic_xcom_after_submission(self):
+        _, kwargs = self._run(simulate_submit=True)
+        calls = kwargs["context"]["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls
+        payload = json.loads(spark_agnostic_calls[0].kwargs["value"])
+        assert payload["job_url"].endswith("/runs/wb_run_123")
+        assert "api." not in payload["job_url"]
+        assert payload["status"] == "RUNNING"

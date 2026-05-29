@@ -10,6 +10,22 @@ from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 _DEFAULT_DBFS_JAR_PREFIX = "dbfs:/FileStore/deploy/"
 
 
+def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
+    return json.dumps(
+        {
+            "spark_impl": setup_info.get("spark_impl_name"),
+            "spark_family": setup_info.get(
+                "spark_family_name",
+                str(setup_info.get("spark_family", "")),
+            ),
+            "spark_version": setup_info.get("spark_version"),
+            "sedona_version": setup_info.get("sedona_version"),
+            "job_url": job_url,
+            "status": "RUNNING",
+        }
+    )
+
+
 def _databricks_jar_libraries(spark_jar_paths: str) -> list:
     """Parse caller-supplied JAR paths into Databricks library entries.
 
@@ -250,8 +266,34 @@ def execute_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
+    ti = context.get("ti") if isinstance(context, dict) else None
+    original_xcom_push = getattr(ti, "xcom_push", None)
+    early_xcom_pushed = False
 
-    platform_operator.execute(context)
+    if callable(original_xcom_push):
+
+        def _xcom_push_with_early_agnostic(*args, **kwargs):
+            nonlocal early_xcom_pushed
+            result = original_xcom_push(*args, **kwargs)
+            key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
+            value = (
+                kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
+            )
+            if key == "run_page_url" and value and not early_xcom_pushed:
+                original_xcom_push(
+                    key="spark_agnostic",
+                    value=_build_agnostic_xcom_payload(setup_info, job_url=value),
+                )
+                early_xcom_pushed = True
+            return result
+
+        ti.xcom_push = _xcom_push_with_early_agnostic
+
+    try:
+        platform_operator.execute(context)
+    finally:
+        if callable(original_xcom_push):
+            ti.xcom_push = original_xcom_push
 
     job_url = platform_operator.xcom_pull(context, key="run_page_url")
 

@@ -61,7 +61,8 @@ class TestDiscoverGpuClusterOptions:
             [
                 _node("Standard_NC8as_T4_v3", 8.0, 1),
                 _node("Standard_NC16as_T4_v3", 16.0, 2),
-                _node("Standard_E8a_v4", 8.0, 0),  # no GPU -> excluded
+                _node("Standard_E8a_v4", 8.0, 0),  # CPU node
+                _node("Standard_E4a_v4", 4.0, 0),  # smaller CPU node
                 _node("Old_GPU", 8.0, 1, is_deprecated=True),  # deprecated -> excluded
             ]
         )
@@ -73,14 +74,28 @@ class TestDiscoverGpuClusterOptions:
             "Standard_NC8as_T4_v3": 8,
             "Standard_NC16as_T4_v3": 16,
         }
-        # smallest GPU node is chosen as the driver
-        assert result["driver_node_type"] == "Standard_NC8as_T4_v3"
+        # driver defaults to the cheapest CPU node (driver needs no GPU)
+        assert result["driver_node_type"] == "Standard_E4a_v4"
         assert result["spark_version"] == "15.4.x-gpu-ml-scala2.12"
         assert clusters.select_kwargs == {
             "long_term_support": True,
             "ml": True,
             "gpu": True,
         }
+
+    def test_driver_falls_back_to_gpu_when_no_cpu_node(self, monkeypatch):
+        clusters = _FakeClusters(
+            [
+                _node("Standard_NC8as_T4_v3", 8.0, 1),
+                _node("Standard_NC16as_T4_v3", 16.0, 2),
+            ]
+        )
+        _patch_workspace(monkeypatch, clusters)
+
+        result = discover_gpu_cluster_options("databricks_default", need_runtime=False)
+
+        # no CPU node available -> driver falls back to the smallest GPU node
+        assert result["driver_node_type"] == "Standard_NC8as_T4_v3"
 
     def test_need_nodes_only_skips_runtime_call(self, monkeypatch):
         clusters = _FakeClusters([_node("Standard_NC8as_T4_v3", 8.0, 1)])

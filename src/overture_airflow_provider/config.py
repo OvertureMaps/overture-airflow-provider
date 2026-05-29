@@ -197,7 +197,9 @@ class DatabricksConfig:
             ``spark_version`` you set explicitly takes precedence, and when all
             three are set discovery is skipped entirely (no API call). Requires
             the ``[databricks]`` extra and a reachable workspace connection at
-            setup time. Raises if the workspace exposes no GPU node types.
+            setup time. Raises if the workspace exposes no GPU node types. The
+            driver defaults to the cheapest discovered CPU node (the driver
+            doesn't need a GPU); override with ``driver_node_type``.
             For GPU runs prefer sizing by ``spark_cluster_desired_workers``
             (explicit node/GPU count) over ``spark_cluster_desired_worker_cores``;
             core-based sizing is an indirect proxy for GPUs and assumes a fixed

@@ -24,8 +24,10 @@ def discover_gpu_cluster_options(
         databricks_conn_id: Airflow connection ID for the workspace.
         need_nodes: When ``True``, call ``list_node_types`` and return
             ``worker_instance_types`` (``{node_type_id: cores}`` for every
-            non-deprecated GPU node) plus ``driver_node_type`` (smallest GPU
-            node, since a GPU runtime needs a GPU-capable driver).
+            non-deprecated GPU node) plus ``driver_node_type`` (the cheapest CPU
+            node, since the driver doesn't need a GPU — compute runs on the
+            workers; falls back to the smallest GPU node only if the workspace
+            exposes no CPU node).
         need_runtime: When ``True``, call ``select_spark_version`` and return the
             latest LTS GPU ML runtime as ``spark_version``.
 
@@ -47,15 +49,18 @@ def discover_gpu_cluster_options(
     if need_nodes:
         node_types = getattr(client.clusters.list_node_types(), "node_types", None) or []
         worker_instance_types = {}
+        cpu_node_cores = {}
         for node in node_types:
-            if (getattr(node, "num_gpus", 0) or 0) < 1:
-                continue
             if getattr(node, "is_deprecated", False):
                 continue
             cores = getattr(node, "num_cores", None)
             node_id = getattr(node, "node_type_id", None)
-            if node_id and cores and int(cores) > 0:
+            if not (node_id and cores and int(cores) > 0):
+                continue
+            if (getattr(node, "num_gpus", 0) or 0) >= 1:
                 worker_instance_types[node_id] = int(cores)
+            else:
+                cpu_node_cores[node_id] = int(cores)
 
         if not worker_instance_types:
             raise ValueError(
@@ -64,7 +69,11 @@ def discover_gpu_cluster_options(
             )
 
         result["worker_instance_types"] = worker_instance_types
-        result["driver_node_type"] = min(worker_instance_types, key=worker_instance_types.get)
+        # The driver doesn't need a GPU (compute runs on the workers), so default
+        # it to the cheapest CPU node and avoid wasting a GPU on the driver. Fall
+        # back to the smallest GPU node only if the workspace exposes no CPU node.
+        driver_pool = cpu_node_cores or worker_instance_types
+        result["driver_node_type"] = min(driver_pool, key=driver_pool.get)
 
     if need_runtime:
         result["spark_version"] = client.clusters.select_spark_version(

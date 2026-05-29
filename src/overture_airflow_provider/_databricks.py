@@ -7,6 +7,12 @@ from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 # Default DBFS prefix used when callers pass bare jar filenames (no scheme).
 _DEFAULT_DBFS_JAR_PREFIX = "dbfs:/FileStore/deploy/"
 
+# See https://iceberg.apache.org/releases
+_SPARK_TO_ICEBERG_VERSION_MAP = {
+    "3.3": "1.8.1",
+    "3.4": "1.10.2",
+    "3.5": "1.10.2",
+}
 
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     return json.dumps(
@@ -62,6 +68,8 @@ def setup_databricks_cluster(
     geotools_wrapper_version = setup_info["geotools_wrapper_version"]
     run_identifier = setup_info["run_identifier"]
     spark_version_for_sedona = setup_info["spark_version_for_sedona"]
+    spark_major_minor_version = ".".join(setup_info["spark_version"].split(".")[:2])
+    iceberg_version = _SPARK_TO_ICEBERG_VERSION_MAP[spark_major_minor_version]
 
     if isinstance(extra_spark_env_vars, str):
         extra_spark_env_vars = json.loads(extra_spark_env_vars)
@@ -89,8 +97,22 @@ def setup_databricks_cluster(
             {"pypi": {"package": "databricks-sdk"}},
             {"pypi": {"package": f"apache-sedona=={sedona_version}"}},
         ]
+        + [
+        # Iceberg Spark catalog plugin (SparkCatalog / RESTCatalog) + SigV4 support
+        {
+            "maven": {
+                "coordinates": f"org.apache.iceberg:iceberg-spark-runtime-{spark_major_minor_version}_{scala_version}:{iceberg_version}"
+            }
+        },
+        {
+            "maven": {
+                "coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{spark_major_minor_version}"
+            }
+        },
+        ]
         + list(extra_libraries)
         + _databricks_jar_libraries(spark_jar_paths)
+        
     )
 
     databricks_conf = setup_info["databricks_conf"]

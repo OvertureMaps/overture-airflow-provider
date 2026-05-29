@@ -203,6 +203,8 @@ def _build_render_setup_info(
         ),
         "databricks_cluster_init_script_name": (databricks_config.cluster_init_script_name),
         "databricks_custom_tags": dict(databricks_config.custom_tags),
+        "databricks_spark_conf": dict(databricks_config.spark_conf),
+        "databricks_spark_env_vars": dict(databricks_config.spark_env_vars),
         "databricks_worker_instance_types": dict(databricks_config.worker_instance_types),
         "databricks_driver_node_type": databricks_config.driver_node_type,
         "databricks_spark_version": databricks_config.spark_version,

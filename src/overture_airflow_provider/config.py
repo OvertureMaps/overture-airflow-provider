@@ -173,6 +173,15 @@ class DatabricksConfig:
             under ``workspace_scripts_path_template``.
         custom_tags: Cluster ``custom_tags`` dict applied to every cluster the
             provider launches.
+        spark_conf: Databricks-only Spark configuration merged into the cluster's
+            ``spark_conf`` between the provider's base defaults and the caller's
+            platform-agnostic ``extra_spark_conf`` (so ``extra_spark_conf`` still
+            wins). Applied only on Databricks runs, so platform-specific
+            credentials/extensions never leak onto Glue or Wherobots.
+        spark_env_vars: Databricks-only environment variables merged into the
+            cluster's ``spark_env_vars`` between the provider's base defaults and
+            the caller's platform-agnostic ``extra_spark_env_vars`` (so
+            ``extra_spark_env_vars`` still wins). Applied only on Databricks runs.
         worker_instance_types: Optional caller-supplied catalog mapping
             Databricks node type IDs to their core count (e.g.
             ``{"Standard_NC8as_T4_v3": 8}``). When non-empty it replaces the
@@ -212,6 +221,8 @@ class DatabricksConfig:
     workspace_scripts_path_template: str = "/Workspace/Shared/{s3_assets_root}"
     cluster_init_script_name: str = "agnostic_operator_cluster_init_databricks.sh"
     custom_tags: dict[str, str] = field(default_factory=dict)
+    spark_conf: dict[str, Any] = field(default_factory=dict)
+    spark_env_vars: dict[str, Any] = field(default_factory=dict)
     worker_instance_types: dict[str, int] = field(default_factory=dict)
     driver_node_type: str = ""
     spark_version: str = ""

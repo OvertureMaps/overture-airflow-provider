@@ -224,6 +224,9 @@ def setup_databricks_cluster(
 
     node_config = _resolve_databricks_node_config(setup_info)
 
+    databricks_spark_conf = setup_info.get("databricks_spark_conf", {}) or {}
+    databricks_spark_env_vars = setup_info.get("databricks_spark_env_vars", {}) or {}
+
     if setup_info.get("databricks_gpu") and not spark_cluster_desired_workers:
         print(
             "[Databricks] WARNING: gpu=True sized by worker cores only; "
@@ -253,6 +256,7 @@ def setup_databricks_cluster(
                 "org.apache.sedona.sql.SedonaSqlExtensions"
             ),
             "spark.databricks.io.directoryCommit.createSuccessFile": "false",
+            **databricks_spark_conf,
             **extra_spark_conf,
         },
         "azure_attributes": {
@@ -267,6 +271,7 @@ def setup_databricks_cluster(
             "SPARK_VERSION": spark_version_for_sedona,
             "GEOTOOLS_VERSION": geotools_wrapper_version,
             "SCALA_VERSION": scala_version,
+            **databricks_spark_env_vars,
             **extra_spark_env_vars,
         },
         "runtime_engine": "STANDARD",

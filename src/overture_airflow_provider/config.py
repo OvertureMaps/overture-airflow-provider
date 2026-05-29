@@ -198,6 +198,10 @@ class DatabricksConfig:
             three are set discovery is skipped entirely (no API call). Requires
             the ``[databricks]`` extra and a reachable workspace connection at
             setup time. Raises if the workspace exposes no GPU node types.
+            For GPU runs prefer sizing by ``spark_cluster_desired_workers``
+            (explicit node/GPU count) over ``spark_cluster_desired_worker_cores``;
+            core-based sizing is an indirect proxy for GPUs and assumes a fixed
+            cores-per-GPU node shape.
     """
 
     cluster_conf: dict[str, Any] = field(default_factory=dict)

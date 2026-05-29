@@ -199,6 +199,14 @@ def setup_databricks_cluster(
 
     node_config = _resolve_databricks_node_config(setup_info)
 
+    if setup_info.get("databricks_gpu") and not spark_cluster_desired_workers:
+        print(
+            "[Databricks] WARNING: gpu=True sized by worker cores only; "
+            "core-based sizing is an indirect proxy for GPU count and assumes a "
+            "fixed cores-per-GPU node shape. Prefer pinning "
+            "spark_cluster_desired_workers (explicit node/GPU count) for GPU runs."
+        )
+
     new_cluster = {
         **DatabricksClusterSize.from_desired_cores(
             int(spark_cluster_desired_worker_cores),

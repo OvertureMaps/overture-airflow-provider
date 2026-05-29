@@ -162,6 +162,10 @@ def setup_databricks_cluster(
             "SPARK_VERSION": spark_version_for_sedona,
             "GEOTOOLS_VERSION": geotools_wrapper_version,
             "SCALA_VERSION": scala_version,
+            # Use Java 17 (Zulu JDK) so Iceberg 1.5+ JARs (compiled for
+            # Java 11, class file version 55) can run. DBR defaults to
+            # Java 8; JNAME overrides the JVM before the cluster starts.
+            "JNAME": "zulu17-ca-amd64",
             **extra_spark_env_vars,
         },
         "runtime_engine": "STANDARD",

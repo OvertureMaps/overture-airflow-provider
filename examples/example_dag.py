@@ -89,8 +89,9 @@ with DAG(
             dbfs_root_template="dbfs:/FileStore/deploy/{s3_assets_root}",
             workspace_scripts_path_template="/Workspace/Shared/{s3_assets_root}",
             cluster_init_script_name="agnostic_operator_cluster_init_databricks.sh",
-            # Databricks-only Spark settings (never applied on Glue/Wherobots),
-            # merged between provider defaults and the agnostic extra_spark_conf:
+            # Databricks-only Spark settings -> land in the cluster's spark_conf/
+            # spark_env_vars (never applied on Glue/Wherobots). Override order:
+            # provider defaults < these < taskgroup extra_spark_conf/env_vars.
             #   spark_conf={"spark.databricks.someFeature.enabled": "true"},
             #   spark_env_vars={"MY_DBX_TOKEN": "{{ var.value.my_dbx_token }}"},
             # GPU is opt-in and cloud-agnostic. With gpu=True the provider

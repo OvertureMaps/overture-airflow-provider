@@ -2,8 +2,6 @@
 
 import json
 
-import requests
-
 from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 
 # Default DBFS prefix used when callers pass bare jar filenames (no scheme).
@@ -249,10 +247,10 @@ def execute_databricks_job(
     """Submit and wait for a Databricks job."""
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
+    from airflow.providers.databricks.hooks.databricks import DatabricksHook
     from airflow.providers.databricks.operators.databricks import (
         DatabricksSubmitRunOperator,
     )
-    from airflow.providers.databricks.hooks.databricks import DatabricksHook
 
     built = build_databricks_operator_kwargs(
         setup_info=setup_info,
@@ -301,7 +299,7 @@ def execute_databricks_job(
         databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"]
     )
     status = hook.get_run(run_id)
-    
+
     return {
         "job_url": job_url,
         "status": status,

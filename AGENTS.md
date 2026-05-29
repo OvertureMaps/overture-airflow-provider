@@ -60,6 +60,20 @@ Holds two JSON-string fields: `spark_config` (Glue/Databricks) and
 `dbfs_root_template` / `workspace_scripts_path_template` accept
 `{s3_assets_root}` substitution.
 
+GPU (or any custom node type) is generic, not a hardcoded SKU. Two paths:
+
+- **Auto-discovery (preferred):** set `gpu=True`. The provider queries the
+  connected workspace via the `databricks-sdk` (`[databricks]` extra), picks
+  GPU node types + a GPU ML runtime for that workspace's cloud, and sizes from
+  them. Discovery only fills gaps — explicit overrides below win per-field, and
+  setting all three skips the API call.
+- **Explicit override:** set `worker_instance_types` (a `{node_type_id: cores}`
+  catalog), `driver_node_type`, and/or `spark_version` (pin a GPU runtime like
+  `"15.4.x-gpu-ml-scala2.12"`).
+
+Worker count derives from desired cores; pin `spark_cluster_desired_workers`
+for GPU-count-sensitive jobs.
+
 ### WherobotsConfig
 
 AWS region field is `aws_region` (not `region`).

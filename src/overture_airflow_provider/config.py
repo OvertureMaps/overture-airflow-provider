@@ -173,6 +173,31 @@ class DatabricksConfig:
             under ``workspace_scripts_path_template``.
         custom_tags: Cluster ``custom_tags`` dict applied to every cluster the
             provider launches.
+        worker_instance_types: Optional caller-supplied catalog mapping
+            Databricks node type IDs to their core count (e.g.
+            ``{"Standard_NC8as_T4_v3": 8}``). When non-empty it replaces the
+            provider's built-in CPU node catalog for worker sizing, so the same
+            core-based sizing logic picks from these node types instead. Use
+            this to pin specific SKUs or to size GPU clusters offline (without a
+            workspace lookup). Worker count is still derived from
+            ``spark_cluster_desired_worker_cores`` / ``spark_cluster_desired_workers``;
+            for GPU-count-sensitive jobs, pin the worker count via
+            ``spark_cluster_desired_workers``.
+        driver_node_type: Optional driver node type ID. Overrides the default
+            driver SKU. Leave empty to keep the provider default.
+        spark_version: Optional Databricks runtime version ID. Overrides the
+            runtime derived from the Spark implementation. Required for GPU runs,
+            which need a GPU-enabled runtime (e.g. ``"15.4.x-gpu-ml-scala2.12"``).
+            Leave empty to keep the implementation's native version.
+        gpu: When ``True``, the provider discovers GPU-capable node types and a
+            GPU-enabled ML runtime from the connected workspace (via the
+            ``databricks-sdk``) and sizes the cluster from them — no need to
+            hand-maintain cloud-specific SKUs. Discovery only fills the gaps:
+            any of ``worker_instance_types`` / ``driver_node_type`` /
+            ``spark_version`` you set explicitly takes precedence, and when all
+            three are set discovery is skipped entirely (no API call). Requires
+            the ``[databricks]`` extra and a reachable workspace connection at
+            setup time. Raises if the workspace exposes no GPU node types.
     """
 
     cluster_conf: dict[str, Any] = field(default_factory=dict)
@@ -181,6 +206,10 @@ class DatabricksConfig:
     workspace_scripts_path_template: str = "/Workspace/Shared/{s3_assets_root}"
     cluster_init_script_name: str = "agnostic_operator_cluster_init_databricks.sh"
     custom_tags: dict[str, str] = field(default_factory=dict)
+    worker_instance_types: dict[str, int] = field(default_factory=dict)
+    driver_node_type: str = ""
+    spark_version: str = ""
+    gpu: bool = False
 
 
 @dataclass

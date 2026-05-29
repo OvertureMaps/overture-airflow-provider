@@ -34,10 +34,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-databricks = ["apache-airflow-providers-databricks"]
+databricks = ["apache-airflow-providers-databricks", "databricks-sdk"]
 wherobots = ["airflow-providers-wherobots"]
 all = [
     "apache-airflow-providers-databricks",
+    "databricks-sdk",
     "airflow-providers-wherobots",
 ]
 

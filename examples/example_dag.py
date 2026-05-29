@@ -89,6 +89,14 @@ with DAG(
             dbfs_root_template="dbfs:/FileStore/deploy/{s3_assets_root}",
             workspace_scripts_path_template="/Workspace/Shared/{s3_assets_root}",
             cluster_init_script_name="agnostic_operator_cluster_init_databricks.sh",
+            # GPU is opt-in and cloud-agnostic. With gpu=True the provider
+            # discovers GPU node types and a GPU ML runtime from the workspace
+            # at task runtime; size GPU count via spark_cluster_desired_workers.
+            # gpu=True,
+            # To pin instead of discover (offline / specific SKUs), set:
+            #   worker_instance_types={"Standard_NC8as_T4_v3": 8},
+            #   driver_node_type="Standard_NC8as_T4_v3",
+            #   spark_version="15.4.x-gpu-ml-scala2.12",
         ),
         **_JOB_KWARGS,
     )

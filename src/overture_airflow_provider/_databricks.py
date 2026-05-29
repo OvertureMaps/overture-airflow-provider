@@ -107,7 +107,7 @@ def setup_databricks_cluster(
             },
             {
                 "maven": {
-                    "coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{spark_major_minor_version}"
+                    "coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version}"
                 }
             },
         ]

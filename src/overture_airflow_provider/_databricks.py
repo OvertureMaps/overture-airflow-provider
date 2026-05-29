@@ -36,49 +36,49 @@ def discover_gpu_cluster_options(
     if node types are requested but the workspace exposes no usable GPU nodes
     (no silent CPU fallback).
     """
-    # Lazy import: the databricks-sdk lives in the optional [databricks] extra.
-    from databricks.sdk import WorkspaceClient
-
-    from overture_airflow_provider._airflow_compat import BaseHook
-
-    conn = BaseHook.get_connection(databricks_conn_id)
-    client = WorkspaceClient(host=conn.host, token=conn.password)
+    # Lazy import: the hook pulls in databricks-sdk / Airflow, both optional at
+    # package-import time.
+    from overture_airflow_provider.hooks import DatabricksSdkHook
 
     result = {"worker_instance_types": None, "driver_node_type": None, "spark_version": None}
 
-    if need_nodes:
-        node_types = getattr(client.clusters.list_node_types(), "node_types", None) or []
-        worker_instance_types = {}
-        cpu_node_cores = {}
-        for node in node_types:
-            if getattr(node, "is_deprecated", False):
-                continue
-            cores = getattr(node, "num_cores", None)
-            node_id = getattr(node, "node_type_id", None)
-            if not (node_id and cores and int(cores) > 0):
-                continue
-            if (getattr(node, "num_gpus", 0) or 0) >= 1:
-                worker_instance_types[node_id] = int(cores)
-            else:
-                cpu_node_cores[node_id] = int(cores)
+    # Single client/connection lookup; the SDK's unified auth (via the hook)
+    # supports PAT, OAuth M2M, Azure, and federated service principals.
+    with DatabricksSdkHook(databricks_conn_id).get_workspace_client() as client:
+        if need_nodes:
+            node_types = getattr(client.clusters.list_node_types(), "node_types", None) or []
+            worker_instance_types = {}
+            cpu_node_cores = {}
+            for node in node_types:
+                if getattr(node, "is_deprecated", False):
+                    continue
+                cores = getattr(node, "num_cores", None)
+                node_id = getattr(node, "node_type_id", None)
+                if not (node_id and cores and int(cores) > 0):
+                    continue
+                if (getattr(node, "num_gpus", 0) or 0) >= 1:
+                    worker_instance_types[node_id] = int(cores)
+                else:
+                    cpu_node_cores[node_id] = int(cores)
 
-        if not worker_instance_types:
-            raise ValueError(
-                f"Databricks workspace for connection {databricks_conn_id!r} exposes no "
-                "GPU-capable node types; cannot satisfy gpu=True"
+            if not worker_instance_types:
+                raise ValueError(
+                    f"Databricks workspace for connection {databricks_conn_id!r} exposes no "
+                    "GPU-capable node types; cannot satisfy gpu=True"
+                )
+
+            result["worker_instance_types"] = worker_instance_types
+            # The driver doesn't need a GPU (compute runs on the workers), so
+            # default it to the cheapest CPU node and avoid wasting a GPU on the
+            # driver. Fall back to the smallest GPU node only if the workspace
+            # exposes no CPU node.
+            driver_pool = cpu_node_cores or worker_instance_types
+            result["driver_node_type"] = min(driver_pool, key=driver_pool.get)
+
+        if need_runtime:
+            result["spark_version"] = client.clusters.select_spark_version(
+                long_term_support=True, ml=True, gpu=True
             )
-
-        result["worker_instance_types"] = worker_instance_types
-        # The driver doesn't need a GPU (compute runs on the workers), so default
-        # it to the cheapest CPU node and avoid wasting a GPU on the driver. Fall
-        # back to the smallest GPU node only if the workspace exposes no CPU node.
-        driver_pool = cpu_node_cores or worker_instance_types
-        result["driver_node_type"] = min(driver_pool, key=driver_pool.get)
-
-    if need_runtime:
-        result["spark_version"] = client.clusters.select_spark_version(
-            long_term_support=True, ml=True, gpu=True
-        )
 
     return result
 

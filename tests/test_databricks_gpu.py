@@ -42,12 +42,14 @@ def _patch_workspace(monkeypatch, clusters):
     import databricks.sdk as sdk
 
     monkeypatch.setattr(
-        sdk, "WorkspaceClient", lambda host, token: types.SimpleNamespace(clusters=clusters)
+        sdk, "WorkspaceClient", lambda *a, **k: types.SimpleNamespace(clusters=clusters)
     )
 
     class _Conn:
         host = "https://example.cloud.databricks.com"
+        login = None
         password = "token"
+        extra_dejson = {}
 
     monkeypatch.setattr(
         "overture_airflow_provider._airflow_compat.BaseHook.get_connection",

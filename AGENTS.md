@@ -76,6 +76,15 @@ GPU (or any custom node type) is generic, not a hardcoded SKU. Two paths:
 Worker count derives from desired cores; pin `spark_cluster_desired_workers`
 for GPU-count-sensitive jobs.
 
+Workspace discovery (`gpu=True`) authenticates via `DatabricksSdkHook`
+(`hooks.py`), which maps the Airflow connection onto the databricks-sdk's
+*unified auth*: PAT (`password`), OAuth M2M service principal
+(`extra.service_principal_oauth` + `login`/`password`), Azure service principal
+(`extra.azure_tenant_id` + `login`/`password`), and in-cluster federated OIDC
+(`login="federated_k8s"` or `extra.federated_k8s`). Auth is injected via masked
+env vars inside a short-lived context, so it is not PAT-only. Pinning all three
+override fields avoids the workspace call (and its auth) entirely.
+
 ### WherobotsConfig
 
 AWS region field is `aws_region` (not `region`).

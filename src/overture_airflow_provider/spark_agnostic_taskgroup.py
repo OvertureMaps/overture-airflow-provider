@@ -127,7 +127,10 @@ def spark_agnostic_task_group(
         artifact_store: S3 bucket and path settings for caching wheels/JARs/scripts.
             Required for Glue and Wherobots.
         glue_config: AWS Glue settings (IAM role, execution class).
-        databricks_config: Databricks cluster settings. Required for Databricks runs.
+        databricks_config: Databricks cluster settings (connection id, custom
+            tags, init-script/workspace paths, GPU node overrides). Optional: when
+            omitted, a default ``DatabricksConfig()`` is used, which connects via
+            the ``databricks_default`` connection and the default workspace paths.
         wherobots_config: Wherobots execution settings (role ARN, external ID,
             AWS region). Required for Wherobots runs that use Iceberg.
 

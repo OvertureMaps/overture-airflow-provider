@@ -105,11 +105,7 @@ def setup_databricks_cluster(
                     "coordinates": f"org.apache.iceberg:iceberg-spark-runtime-{spark_major_minor_version}_{scala_version}:{iceberg_version}"
                 }
             },
-            {
-                "maven": {
-                    "coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version}"
-                }
-            },
+            {"maven": {"coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version}"}},
         ]
         + list(extra_libraries)
         + _databricks_jar_libraries(spark_jar_paths)

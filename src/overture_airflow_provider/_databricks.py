@@ -137,7 +137,7 @@ def setup_databricks_cluster(
         },
         "spark_env_vars": {
             "PIP_PRE": "true",
-            "SPARK_JAR_PATHS": spark_jar_paths,
+            "SPARK_JAR_PATHS": spark_jar_paths or "",
             "SEDONA_VERSION": sedona_version,
             "SPARK_VERSION": spark_version_for_sedona,
             "GEOTOOLS_VERSION": geotools_wrapper_version,
@@ -252,8 +252,7 @@ def execute_databricks_job(
     from airflow.providers.databricks.operators.databricks import (
         DatabricksSubmitRunOperator,
     )
-
-    from overture_airflow_provider._airflow_compat import BaseHook
+    from airflow.providers.databricks.hooks.databricks import DatabricksHook
 
     built = build_databricks_operator_kwargs(
         setup_info=setup_info,
@@ -297,15 +296,12 @@ def execute_databricks_job(
 
     job_url = platform_operator.xcom_pull(context, key="run_page_url")
 
-    conn = BaseHook.get_connection(cluster_info["databricks_conf"]["databricks_conn_id"])
-    databricks_host = conn.host
-    databricks_token = conn.password
-    headers = {"Authorization": f"Bearer {databricks_token}"}
-    get_run_url = f"{databricks_host}/api/2.0/jobs/runs/get"
-    params = {"run_id": platform_operator.xcom_pull(context, key="run_id")}
-
-    status = requests.get(get_run_url, headers=headers, params=params, timeout=30).json()
-
+    run_id = platform_operator.xcom_pull(context, key="run_id")
+    hook = DatabricksHook(
+        databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"]
+    )
+    status = hook.get_run(run_id)
+    
     return {
         "job_url": job_url,
         "status": status,

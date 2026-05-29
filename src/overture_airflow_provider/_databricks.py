@@ -295,9 +295,7 @@ def execute_databricks_job(
     job_url = platform_operator.xcom_pull(context, key="run_page_url")
 
     run_id = platform_operator.xcom_pull(context, key="run_id")
-    hook = DatabricksHook(
-        databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"]
-    )
+    hook = DatabricksHook(databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"])
     status = hook.get_run(run_id)
 
     return {

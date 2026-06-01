@@ -14,7 +14,7 @@ concurrency:
 jobs:
   pytest:
     name: pytest (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       contents: read  # checkout only
     strategy:
@@ -44,7 +44,7 @@ jobs:
 
   all-pass:
     name: All pytest versions passed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     needs: pytest
     if: always()
     steps:

@@ -74,6 +74,11 @@ class SparkSedona:
         # https://sedona.apache.org/latest-snapshot/setup/install-python/#prepare-sedona-spark-jar
         spark_major, spark_minor = py_spark_version.split(".")[:2]
         sedona_major, sedona_minor = sedona_version.split(".")[:2]
+        if int(sedona_major) == 1 and int(sedona_minor) >= 8 and int(spark_minor) <= 3:
+            raise RuntimeError(
+                f"Sedona {sedona_version} dropped Spark 3.3 support. "
+                "Use GLUE_v5 or another Spark 3.4+ implementation."
+            )
         if spark_major != "3":
             raise RuntimeError("I'm only supporting spark 3")
         if int(spark_minor) <= 3 and int(sedona_major) == 1 and int(sedona_minor) <= 6:
@@ -89,6 +94,8 @@ class SparkSedona:
             "1.7.0": "28.5",
             "1.7.1": "28.5",
             "1.7.2": "28.5",
+            "1.8.1": "33.1",
+            "1.9.0": "33.5",
         }
         return geotools_version_map[sedona_version]
 

@@ -76,11 +76,20 @@ class TestSparkSedonaVersionForSedona:
             ("3.4.1", "1.7.0", "3.4"),
             ("3.5.0", "1.7.0", "3.5"),
             ("3.5.2", "1.7.1", "3.5"),
+            ("3.3.0", "1.7.2", "3.3"),
+            ("3.4.1", "1.8.1", "3.4"),
+            ("3.5.2", "1.8.1", "3.5"),
+            ("3.5.2", "1.9.0", "3.5"),
         ],
     )
     def test_spark_version_for_sedona(self, spark_v, sedona_v, expected):
         result = SparkSedona.getSparkVersionForSedona(spark_v, sedona_v)
         assert result == expected
+
+    @pytest.mark.parametrize("sedona_v", ["1.8.1", "1.9.0"])
+    def test_sedona_1_8_plus_drops_spark_3_3(self, sedona_v):
+        with pytest.raises(RuntimeError, match="dropped Spark 3.3 support"):
+            SparkSedona.getSparkVersionForSedona("3.3.0", sedona_v)
 
     def test_non_spark3_raises(self):
         with pytest.raises(RuntimeError, match="only supporting spark 3"):
@@ -96,6 +105,8 @@ class TestSparkSedonaGeotoolsVersion:
             ("1.7.0", "28.5"),
             ("1.7.1", "28.5"),
             ("1.7.2", "28.5"),
+            ("1.8.1", "33.1"),
+            ("1.9.0", "33.5"),
         ],
     )
     def test_known_versions(self, sedona_v, expected_geotools):

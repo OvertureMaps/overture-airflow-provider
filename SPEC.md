@@ -8,7 +8,7 @@ Expose a **single Airflow task group** that runs a Spark job (PySpark or Scala)
 on one of:
 
 - AWS Glue (v4 or v5)
-- Databricks (13.3 / 14.3 / 15.4 LTS)
+- Databricks (14.3 / 15.4 LTS)
 - Wherobots Cloud (1.5.0)
 
 …with the same caller-facing API. The DAG code does not change when the engine

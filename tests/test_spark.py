@@ -37,7 +37,6 @@ class TestSparkImplMetadata:
         [
             (SparkImpl.GLUE_v4, "3.3.0"),
             (SparkImpl.GLUE_v5, "3.5.2"),
-            (SparkImpl.DATABRICKS_v13, "3.4.1"),
             (SparkImpl.DATABRICKS_v14, "3.5.0"),
             (SparkImpl.DATABRICKS_v15, "3.5.0"),
             (SparkImpl.WHEROBOTS_v1_5_0, "3.5.0"),

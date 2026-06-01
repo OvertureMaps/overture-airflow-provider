@@ -210,16 +210,52 @@ def _parse_json_or_dict(value: Any) -> dict:
     return {}
 
 
+def _load_json_config(raw: str | None, field_name: str = "config") -> dict:
+    """Parse a JSON config string, returning an empty dict for falsy/empty values."""
+    if not raw or raw == "{}":
+        return {}
+
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in IcebergConfig.{field_name}: {exc.msg}") from exc
+
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"IcebergConfig.{field_name} must decode to a JSON object, got {type(loaded).__name__}"
+        )
+    return loaded
+
+
 def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name: str) -> dict:
-    """Pick the right Iceberg config variant for the resolved platform family."""
+    """Pick the right Iceberg config variants for the resolved platform family.
+
+    Merges the primary catalog config with the S3 Tables catalog config (when
+    present) into a single dict. S3 Tables keys are namespaced under a separate
+    catalog alias so they coexist without conflicts.
+    """
     if iceberg_config is None:
         return {}
-    raw = (
-        iceberg_config.wherobots_spark_config
-        if spark_family_name == "WHEROBOTS"
-        else iceberg_config.spark_config
-    )
-    return json.loads(raw) if raw and raw != "{}" else {}
+
+    if spark_family_name == "WHEROBOTS":
+        primary = _load_json_config(
+            iceberg_config.wherobots_spark_config, field_name="wherobots_spark_config"
+        )
+        s3tables = _load_json_config(
+            iceberg_config.wherobots_s3tables_spark_config,
+            field_name="wherobots_s3tables_spark_config",
+        )
+    else:
+        primary = _load_json_config(iceberg_config.spark_config, field_name="spark_config")
+        s3tables = _load_json_config(
+            iceberg_config.s3tables_spark_config, field_name="s3tables_spark_config"
+        )
+
+    if s3tables:
+        merged = dict(primary)
+        merged.update(s3tables)
+        return merged
+    return primary
 
 
 def _xcom_datetime_default(obj):

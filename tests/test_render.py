@@ -2,9 +2,11 @@
 
 import json
 import os
+import re
 
 import pytest
 
+from overture_airflow_provider.config import IcebergConfig
 from overture_airflow_provider.render import (
     RenderResult,
     _jsonify,
@@ -18,6 +20,42 @@ _COMMON_KWARGS = dict(
     parameters={"date": "2024-01-01"},
     job_name="snapshot",
 )
+
+
+def _rest_catalog_config():
+    return {
+        "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        "spark.sql.defaultCatalog": "iceberg_catalog",
+        "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.iceberg_catalog.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
+        "spark.sql.catalog.iceberg_catalog.uri": "https://glue.us-west-2.amazonaws.com/iceberg",
+    }
+
+
+def _s3tables_catalog_config():
+    return {
+        "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.s3tables_catalog.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
+        "spark.sql.catalog.s3tables_catalog.uri": "https://s3tables.us-west-2.amazonaws.com/iceberg",
+        "spark.sql.catalog.s3tables_catalog.warehouse": "arn:aws:s3tables:us-west-2:123456789012:bucket/my-bucket",
+        "spark.sql.catalog.s3tables_catalog.rest.signing-name": "s3tables",
+    }
+
+
+def _wherobots_catalog_config():
+    return {
+        "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.iceberg_catalog.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog",
+        "spark.sql.catalog.iceberg_catalog.warehouse": "s3://my-bucket/warehouse",
+    }
+
+
+def _wherobots_s3tables_catalog_config():
+    return {
+        "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.s3tables_catalog.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog",
+        "spark.sql.catalog.s3tables_catalog.warehouse": "s3://my-bucket/s3tables-warehouse",
+    }
 
 
 @pytest.mark.parametrize(
@@ -70,6 +108,115 @@ def test_render_wherobots_skips_region_resolution():
     # Wherobots payload has no AWS Region enum — region stays a plain string.
     region = result.operator_kwargs.get("region") or result.submit_payload.get("region")
     assert isinstance(region, str)
+
+
+@pytest.mark.parametrize(
+    "spark_impl_name, iceberg_config, expected_primary, expected_s3tables",
+    [
+        (
+            "GLUE_v5",
+            IcebergConfig(
+                spark_config=json.dumps(_rest_catalog_config()),
+                s3tables_spark_config=json.dumps(_s3tables_catalog_config()),
+            ),
+            _rest_catalog_config(),
+            _s3tables_catalog_config(),
+        ),
+        (
+            "DATABRICKS_v15",
+            IcebergConfig(
+                spark_config=json.dumps(_rest_catalog_config()),
+                s3tables_spark_config=json.dumps(_s3tables_catalog_config()),
+            ),
+            _rest_catalog_config(),
+            _s3tables_catalog_config(),
+        ),
+        (
+            "WHEROBOTS_v1_5_0",
+            IcebergConfig(
+                wherobots_spark_config=json.dumps(_wherobots_catalog_config()),
+                wherobots_s3tables_spark_config=json.dumps(_wherobots_s3tables_catalog_config()),
+            ),
+            _wherobots_catalog_config(),
+            _wherobots_s3tables_catalog_config(),
+        ),
+    ],
+)
+def test_render_merges_primary_and_s3tables_iceberg_configs(
+    spark_impl_name, iceberg_config, expected_primary, expected_s3tables
+):
+    result = render_spark_job(
+        spark_impl_name=spark_impl_name,
+        iceberg_config=iceberg_config,
+        **_COMMON_KWARGS,
+    )
+
+    assert result.merged_spark_conf.items() >= expected_primary.items()
+    assert result.merged_spark_conf.items() >= expected_s3tables.items()
+
+
+@pytest.mark.parametrize(
+    "spark_impl_name, iceberg_config, expected_s3tables",
+    [
+        (
+            "GLUE_v5",
+            IcebergConfig(s3tables_spark_config=json.dumps(_s3tables_catalog_config())),
+            _s3tables_catalog_config(),
+        ),
+        (
+            "DATABRICKS_v15",
+            IcebergConfig(s3tables_spark_config=json.dumps(_s3tables_catalog_config())),
+            _s3tables_catalog_config(),
+        ),
+        (
+            "WHEROBOTS_v1_5_0",
+            IcebergConfig(
+                wherobots_s3tables_spark_config=json.dumps(_wherobots_s3tables_catalog_config())
+            ),
+            _wherobots_s3tables_catalog_config(),
+        ),
+    ],
+)
+def test_render_preserves_s3tables_only_iceberg_configs(
+    spark_impl_name, iceberg_config, expected_s3tables
+):
+    result = render_spark_job(
+        spark_impl_name=spark_impl_name,
+        iceberg_config=iceberg_config,
+        **_COMMON_KWARGS,
+    )
+
+    assert result.merged_spark_conf.items() >= expected_s3tables.items()
+    assert "spark.sql.catalog.iceberg_catalog" not in result.merged_spark_conf
+
+
+@pytest.mark.parametrize(
+    "spark_impl_name, iceberg_config, expected_error",
+    [
+        (
+            "GLUE_v5",
+            IcebergConfig(spark_config="[]"),
+            "IcebergConfig.spark_config must decode to a JSON object, got list",
+        ),
+        (
+            "DATABRICKS_v15",
+            IcebergConfig(s3tables_spark_config='{"bad"'),
+            "Invalid JSON in IcebergConfig.s3tables_spark_config",
+        ),
+        (
+            "WHEROBOTS_v1_5_0",
+            IcebergConfig(wherobots_s3tables_spark_config='"bad"'),
+            "IcebergConfig.wherobots_s3tables_spark_config must decode to a JSON object, got str",
+        ),
+    ],
+)
+def test_render_rejects_invalid_iceberg_json(spark_impl_name, iceberg_config, expected_error):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
+        render_spark_job(
+            spark_impl_name=spark_impl_name,
+            iceberg_config=iceberg_config,
+            **_COMMON_KWARGS,
+        )
 
 
 def test_render_write_to_creates_files(tmp_path):

@@ -1,6 +1,7 @@
 """Tests for Databricks GPU discovery and override-merge guards."""
 
 import types
+from contextlib import contextmanager
 
 import pytest
 
@@ -39,10 +40,13 @@ class _FakeClusters:
 
 
 def _patch_workspace(monkeypatch, clusters):
-    import databricks.sdk as sdk
+    @contextmanager
+    def _fake_workspace_client(self):
+        yield types.SimpleNamespace(clusters=clusters)
 
     monkeypatch.setattr(
-        sdk, "WorkspaceClient", lambda *a, **k: types.SimpleNamespace(clusters=clusters)
+        "overture_airflow_provider.hooks.DatabricksSdkHook.get_workspace_client",
+        _fake_workspace_client,
     )
 
     class _Conn:

@@ -60,6 +60,31 @@ Holds two JSON-string fields: `spark_config` (Glue/Databricks) and
 `dbfs_root_template` / `workspace_scripts_path_template` accept
 `{s3_assets_root}` substitution.
 
+GPU (or any custom node type) is generic, not a hardcoded SKU. Two paths:
+
+- **Auto-discovery (preferred):** set `gpu=True`. The provider queries the
+  connected workspace via the `databricks-sdk` (`[databricks]` extra), picks
+  GPU node types + a GPU ML runtime for that workspace's cloud, and sizes from
+  them. The driver defaults to the cheapest discovered CPU node (the driver
+  doesn't need a GPU; compute runs on the workers). Discovery only fills gaps —
+  explicit overrides below win per-field, and setting all three skips the API
+  call.
+- **Explicit override:** set `worker_instance_types` (a `{node_type_id: cores}`
+  catalog), `driver_node_type`, and/or `spark_version` (pin a GPU runtime like
+  `"15.4.x-gpu-ml-scala2.12"`).
+
+Worker count derives from desired cores; pin `spark_cluster_desired_workers`
+for GPU-count-sensitive jobs.
+
+Workspace discovery (`gpu=True`) authenticates via `DatabricksSdkHook`
+(`hooks.py`), which maps the Airflow connection onto the databricks-sdk's
+*unified auth*: PAT (`password`), OAuth M2M service principal
+(`extra.service_principal_oauth` + `login`/`password`), Azure service principal
+(`extra.azure_tenant_id` + `login`/`password`), and in-cluster federated OIDC
+(`login="federated_k8s"` or `extra.federated_k8s`). Auth is injected via masked
+env vars inside a short-lived context, so it is not PAT-only. Pinning all three
+override fields avoids the workspace call (and its auth) entirely.
+
 ### WherobotsConfig
 
 AWS region field is `aws_region` (not `region`).

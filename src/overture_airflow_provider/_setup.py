@@ -124,6 +124,12 @@ def setup_spark_job(
         ),
         "databricks_cluster_init_script_name": (databricks_config.cluster_init_script_name),
         "databricks_custom_tags": dict(databricks_config.custom_tags),
+        "databricks_spark_conf": dict(databricks_config.spark_conf),
+        "databricks_spark_env_vars": dict(databricks_config.spark_env_vars),
+        "databricks_worker_instance_types": dict(databricks_config.worker_instance_types),
+        "databricks_driver_node_type": databricks_config.driver_node_type,
+        "databricks_spark_version": databricks_config.spark_version,
+        "databricks_gpu": databricks_config.gpu,
         "glue_execution_class": glue_config.execution_class,
         "iam_role_name": glue_config.iam_role_name,
         # Registry params stored for client reconstruction after XCom round-trip

@@ -21,7 +21,7 @@ concurrency:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       contents: read
     steps:
@@ -32,7 +32,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
-          enable-cache: true
+          enable-cache: false
 
       - name: Build package
         run: uv build
@@ -46,7 +46,7 @@ jobs:
   publish:
     name: Target '${{ github.event_name == 'workflow_dispatch' && 'Test PyPI' || 'PyPI' }}'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     environment: ${{ github.event_name == 'workflow_dispatch' && 'test-pypi' || 'pypi' }}
     env:
       TEST_PYPI_URL: https://test.pypi.org/legacy/

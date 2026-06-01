@@ -210,9 +210,21 @@ def _parse_json_or_dict(value: Any) -> dict:
     return {}
 
 
-def _load_json_config(raw: str | None) -> dict:
+def _load_json_config(raw: str | None, field_name: str = "config") -> dict:
     """Parse a JSON config string, returning an empty dict for falsy/empty values."""
-    return json.loads(raw) if raw and raw != "{}" else {}
+    if not raw or raw == "{}":
+        return {}
+
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in IcebergConfig.{field_name}: {exc.msg}") from exc
+
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"IcebergConfig.{field_name} must decode to a JSON object, got {type(loaded).__name__}"
+        )
+    return loaded
 
 
 def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name: str) -> dict:
@@ -226,11 +238,18 @@ def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name
         return {}
 
     if spark_family_name == "WHEROBOTS":
-        primary = _load_json_config(iceberg_config.wherobots_spark_config)
-        s3tables = _load_json_config(iceberg_config.wherobots_s3tables_spark_config)
+        primary = _load_json_config(
+            iceberg_config.wherobots_spark_config, field_name="wherobots_spark_config"
+        )
+        s3tables = _load_json_config(
+            iceberg_config.wherobots_s3tables_spark_config,
+            field_name="wherobots_s3tables_spark_config",
+        )
     else:
-        primary = _load_json_config(iceberg_config.spark_config)
-        s3tables = _load_json_config(iceberg_config.s3tables_spark_config)
+        primary = _load_json_config(iceberg_config.spark_config, field_name="spark_config")
+        s3tables = _load_json_config(
+            iceberg_config.s3tables_spark_config, field_name="s3tables_spark_config"
+        )
 
     if s3tables:
         merged = dict(primary)

@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from overture_airflow_provider.config import IcebergConfig
 from overture_airflow_provider.spark_agnostic_taskgroup import _select_iceberg_conf
 
@@ -58,6 +60,21 @@ class TestSelectIcebergConfPrimaryOnly:
         cfg = IcebergConfig(wherobots_spark_config=json.dumps(_wherobots_catalog_config()))
         result = _select_iceberg_conf(cfg, "WHEROBOTS")
         assert result == _wherobots_catalog_config()
+
+    def test_invalid_json_identifies_field_name(self):
+        cfg = IcebergConfig(spark_config="{not-json")
+
+        with pytest.raises(ValueError, match=r"IcebergConfig\.spark_config"):
+            _select_iceberg_conf(cfg, "GLUE")
+
+    def test_non_object_json_identifies_field_name(self):
+        cfg = IcebergConfig(wherobots_s3tables_spark_config='["not", "a", "dict"]')
+
+        with pytest.raises(
+            ValueError,
+            match=r"IcebergConfig\.wherobots_s3tables_spark_config must decode to a JSON object",
+        ):
+            _select_iceberg_conf(cfg, "WHEROBOTS")
 
 
 class TestSelectIcebergConfS3Tables:

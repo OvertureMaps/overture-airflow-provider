@@ -15,6 +15,8 @@ _OPTIONAL_MODULES = (
     "databricks",
     "databricks.sdk",
     "airflow.providers.databricks",
+    "airflow.providers.databricks.hooks",
+    "airflow.providers.databricks.hooks.databricks",
     "airflow.providers.databricks.operators",
     "airflow.providers.databricks.operators.databricks",
     "airflow_providers_wherobots",

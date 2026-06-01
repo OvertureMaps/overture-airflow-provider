@@ -607,11 +607,8 @@ class TestDatabricksExecuteJob:
             "run_page_url": "https://dbc.example/runs/12345",
         }[key]
 
-        mock_conn = MagicMock()
-        mock_conn.host = "https://dbc.example"
-        mock_conn.password = "token"
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"state": {"result_state": "SUCCESS"}}
+        mock_hook = MagicMock()
+        mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
 
         with (
             patch(
@@ -619,10 +616,9 @@ class TestDatabricksExecuteJob:
                 return_value=mock_operator,
             ),
             patch(
-                "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
-                return_value=mock_conn,
+                "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+                return_value=mock_hook,
             ),
-            patch("overture_airflow_provider._databricks.requests.get", return_value=mock_resp),
         ):
             execute_databricks_job(
                 setup_info=setup_info,

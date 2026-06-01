@@ -2,12 +2,17 @@
 
 import json
 
-import requests
-
 from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 
 # Default DBFS prefix used when callers pass bare jar filenames (no scheme).
 _DEFAULT_DBFS_JAR_PREFIX = "dbfs:/FileStore/deploy/"
+
+# See https://iceberg.apache.org/releases
+_SPARK_TO_ICEBERG_VERSION_MAP = {
+    "3.3": "1.8.1",
+    "3.4": "1.10.2",
+    "3.5": "1.10.2",
+}
 
 
 def discover_gpu_cluster_options(
@@ -177,6 +182,8 @@ def setup_databricks_cluster(
     geotools_wrapper_version = setup_info["geotools_wrapper_version"]
     run_identifier = setup_info["run_identifier"]
     spark_version_for_sedona = setup_info["spark_version_for_sedona"]
+    spark_major_minor_version = ".".join(setup_info["spark_version"].split(".")[:2])
+    iceberg_version = _SPARK_TO_ICEBERG_VERSION_MAP[spark_major_minor_version]
 
     if isinstance(extra_spark_env_vars, str):
         extra_spark_env_vars = json.loads(extra_spark_env_vars)
@@ -203,6 +210,15 @@ def setup_databricks_cluster(
         + [
             {"pypi": {"package": "databricks-sdk"}},
             {"pypi": {"package": f"apache-sedona=={sedona_version}"}},
+        ]
+        + [
+            # Iceberg Spark catalog plugin (SparkCatalog / RESTCatalog) + SigV4 support
+            {
+                "maven": {
+                    "coordinates": f"org.apache.iceberg:iceberg-spark-runtime-{spark_major_minor_version}_{scala_version}:{iceberg_version}"
+                }
+            },
+            {"maven": {"coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version}"}},
         ]
         + list(extra_libraries)
         + _databricks_jar_libraries(spark_jar_paths)
@@ -266,11 +282,15 @@ def setup_databricks_cluster(
         },
         "spark_env_vars": {
             "PIP_PRE": "true",
-            "SPARK_JAR_PATHS": spark_jar_paths,
+            "SPARK_JAR_PATHS": spark_jar_paths or "",
             "SEDONA_VERSION": sedona_version,
             "SPARK_VERSION": spark_version_for_sedona,
             "GEOTOOLS_VERSION": geotools_wrapper_version,
             "SCALA_VERSION": scala_version,
+            # Use Java 17 (Zulu JDK) so Iceberg 1.5+ JARs (compiled for
+            # Java 11, class file version 55) can run. DBR defaults to
+            # Java 8; JNAME overrides the JVM before the cluster starts.
+            "JNAME": "zulu17-ca-amd64",
             **databricks_spark_env_vars,
             **extra_spark_env_vars,
         },
@@ -379,11 +399,10 @@ def execute_databricks_job(
     """Submit and wait for a Databricks job."""
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
+    from airflow.providers.databricks.hooks.databricks import DatabricksHook
     from airflow.providers.databricks.operators.databricks import (
         DatabricksSubmitRunOperator,
     )
-
-    from overture_airflow_provider._airflow_compat import BaseHook
 
     built = build_databricks_operator_kwargs(
         setup_info=setup_info,
@@ -427,14 +446,9 @@ def execute_databricks_job(
 
     job_url = platform_operator.xcom_pull(context, key="run_page_url")
 
-    conn = BaseHook.get_connection(cluster_info["databricks_conf"]["databricks_conn_id"])
-    databricks_host = conn.host
-    databricks_token = conn.password
-    headers = {"Authorization": f"Bearer {databricks_token}"}
-    get_run_url = f"{databricks_host}/api/2.0/jobs/runs/get"
-    params = {"run_id": platform_operator.xcom_pull(context, key="run_id")}
-
-    status = requests.get(get_run_url, headers=headers, params=params, timeout=30).json()
+    run_id = platform_operator.xcom_pull(context, key="run_id")
+    hook = DatabricksHook(databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"])
+    status = hook.get_run(run_id)
 
     return {
         "job_url": job_url,

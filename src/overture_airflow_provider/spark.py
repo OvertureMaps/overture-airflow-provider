@@ -23,9 +23,6 @@ class SparkImpl(Enum):
     # We do not support Spark < 3.3 — too many ecosystem issues.
     GLUE_v4 = SparkPlatform(SparkFamily.GLUE, "4.0", "3.3.0", "2.12", "3.10")
     GLUE_v5 = SparkPlatform(SparkFamily.GLUE, "5.0", "3.5.2", "2.12", "3.11")
-    DATABRICKS_v13 = SparkPlatform(
-        SparkFamily.DATABRICKS, "13.3.x-scala2.12", "3.4.1", "2.12", "3.10.6"
-    )
     DATABRICKS_v14 = SparkPlatform(
         SparkFamily.DATABRICKS, "14.3.x-scala2.12", "3.5.0", "2.12", "3.10.12"
     )

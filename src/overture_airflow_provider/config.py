@@ -124,19 +124,37 @@ class IcebergConfig:
     - ``wherobots_spark_config`` — for Wherobots. Typically a ``GlueCatalog``
       configuration accessed via cross-account credential delegation.
 
-    The task group selects the right variant at runtime based on the resolved
-    platform family. Pass only the variants you need; omit ``iceberg_config``
-    entirely for jobs that do not use Iceberg.
+    Additionally, S3 Tables catalog configuration can coexist alongside the
+    primary catalog:
+
+    - ``s3tables_spark_config`` — for Glue and Databricks. Configures an
+      additional ``s3tables_catalog`` using the S3 Tables REST API with SigV4
+      signing.
+    - ``wherobots_s3tables_spark_config`` — for Wherobots. S3 Tables catalog
+      variant using Wherobots credential delegation.
+
+    The task group selects the right variants at runtime based on the resolved
+    platform family and merges them together. Pass only the variants you need;
+    omit ``iceberg_config`` entirely for jobs that do not use Iceberg.
 
     Args:
         spark_config: Iceberg Spark config JSON string for Glue/Databricks.
             Defaults to ``"{}"`` (no Iceberg).
         wherobots_spark_config: Iceberg Spark config JSON string for Wherobots.
             Defaults to ``"{}"`` (no Iceberg).
+        s3tables_spark_config: S3 Tables catalog config JSON string for
+            Glue/Databricks. Merged alongside the primary catalog config.
+            Keys should be namespaced under a distinct catalog alias (e.g.
+            ``spark.sql.catalog.s3tables_catalog.*``). Defaults to ``"{}"``
+            (no S3 Tables catalog).
+        wherobots_s3tables_spark_config: S3 Tables catalog config JSON string
+            for Wherobots. Defaults to ``"{}"`` (no S3 Tables catalog).
     """
 
     spark_config: str = "{}"
     wherobots_spark_config: str = "{}"
+    s3tables_spark_config: str = "{}"
+    wherobots_s3tables_spark_config: str = "{}"
 
 
 @dataclass

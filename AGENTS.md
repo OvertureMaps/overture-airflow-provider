@@ -51,8 +51,16 @@ Fields are `domain`, `domain_owner`, `repository`, `region`,
 
 ### IcebergConfig
 
-Holds two JSON-string fields: `spark_config` (Glue/Databricks) and
-`wherobots_spark_config` (Wherobots GlueCatalog). Not a warehouse/URI struct.
+Holds four JSON-string fields:
+
+- `spark_config` (Glue/Databricks primary catalog, typically REST)
+- `wherobots_spark_config` (Wherobots primary catalog, typically GlueCatalog)
+- `s3tables_spark_config` (Glue/Databricks S3 Tables catalog — coexists with primary)
+- `wherobots_s3tables_spark_config` (Wherobots S3 Tables catalog variant)
+
+S3 Tables keys must be namespaced under a distinct catalog alias (e.g.
+`spark.sql.catalog.s3tables_catalog.*`) to avoid conflicts with the primary
+catalog. Both primary and S3 Tables configs are merged together at runtime.
 
 ### DatabricksConfig
 

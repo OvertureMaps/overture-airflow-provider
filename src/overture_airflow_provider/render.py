@@ -409,14 +409,25 @@ def render_spark_job(
     iceberg_spark_config = None
     if family == SparkFamily.WHEROBOTS:
         try:
-            iceberg_spark_config = json.loads(iceberg_config.wherobots_spark_config) or None
+            primary = json.loads(iceberg_config.wherobots_spark_config) or {}
         except (TypeError, ValueError):
-            iceberg_spark_config = None
+            primary = {}
+        try:
+            s3tables = json.loads(iceberg_config.wherobots_s3tables_spark_config) or {}
+        except (TypeError, ValueError):
+            s3tables = {}
     else:
         try:
-            iceberg_spark_config = json.loads(iceberg_config.spark_config) or None
+            primary = json.loads(iceberg_config.spark_config) or {}
         except (TypeError, ValueError):
-            iceberg_spark_config = None
+            primary = {}
+        try:
+            s3tables = json.loads(iceberg_config.s3tables_spark_config) or {}
+        except (TypeError, ValueError):
+            s3tables = {}
+
+    if primary or s3tables:
+        iceberg_spark_config = {**primary, **s3tables}
 
     if family == SparkFamily.GLUE:
         package_info = _stub_package_info_glue(setup_info, pre_resolved_package_info)

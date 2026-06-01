@@ -10,6 +10,119 @@ from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 _DEFAULT_DBFS_JAR_PREFIX = "dbfs:/FileStore/deploy/"
 
 
+def discover_gpu_cluster_options(
+    databricks_conn_id: str, *, need_nodes: bool = True, need_runtime: bool = True
+) -> dict:
+    """Discover GPU node types and/or a GPU ML runtime from the workspace.
+
+    Queries the connected Databricks workspace via the ``databricks-sdk`` so
+    callers don't have to hand-maintain cloud-specific GPU SKUs. Builds a single
+    ``WorkspaceClient`` (one connection lookup) and makes only the lookups the
+    caller asks for, so a pinned field never triggers a needless API round trip.
+
+    Args:
+        databricks_conn_id: Airflow connection ID for the workspace.
+        need_nodes: When ``True``, call ``list_node_types`` and return
+            ``worker_instance_types`` (``{node_type_id: cores}`` for every
+            non-deprecated GPU node) plus ``driver_node_type`` (the cheapest CPU
+            node, since the driver doesn't need a GPU — compute runs on the
+            workers; falls back to the smallest GPU node only if the workspace
+            exposes no CPU node).
+        need_runtime: When ``True``, call ``select_spark_version`` and return the
+            latest LTS GPU ML runtime as ``spark_version``.
+
+    Returns a dict with keys ``worker_instance_types``, ``driver_node_type`` and
+    ``spark_version``; entries not requested are ``None``. Raises ``ValueError``
+    if node types are requested but the workspace exposes no usable GPU nodes
+    (no silent CPU fallback).
+    """
+    # Lazy import: the hook pulls in databricks-sdk / Airflow, both optional at
+    # package-import time.
+    from overture_airflow_provider.hooks import DatabricksSdkHook
+
+    result = {"worker_instance_types": None, "driver_node_type": None, "spark_version": None}
+
+    # Single client/connection lookup; the SDK's unified auth (via the hook)
+    # supports PAT, OAuth M2M, Azure, and federated service principals.
+    with DatabricksSdkHook(databricks_conn_id).get_workspace_client() as client:
+        if need_nodes:
+            node_types = getattr(client.clusters.list_node_types(), "node_types", None) or []
+            worker_instance_types = {}
+            cpu_node_cores = {}
+            for node in node_types:
+                if getattr(node, "is_deprecated", False):
+                    continue
+                cores = getattr(node, "num_cores", None)
+                node_id = getattr(node, "node_type_id", None)
+                if not (node_id and cores and int(cores) > 0):
+                    continue
+                if (getattr(node, "num_gpus", 0) or 0) >= 1:
+                    worker_instance_types[node_id] = int(cores)
+                else:
+                    cpu_node_cores[node_id] = int(cores)
+
+            if not worker_instance_types:
+                raise ValueError(
+                    f"Databricks workspace for connection {databricks_conn_id!r} exposes no "
+                    "GPU-capable node types; cannot satisfy gpu=True"
+                )
+
+            result["worker_instance_types"] = worker_instance_types
+            # The driver doesn't need a GPU (compute runs on the workers), so
+            # default it to the cheapest CPU node and avoid wasting a GPU on the
+            # driver. Fall back to the smallest GPU node only if the workspace
+            # exposes no CPU node.
+            driver_pool = cpu_node_cores or worker_instance_types
+            result["driver_node_type"] = min(driver_pool, key=driver_pool.get)
+
+        if need_runtime:
+            result["spark_version"] = client.clusters.select_spark_version(
+                long_term_support=True, ml=True, gpu=True
+            )
+
+    return result
+
+
+def _resolve_databricks_node_config(setup_info: dict) -> dict:
+    """Merge explicit Databricks node overrides with optional GPU discovery.
+
+    Explicit fields always win per-field; GPU discovery only fills the gaps.
+    Workspace lookups are lazy: node types are fetched only when the worker
+    catalog or driver is missing, the runtime only when ``spark_version`` is
+    missing, and nothing is fetched when all three are pinned.
+    """
+    worker_instance_types = setup_info.get("databricks_worker_instance_types") or None
+    driver_node_type = setup_info.get("databricks_driver_node_type") or None
+    spark_version = setup_info.get("databricks_spark_version") or None
+
+    if setup_info.get("databricks_gpu"):
+        need_nodes = not (worker_instance_types and driver_node_type)
+        need_runtime = not spark_version
+
+        if need_nodes or need_runtime:
+            conn_id = setup_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
+            discovered = discover_gpu_cluster_options(
+                conn_id, need_nodes=need_nodes, need_runtime=need_runtime
+            )
+            if need_nodes:
+                worker_instance_types = worker_instance_types or discovered["worker_instance_types"]
+                driver_node_type = driver_node_type or discovered["driver_node_type"]
+            if need_runtime:
+                spark_version = spark_version or discovered["spark_version"]
+
+        if "gpu" not in spark_version.lower():
+            print(
+                f"[Databricks] WARNING: gpu=True but spark_version {spark_version!r} "
+                "does not look GPU-enabled; the cluster may not expose GPUs"
+            )
+
+    return {
+        "worker_instance_types": worker_instance_types,
+        "driver_node_type": driver_node_type,
+        "spark_version": spark_version,
+    }
+
+
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     return json.dumps(
         {
@@ -109,12 +222,27 @@ def setup_databricks_cluster(
     print(f"scala_version: {scala_version}")
     print(f"extra_spark_env_vars: {extra_spark_env_vars}")
 
+    node_config = _resolve_databricks_node_config(setup_info)
+
+    databricks_spark_conf = setup_info.get("databricks_spark_conf", {}) or {}
+    databricks_spark_env_vars = setup_info.get("databricks_spark_env_vars", {}) or {}
+
+    if setup_info.get("databricks_gpu") and not spark_cluster_desired_workers:
+        print(
+            "[Databricks] WARNING: gpu=True sized by worker cores only; "
+            "core-based sizing is an indirect proxy for GPU count and assumes a "
+            "fixed cores-per-GPU node shape. Prefer pinning "
+            "spark_cluster_desired_workers (explicit node/GPU count) for GPU runs."
+        )
+
     new_cluster = {
         **DatabricksClusterSize.from_desired_cores(
             int(spark_cluster_desired_worker_cores),
             (int(spark_cluster_desired_workers) if spark_cluster_desired_workers else None),
+            instance_types=node_config["worker_instance_types"],
+            driver_node_type=node_config["driver_node_type"],
         ),
-        "spark_version": spark_impl.get_native_version(),
+        "spark_version": (node_config["spark_version"] or spark_impl.get_native_version()),
         "spark_conf": {
             "parquet.enable.summary-metadata": "false",
             "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
@@ -128,6 +256,7 @@ def setup_databricks_cluster(
                 "org.apache.sedona.sql.SedonaSqlExtensions"
             ),
             "spark.databricks.io.directoryCommit.createSuccessFile": "false",
+            **databricks_spark_conf,
             **extra_spark_conf,
         },
         "azure_attributes": {
@@ -142,6 +271,7 @@ def setup_databricks_cluster(
             "SPARK_VERSION": spark_version_for_sedona,
             "GEOTOOLS_VERSION": geotools_wrapper_version,
             "SCALA_VERSION": scala_version,
+            **databricks_spark_env_vars,
             **extra_spark_env_vars,
         },
         "runtime_engine": "STANDARD",

@@ -25,6 +25,8 @@ _DEFAULT_PROVIDER_KEYS = {
     "databricks_workspace_scripts_path_template": "/Workspace/Shared/{s3_assets_root}",
     "databricks_cluster_init_script_name": "agnostic_operator_cluster_init_databricks.sh",
     "databricks_custom_tags": {},
+    "databricks_spark_conf": {},
+    "databricks_spark_env_vars": {},
     "codeartifact_domain_owner": "",
     "codeartifact_domain": "",
     "codeartifact_repository": "",
@@ -461,6 +463,115 @@ class TestDatabricksSetupCluster:
         assert (
             result["new_cluster"]["spark_version"] == SparkImpl.DATABRICKS_v15.get_native_version()
         )
+
+    def test_databricks_spark_conf_merged_into_new_cluster(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_spark_conf"] = {"spark.custom.platform": "dbx-only"}
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        assert result["new_cluster"]["spark_conf"]["spark.custom.platform"] == "dbx-only"
+
+    def test_extra_spark_conf_overrides_databricks_spark_conf(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_spark_conf"] = {"spark.custom.platform": "dbx-only"}
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={"spark.custom.platform": "from-extra"},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        assert result["new_cluster"]["spark_conf"]["spark.custom.platform"] == "from-extra"
+
+    def test_databricks_spark_env_vars_merged_into_new_cluster(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_spark_env_vars"] = {"PLATFORM_TOKEN": "dbx-only"}
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        assert result["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "dbx-only"
+
+    def test_extra_spark_env_vars_override_databricks_spark_env_vars(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_spark_env_vars"] = {"PLATFORM_TOKEN": "dbx-only"}
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars='{"PLATFORM_TOKEN": "from-extra"}',
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        assert result["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "from-extra"
+
+    def test_gpu_overrides_applied_to_new_cluster(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_worker_instance_types"] = {"Standard_NC8as_T4_v3": 8}
+        handler.setup_info["databricks_driver_node_type"] = "Standard_NC8as_T4_v3"
+        handler.setup_info["databricks_spark_version"] = "15.4.x-gpu-ml-scala2.12"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="32",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster = result["new_cluster"]
+        assert cluster["node_type_id"] == "Standard_NC8as_T4_v3"
+        assert cluster["driver_node_type_id"] == "Standard_NC8as_T4_v3"
+        assert cluster["spark_version"] == "15.4.x-gpu-ml-scala2.12"
+
+    def test_gpu_discovery_fills_new_cluster(self, monkeypatch):
+        import overture_airflow_provider._databricks as dbx
+
+        monkeypatch.setattr(
+            dbx,
+            "discover_gpu_cluster_options",
+            lambda conn_id, *, need_nodes=True, need_runtime=True: {
+                "worker_instance_types": {"Standard_NC8as_T4_v3": 8},
+                "driver_node_type": "Standard_NC8as_T4_v3",
+                "spark_version": "15.4.x-gpu-ml-scala2.12",
+            },
+        )
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_gpu"] = True
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="32",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster = result["new_cluster"]
+        assert cluster["node_type_id"] == "Standard_NC8as_T4_v3"
+        assert cluster["driver_node_type_id"] == "Standard_NC8as_T4_v3"
+        assert cluster["spark_version"] == "15.4.x-gpu-ml-scala2.12"
 
     def test_download_python_packages_returns_none(self):
         handler = DatabricksPlatformHandler(_databricks_setup_info())

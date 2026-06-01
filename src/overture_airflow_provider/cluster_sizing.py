@@ -103,12 +103,19 @@ class DatabricksClusterSize:
         }
 
     @classmethod
-    def from_desired_cores(cls, desired_cores: int, desired_workers: int | None = None) -> dict:
-        driver_node_type = "Standard_E4a_v4"
+    def from_desired_cores(
+        cls,
+        desired_cores: int,
+        desired_workers: int | None = None,
+        *,
+        instance_types: dict | None = None,
+        driver_node_type: str | None = None,
+    ) -> dict:
+        driver_node_type = driver_node_type or "Standard_E4a_v4"
         worker_node_type, number_of_workers = InstanceCalculator.calculate_instances(
             min_instance_count=1,
             desired_cores=desired_cores,
-            instance_types=azure_databricks_instance_types,
+            instance_types=instance_types or azure_databricks_instance_types,
             desired_workers=desired_workers,
         )
         return cls.as_json(driver_node_type, worker_node_type, number_of_workers)
@@ -185,6 +192,12 @@ class InstanceCalculator:
             raise ValueError("Desired cores must be a positive integer")
         if not instance_types:
             raise ValueError("Instance types must not be empty")
+        for instance_type, cores_per_instance in instance_types.items():
+            if not isinstance(cores_per_instance, int) or cores_per_instance <= 0:
+                raise ValueError(
+                    f"Instance type {instance_type!r} must map to a positive integer "
+                    f"core count, got {cores_per_instance!r}"
+                )
 
         best_instance_type = None
         min_instances = float("inf")

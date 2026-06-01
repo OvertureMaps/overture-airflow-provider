@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 
 import pytest
 
@@ -189,6 +190,37 @@ def test_render_preserves_s3tables_only_iceberg_configs(
 
     assert result.merged_spark_conf.items() >= expected_s3tables.items()
     assert "spark.sql.catalog.iceberg_catalog" not in result.merged_spark_conf
+
+
+@pytest.mark.parametrize(
+    "spark_impl_name, iceberg_config, expected_error",
+    [
+        (
+            "GLUE_v5",
+            IcebergConfig(spark_config="[]"),
+            "IcebergConfig.spark_config must decode to a JSON object, got list",
+        ),
+        (
+            "DATABRICKS_v15",
+            IcebergConfig(s3tables_spark_config='{"bad"'),
+            "Invalid JSON in IcebergConfig.s3tables_spark_config",
+        ),
+        (
+            "WHEROBOTS_v1_5_0",
+            IcebergConfig(wherobots_s3tables_spark_config='"bad"'),
+            "IcebergConfig.wherobots_s3tables_spark_config must decode to a JSON object, got str",
+        ),
+    ],
+)
+def test_render_rejects_invalid_iceberg_json(
+    spark_impl_name, iceberg_config, expected_error
+):
+    with pytest.raises(ValueError, match=re.escape(expected_error)):
+        render_spark_job(
+            spark_impl_name=spark_impl_name,
+            iceberg_config=iceberg_config,
+            **_COMMON_KWARGS,
+        )
 
 
 def test_render_write_to_creates_files(tmp_path):

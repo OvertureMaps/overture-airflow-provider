@@ -126,6 +126,49 @@ def _jsonify(obj: Any) -> Any:
     return obj
 
 
+def _load_json_config(raw: str | None, field_name: str) -> dict[str, Any]:
+    """Parse a JSON config string and require a JSON object payload."""
+    if not raw or raw == "{}":
+        return {}
+
+    try:
+        loaded = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        raise ValueError(f"Invalid JSON in IcebergConfig.{field_name}: {detail}") from exc
+
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"IcebergConfig.{field_name} must decode to a JSON object, got {type(loaded).__name__}"
+        )
+    return loaded
+
+
+def _select_iceberg_spark_config(
+    iceberg_config: IcebergConfig | None, family: SparkFamily
+) -> dict[str, Any]:
+    """Resolve and merge the Iceberg config variants for the selected Spark family."""
+    if iceberg_config is None:
+        return {}
+
+    if family == SparkFamily.WHEROBOTS:
+        primary = _load_json_config(
+            iceberg_config.wherobots_spark_config, "wherobots_spark_config"
+        )
+        s3tables = _load_json_config(
+            iceberg_config.wherobots_s3tables_spark_config,
+            "wherobots_s3tables_spark_config",
+        )
+    else:
+        primary = _load_json_config(iceberg_config.spark_config, "spark_config")
+        s3tables = _load_json_config(
+            iceberg_config.s3tables_spark_config,
+            "s3tables_spark_config",
+        )
+
+    return {**primary, **s3tables}
+
+
 def _build_render_setup_info(
     spark_impl_name: str,
     sedona_version: str,
@@ -406,28 +449,7 @@ def render_spark_job(
     family: SparkFamily = setup_info["spark_family"]
 
     # Resolve which Iceberg config variant applies for this family.
-    iceberg_spark_config = None
-    if family == SparkFamily.WHEROBOTS:
-        try:
-            primary = json.loads(iceberg_config.wherobots_spark_config) or {}
-        except (TypeError, ValueError):
-            primary = {}
-        try:
-            s3tables = json.loads(iceberg_config.wherobots_s3tables_spark_config) or {}
-        except (TypeError, ValueError):
-            s3tables = {}
-    else:
-        try:
-            primary = json.loads(iceberg_config.spark_config) or {}
-        except (TypeError, ValueError):
-            primary = {}
-        try:
-            s3tables = json.loads(iceberg_config.s3tables_spark_config) or {}
-        except (TypeError, ValueError):
-            s3tables = {}
-
-    if primary or s3tables:
-        iceberg_spark_config = {**primary, **s3tables}
+    iceberg_spark_config = _select_iceberg_spark_config(iceberg_config, family) or None
 
     if family == SparkFamily.GLUE:
         package_info = _stub_package_info_glue(setup_info, pre_resolved_package_info)

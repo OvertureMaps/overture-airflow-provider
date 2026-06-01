@@ -152,9 +152,7 @@ def _select_iceberg_spark_config(
         return {}
 
     if family == SparkFamily.WHEROBOTS:
-        primary = _load_json_config(
-            iceberg_config.wherobots_spark_config, "wherobots_spark_config"
-        )
+        primary = _load_json_config(iceberg_config.wherobots_spark_config, "wherobots_spark_config")
         s3tables = _load_json_config(
             iceberg_config.wherobots_s3tables_spark_config,
             "wherobots_s3tables_spark_config",

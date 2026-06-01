@@ -8,6 +8,7 @@ that have the extras installed keep the real implementations.
 
 import importlib
 import sys
+import types
 from unittest.mock import MagicMock
 
 _OPTIONAL_MODULES = (
@@ -26,10 +27,25 @@ _OPTIONAL_MODULES = (
     "wherobots.db",
 )
 
+
+def _stub_module(name: str):
+    module = types.ModuleType(name)
+    module.__getattr__ = lambda attr: MagicMock(name=f"{name}.{attr}")
+    sys.modules[name] = module
+
+    if "." not in name:
+        return module
+
+    parent_name, child_name = name.rsplit(".", 1)
+    parent = sys.modules.get(parent_name) or _stub_module(parent_name)
+    setattr(parent, child_name, module)
+    return module
+
+
 for _mod in _OPTIONAL_MODULES:
     if _mod in sys.modules:
         continue
     try:
         importlib.import_module(_mod)
     except Exception:
-        sys.modules[_mod] = MagicMock()
+        _stub_module(_mod)

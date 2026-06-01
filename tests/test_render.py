@@ -171,9 +171,7 @@ def test_render_merges_primary_and_s3tables_iceberg_configs(
         (
             "WHEROBOTS_v1_5_0",
             IcebergConfig(
-                wherobots_s3tables_spark_config=json.dumps(
-                    _wherobots_s3tables_catalog_config()
-                )
+                wherobots_s3tables_spark_config=json.dumps(_wherobots_s3tables_catalog_config())
             ),
             _wherobots_s3tables_catalog_config(),
         ),
@@ -212,9 +210,7 @@ def test_render_preserves_s3tables_only_iceberg_configs(
         ),
     ],
 )
-def test_render_rejects_invalid_iceberg_json(
-    spark_impl_name, iceberg_config, expected_error
-):
+def test_render_rejects_invalid_iceberg_json(spark_impl_name, iceberg_config, expected_error):
     with pytest.raises(ValueError, match=re.escape(expected_error)):
         render_spark_job(
             spark_impl_name=spark_impl_name,

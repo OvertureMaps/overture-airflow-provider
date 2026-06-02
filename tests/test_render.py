@@ -248,15 +248,23 @@ def test_render_glue_scala_emits_conf_in_default_args():
     assert "spark.executor.extraJavaOptions" not in conf_str
 
 
-def test_render_glue_pyspark_no_conf_in_default_args():
-    """Glue PySpark render must NOT add --conf to DefaultArguments."""
+def test_render_glue_pyspark_emits_conf_in_default_args():
+    """Glue PySpark render must inject Iceberg catalog conf via DefaultArguments['--conf'].
+
+    Glue builds the SparkSession before user code runs, so catalogs must be registered at
+    bootstrap (matching the Scala path) — otherwise legacy SparkSedonaJob.run() classes that
+    don't accept a `spark` kwarg hit a catalog namespace error.
+    """
     result = render_spark_job(
         spark_impl_name="GLUE_v5",
         iceberg_config=IcebergConfig(spark_config=json.dumps(_rest_catalog_config())),
         **_COMMON_KWARGS,
     )
     default_args = result.submit_payload["create_job_kwargs"]["DefaultArguments"]
-    assert "--conf" not in default_args, "PySpark Glue job must not add --conf to DefaultArguments"
+    assert "--conf" in default_args, "PySpark Glue job must inject Iceberg conf via --conf"
+    conf_str = default_args["--conf"]
+    assert "spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog" in conf_str
+    assert "spark.jars.packages" not in conf_str
 
 
 def test_render_write_to_creates_files(tmp_path):

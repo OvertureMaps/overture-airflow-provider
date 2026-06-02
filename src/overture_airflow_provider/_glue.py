@@ -13,11 +13,12 @@ from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
 MAX_TIMEOUT_HOURS = 8
 
-# Keys excluded from the Glue Scala --conf DefaultArgument.
+# Keys excluded from the Glue --conf DefaultArgument (applies to both PySpark and Scala jobs).
+# These are Glue launcher constraints, not Scala-specific:
 # spark.jars.packages: Glue can't resolve Maven coords at runtime; JARs are pre-staged via --extra-jars.
 # spark.driver/executor.extraJavaOptions: already set via --driver-java-options / --executor-java-options;
 #   duplicating them in --conf would override those args and lose the sedona charset setting.
-_GLUE_SCALA_CONF_EXCLUDE = frozenset(
+_GLUE_CONF_EXCLUDE = frozenset(
     {
         "spark.jars.packages",
         "spark.driver.extraJavaOptions",
@@ -277,6 +278,19 @@ def build_glue_operator_kwargs(
         **extra_spark_conf,
     }
 
+    # Inject Iceberg / Spark conf into DefaultArguments as Glue's native --conf mechanism.
+    # Glue applies this to spark-submit at session-creation time, before any user code runs,
+    # so the Iceberg catalog is registered (and spark.sql.extensions applied) for BOTH PySpark
+    # and Scala jobs. For PySpark this is essential: catalog plugin keys and static SQL conf
+    # (e.g. spark.sql.extensions) cannot be set reliably at runtime via spark.conf.set() after
+    # SparkSession.getOrCreate(), and legacy job classes whose run() omits a spark param never
+    # apply --extra_spark_conf at all. For Scala the real entry point is the caller's --class in
+    # --extra-jars, which never reads this conf itself.
+    # Format: "k1=v1 --conf k2=v2 ..." (combined with the "--conf" key itself by Glue).
+    glue_conf = {k: v for k, v in spark_conf_dict.items() if k not in _GLUE_CONF_EXCLUDE}
+    if glue_conf:
+        glue_job_default_args["--conf"] = " --conf ".join(f"{k}={v}" for k, v in glue_conf.items())
+
     if module_name:
         script_args = {
             "--module_name": module_name,
@@ -296,16 +310,6 @@ def build_glue_operator_kwargs(
         glue_job_default_args = {
             k: v for k, v in glue_job_default_args.items() if v is not None and v != ""
         }
-        # Inject Iceberg / Spark conf into DefaultArguments as Glue's native --conf mechanism.
-        # Glue applies this at session-creation time, before any user code runs, so the catalog
-        # is registered even though the real entry point is the caller's --class in --extra-jars.
-        # Format: "k1=v1 --conf k2=v2 ..." (combined with the "--conf" key itself by Glue).
-        scala_spark_conf = {
-            k: v for k, v in spark_conf_dict.items() if k not in _GLUE_SCALA_CONF_EXCLUDE
-        }
-        if scala_spark_conf:
-            entries = [f"{k}={v}" for k, v in scala_spark_conf.items()]
-            glue_job_default_args["--conf"] = " --conf ".join(entries)
         parsed_params = (
             json.loads(setup_info["parameters"])
             if isinstance(setup_info["parameters"], str)

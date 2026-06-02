@@ -438,12 +438,26 @@ class TestGlueExecuteJob:
         if "--conf" in default_args:
             assert "spark.jars.packages" not in default_args["--conf"]
 
-    def test_pyspark_job_does_not_add_conf_to_default_args(self):
-        # PySpark runner reads --extra_spark_conf itself; Glue-level --conf is not needed
-        # and must not appear for PySpark jobs.
-        _, captured = self._run_glue(module_name="my_module", class_name="MyClass")
+    def test_pyspark_job_injects_conf_into_default_args(self):
+        # PySpark jobs need the Iceberg catalog conf applied by Glue at session-creation
+        # time (via --conf), because the runner can't reliably register catalogs / static
+        # SQL conf at runtime after SparkSession.getOrCreate().
+        iceberg_conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        }
+        _, captured = self._run_glue(
+            module_name="my_module", class_name="MyClass", extra_spark_conf=iceberg_conf
+        )
         default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
-        assert "--conf" not in default_args
+        assert "--conf" in default_args
+        conf_str = default_args["--conf"]
+        assert "spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog" in conf_str
+        assert "spark.sql.extensions=" in conf_str
+        # spark.jars.packages must still be excluded.
+        assert "spark.jars.packages" not in conf_str
+        # The runner still receives the conf via --extra_spark_conf.
+        assert "--extra_spark_conf" in captured["call_kwargs"]["script_args"]
 
 
 class TestGetGlueJobUrlAndStatus:

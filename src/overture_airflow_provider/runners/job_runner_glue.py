@@ -9,8 +9,11 @@ Args (resolved via ``awsglue.utils.getResolvedOptions``):
     class_name: Class name to instantiate and call ``.run()``.
     params: JSON-encoded parameters forwarded verbatim to the job class.
     extra_spark_conf: JSON-encoded dict of additional SparkConf key/value pairs.
-        Applied to the current SparkSession when the job's ``run()`` accepts a
-        ``spark`` keyword argument.
+        Primarily applied by Glue at session-creation time via the job's ``--conf``
+        DefaultArguments (so Iceberg catalogs and ``spark.sql.extensions`` are
+        registered before any user code runs). Re-applied here on a best-effort
+        basis when the job's ``run()`` accepts a ``spark`` keyword argument; static
+        configs that cannot change on a live session are skipped.
 """
 
 import inspect
@@ -52,8 +55,15 @@ if "spark" in sig.parameters:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
+    # Iceberg catalog plugin keys and static SQL conf (e.g. spark.sql.extensions) are applied
+    # by Glue at session-creation time via the job's --conf DefaultArguments, before this script
+    # runs. Re-applying here is best-effort: static configs cannot be changed on a live session
+    # (they raise "Cannot modify the value of a static config") and are harmlessly skipped.
     for k, v in json.loads(extra_spark_conf_raw).items():
-        spark.conf.set(k, v)
+        try:
+            spark.conf.set(k, v)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Skipping runtime Spark conf {k!r} (already applied at session creation): {exc}")
     run_kwargs["spark"] = spark
 
 result = instance.run(**run_kwargs)

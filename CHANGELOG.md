@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   restoring the proven pre-migration behaviour. The reflective
   `run(spark, params)` dispatch was dead code in all current code paths and has
   been removed. ([#18](https://github.com/OvertureMaps/overture-airflow-provider/pull/18))
+- **Glue Iceberg catalog not registered:** Iceberg catalog Spark conf (e.g.
+  `spark.sql.catalog.iceberg_catalog.*`, `spark.sql.extensions`) was not applied
+  at SparkSession-creation time for Glue jobs, so multi-part names like
+  `iceberg_catalog.my_table` routed to the session catalog and failed with
+  `REQUIRES_SINGLE_PART_NAMESPACE` (later `_LEGACY_ERROR_TEMP_1055`). The merged
+  Spark conf is now injected into the job's `--conf` `DefaultArguments` for both
+  Scala **and** PySpark jobs, so Glue registers the catalog before any user code
+  runs. The PySpark runner's runtime `spark.conf.set()` is now best-effort
+  (static configs that cannot change on a live session are skipped instead of
+  failing the job). ([#18](https://github.com/OvertureMaps/overture-airflow-provider/pull/18))
 
 ### Removed
 

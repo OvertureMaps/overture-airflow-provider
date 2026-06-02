@@ -42,8 +42,9 @@ def test_get_runner_path_glue_scala():
     try:
         assert p.exists()
         content = p.read_text(encoding="utf-8")
-        assert "JobRunnerGlue" in content
-        assert "SparkSession" in content
+        # Comment-only no-op stub: every line is a Scala comment.
+        assert content.lstrip().startswith("//")
+        assert "import " not in content
     finally:
         p.unlink(missing_ok=True)
 
@@ -119,10 +120,18 @@ def test_scala_runner_source_is_str():
     assert len(SCALA_RUNNER_SOURCE) > 0
 
 
-def test_scala_runner_source_contains_expected_symbols():
-    assert "JobRunnerGlue" in SCALA_RUNNER_SOURCE
-    assert "GlueArgParser" in SCALA_RUNNER_SOURCE
-    assert "SparkSession" in SCALA_RUNNER_SOURCE
+def test_scala_runner_source_is_comment_only_stub():
+    # Glue compiles the scriptLocation before the job runs even though the real
+    # entry point is selected via --class inside --extra-jars. The stub must
+    # have zero compile surface: every non-blank line is a Scala comment.
+    for line in SCALA_RUNNER_SOURCE.splitlines():
+        stripped = line.strip()
+        if stripped:
+            assert stripped.startswith("//"), f"non-comment line in stub: {line!r}"
+
+
+def test_scala_runner_source_documents_aws_reference():
+    assert "https://docs.aws.amazon.com/glue/" in SCALA_RUNNER_SOURCE
 
 
 # ---------------------------------------------------------------------------

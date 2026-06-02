@@ -438,12 +438,33 @@ class TestGlueExecuteJob:
         if "--conf" in default_args:
             assert "spark.jars.packages" not in default_args["--conf"]
 
-    def test_pyspark_job_does_not_add_conf_to_default_args(self):
-        # PySpark runner reads --extra_spark_conf itself; Glue-level --conf is not needed
-        # and must not appear for PySpark jobs.
+    def test_pyspark_iceberg_conf_injected_into_default_args(self):
+        # PySpark jobs must also register catalogs at SparkSession bootstrap via Glue's
+        # native --conf. Glue builds the session before user code runs, so legacy
+        # SparkSedonaJob.run() implementations without a `spark` kwarg still get catalogs.
+        iceberg_conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        }
+        _, captured = self._run_glue(
+            module_name="my_module", class_name="MyClass", extra_spark_conf=iceberg_conf
+        )
+        default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
+        assert "--conf" in default_args
+        conf_str = default_args["--conf"]
+        assert "spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog" in conf_str
+        assert (
+            "spark.sql.catalog.s3tables_catalog=org.apache.iceberg.spark.SparkCatalog" in conf_str
+        )
+        # Maven coords can't be resolved at runtime; JARs are pre-staged via --extra-jars.
+        assert "spark.jars.packages" not in conf_str
+
+    def test_pyspark_no_conf_key_when_only_excluded_keys(self):
+        # With no extra conf, only the excluded spark.jars.packages remains → no --conf.
         _, captured = self._run_glue(module_name="my_module", class_name="MyClass")
         default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
-        assert "--conf" not in default_args
+        if "--conf" in default_args:
+            assert "spark.jars.packages" not in default_args["--conf"]
 
 
 class TestGetGlueJobUrlAndStatus:

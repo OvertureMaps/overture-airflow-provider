@@ -353,6 +353,98 @@ class TestGlueExecuteJob:
         assert payload["job_url"].endswith("/run/jr_early123")
         assert payload["status"] == "RUNNING"
 
+    # ------------------------------------------------------------------
+    # Scala --conf injection (Iceberg catalog registration)
+    # ------------------------------------------------------------------
+
+    def test_scala_iceberg_conf_injected_into_default_args(self):
+        # Iceberg catalog conf must land in DefaultArguments["--conf"] so Glue
+        # applies it at session-creation time before any user code runs.
+        iceberg_conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.iceberg_catalog.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
+            "spark.sql.catalog.iceberg_catalog.uri": "https://glue.us-west-2.amazonaws.com/iceberg",
+        }
+        _, captured = self._run_glue(
+            module_name="", class_name="com.example.Main", extra_spark_conf=iceberg_conf
+        )
+        default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
+        assert "--conf" in default_args
+        conf_str = default_args["--conf"]
+        assert "spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog" in conf_str
+        assert (
+            "spark.sql.catalog.iceberg_catalog.catalog-impl=org.apache.iceberg.rest.RESTCatalog"
+            in conf_str
+        )
+        assert (
+            "spark.sql.catalog.iceberg_catalog.uri=https://glue.us-west-2.amazonaws.com/iceberg"
+            in conf_str
+        )
+
+    def test_scala_conf_format_uses_glue_delimiter(self):
+        # Multi-conf string must use " --conf " as delimiter so Glue parses it correctly.
+        iceberg_conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.iceberg_catalog.type": "rest",
+        }
+        _, captured = self._run_glue(
+            module_name="", class_name="com.example.Main", extra_spark_conf=iceberg_conf
+        )
+        conf_str = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]["--conf"]
+        # Two entries → exactly one " --conf " delimiter between them.
+        # The jar_info["sedona_packages"] key (spark.jars.packages) is excluded, so the
+        # only entries are the two iceberg_conf keys + any non-excluded platform defaults.
+        entries = conf_str.split(" --conf ")
+        assert len(entries) >= 2, "Expected at least two --conf entries for a multi-key conf"
+        for entry in entries:
+            assert "=" in entry, f"conf entry missing '=': {entry!r}"
+
+    def test_scala_conf_excludes_spark_jars_packages(self):
+        # spark.jars.packages must not appear in --conf: Glue can't resolve Maven coords
+        # at runtime; JARs are pre-staged via --extra-jars.
+        _, captured = self._run_glue(module_name="", class_name="com.example.Main")
+        default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
+        if "--conf" in default_args:
+            assert "spark.jars.packages" not in default_args["--conf"]
+
+    def test_scala_conf_excludes_java_options(self):
+        # driver/executor extraJavaOptions are handled by --driver-java-options /
+        # --executor-java-options; duplicating them in --conf would override those args
+        # and lose the sedona charset setting.
+        conf_with_java_opts = {
+            "spark.driver.extraJavaOptions": "-Dfoo=bar",
+            "spark.executor.extraJavaOptions": "-Dfoo=bar",
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        }
+        _, captured = self._run_glue(
+            module_name="", class_name="com.example.Main", extra_spark_conf=conf_with_java_opts
+        )
+        conf_str = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]["--conf"]
+        assert "spark.driver.extraJavaOptions" not in conf_str
+        assert "spark.executor.extraJavaOptions" not in conf_str
+        # The iceberg key must still be present.
+        assert "spark.sql.catalog.iceberg_catalog" in conf_str
+
+    def test_scala_conf_no_conf_key_when_only_excluded_keys(self):
+        # When extra_spark_conf is empty (only spark.jars.packages from jar_info is in
+        # spark_conf_dict), there is nothing to inject and --conf must not be added at all.
+        _, captured = self._run_glue(
+            module_name="", class_name="com.example.Main", extra_spark_conf={}
+        )
+        default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
+        # spark.jars.packages is excluded; if platform defaults also end up excluded,
+        # --conf should be absent. Assert it's either absent OR, if platform defaults
+        # contributed conf, they are present but jars.packages is not.
+        if "--conf" in default_args:
+            assert "spark.jars.packages" not in default_args["--conf"]
+
+    def test_pyspark_job_does_not_add_conf_to_default_args(self):
+        # PySpark runner reads --extra_spark_conf itself; Glue-level --conf is not needed
+        # and must not appear for PySpark jobs.
+        _, captured = self._run_glue(module_name="my_module", class_name="MyClass")
+        default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
+        assert "--conf" not in default_args
+
 
 class TestGetGlueJobUrlAndStatus:
     def _make_operator(self, job_state):

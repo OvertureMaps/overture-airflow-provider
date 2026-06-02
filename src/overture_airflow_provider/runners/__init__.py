@@ -6,55 +6,28 @@ runtime, the Python standard library, and dynamically-imported user job classes.
 
 ``SCALA_RUNNER_SOURCE`` is embedded here as a string so it is available as
 package data regardless of build-backend non-Python file inclusion policy.
+
+It is a deliberate comment-only no-op stub: AWS Glue Scala jobs run a
+precompiled JAR selected via the ``--class`` job parameter (passed through
+``--extra-jars``), so this ``scriptLocation`` file is never executed. Glue still
+*compiles* it before the job starts, so it only needs to compile cleanly. See
+the stub comment below for the full rationale.
 """
 
 SCALA_RUNNER_SOURCE: str = """\
-import com.amazonaws.services.glue.GlueContext
-import com.amazonaws.services.glue.util.GlueArgParser
-import org.apache.spark.SparkContext
-import scala.jdk.CollectionConverters._
-
-/**
- * Thin AWS Glue entry point for Scala jobs.
- *
- * Expected Glue job args (set via --default_arguments):
- *   --class_name       Fully-qualified class name to instantiate.
- *   --params           JSON-encoded parameter string forwarded to run().
- *   --extra_spark_conf JSON-encoded map of additional SparkConf key/value pairs.
- *
- * The target class must expose a zero-argument constructor and one of:
- *   - run(spark: SparkSession, params: String): Unit  (preferred)
- *   - run(params: String): Unit                       (legacy)
- */
-object JobRunnerGlue {
-  def main(args: Array[String]): Unit = {
-    val resolvedArgs = GlueArgParser
-      .getResolvedOptions(args, Array("class_name", "params", "extra_spark_conf"))
-      .asScala
-
-    val className = resolvedArgs.getOrElse("class_name", "")
-    val params    = resolvedArgs.getOrElse("params", "{}")
-
-    val sc      = new SparkContext()
-    val glueCtx = new GlueContext(sc)
-    val spark   = glueCtx.getSparkSession
-
-    val clazz    = Class.forName(className)
-    val instance = clazz.getDeclaredConstructor().newInstance()
-
-    // Prefer run(SparkSession, String); fall back to run(String).
-    try {
-      val m = clazz.getMethod(
-        "run",
-        classOf[org.apache.spark.sql.SparkSession],
-        classOf[String],
-      )
-      m.invoke(instance, spark, params)
-    } catch {
-      case _: NoSuchMethodException =>
-        val m = clazz.getMethod("run", classOf[String])
-        m.invoke(instance, params)
-    }
-  }
-}
+// Placeholder Scala script for AWS Glue Spark jobs - intentionally a no-op.
+//
+// AWS Glue requires a scriptLocation for every Scala job and COMPILES it before
+// the job runs, even when the real entry point is overridden via the `--class`
+// job parameter pointing at a class inside `--extra-jars`. Our Scala jobs ship
+// their logic in a precompiled JAR (passed via --extra-jars) and select the main
+// class with `--class`, so this file only needs to compile cleanly - it is never
+// executed.
+//
+// Keep this trivial: do NOT add imports or logic. Anything that fails to compile
+// on the Glue runtime's Scala version (e.g. Glue 5.0 = Scala 2.12) fails the whole
+// job before the JAR's `--class` main ever runs.
+//
+// AWS Glue job parameters (--class, --scriptLocation, --job-language, --extra-jars):
+// https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-etl-glue-arguments.html
 """

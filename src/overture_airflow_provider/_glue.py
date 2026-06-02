@@ -26,6 +26,20 @@ _GLUE_SCALA_CONF_EXCLUDE = frozenset(
 )
 
 
+def _conf_default_arg(spark_conf_dict: dict) -> str | None:
+    """Build Glue's native ``--conf`` DefaultArgument string from a Spark conf dict.
+
+    Excludes keys Glue can't honor at session-creation time (Maven coords, java
+    options). Returns ``None`` when nothing is left to inject. Used by both the
+    Scala and PySpark paths so catalogs/extensions register identically at
+    SparkSession bootstrap.
+    """
+    filtered = {k: v for k, v in spark_conf_dict.items() if k not in _GLUE_SCALA_CONF_EXCLUDE}
+    if not filtered:
+        return None
+    return " --conf ".join(f"{k}={v}" for k, v in filtered.items())
+
+
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     return json.dumps(
         {
@@ -278,6 +292,14 @@ def build_glue_operator_kwargs(
     }
 
     if module_name:
+        # Inject Iceberg / Spark conf into DefaultArguments as Glue's native --conf so the
+        # catalogs/extensions register at SparkSession bootstrap, before user code runs.
+        # Glue (not the runner) builds the session for PySpark jobs too, so legacy
+        # SparkSedonaJob.run() implementations that don't accept a `spark` kwarg still get
+        # the named catalogs. --extra_spark_conf is kept as the documented runner contract.
+        conf_arg = _conf_default_arg(spark_conf_dict)
+        if conf_arg:
+            glue_job_default_args["--conf"] = conf_arg
         script_args = {
             "--module_name": module_name,
             "--class_name": class_name,
@@ -300,12 +322,9 @@ def build_glue_operator_kwargs(
         # Glue applies this at session-creation time, before any user code runs, so the catalog
         # is registered even though the real entry point is the caller's --class in --extra-jars.
         # Format: "k1=v1 --conf k2=v2 ..." (combined with the "--conf" key itself by Glue).
-        scala_spark_conf = {
-            k: v for k, v in spark_conf_dict.items() if k not in _GLUE_SCALA_CONF_EXCLUDE
-        }
-        if scala_spark_conf:
-            entries = [f"{k}={v}" for k, v in scala_spark_conf.items()]
-            glue_job_default_args["--conf"] = " --conf ".join(entries)
+        conf_arg = _conf_default_arg(spark_conf_dict)
+        if conf_arg:
+            glue_job_default_args["--conf"] = conf_arg
         parsed_params = (
             json.loads(setup_info["parameters"])
             if isinstance(setup_info["parameters"], str)

@@ -259,7 +259,10 @@ def build_wherobots_operator_kwargs(
 
     if "spark.sql.defaultCatalog" in spark_configs:
         if not wherobots_role_arn:
-            raise ValueError("wherobots_role_arn is required when using Iceberg with Wherobots.")
+            raise ValueError(
+                "WherobotsConfig.role_arn is required when using Iceberg with Wherobots. "
+                'Set it via: WherobotsConfig(role_arn="arn:aws:iam::<account>:role/<role-name>", ...)'
+            )
         catalog_name = spark_configs["spark.sql.defaultCatalog"]
         spark_configs.update(
             {

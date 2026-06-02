@@ -35,9 +35,12 @@ function, so standard Jinja syntax works without any manual rendering::
         ...
     )
 
-Config dataclasses (``IcebergConfig``, ``WherobotsConfig``, etc.) are Python
+Config dataclasses (``WherobotsConfig``, ``GlueConfig``, etc.) are Python
 objects and are not Jinja-templatable; populate their fields from Airflow
-Variables or environment variables before constructing them.
+Variables or environment variables before constructing them. ``IcebergConfig``
+is the exception: its JSON config fields are forwarded as ``op_kwargs`` strings,
+so Jinja in them (e.g. ``{{ var.value.managed_bucket_iceberg }}``) renders at
+task execution time.
 
 See ``overture_airflow_provider.config`` for the dataclasses callers should
 construct.
@@ -353,9 +356,25 @@ def _spark_agnostic_task_group(
         spark_jar_paths: str = "",
         spark_cluster_desired_worker_cores: str = "",
         spark_cluster_desired_workers: str = "",
+        iceberg_primary_config: str = "{}",
+        iceberg_wherobots_config: str = "{}",
+        iceberg_s3tables_config: str = "{}",
+        iceberg_wherobots_s3tables_config: str = "{}",
     ):
-        """Compute merged Spark config and (for Databricks) the cluster spec."""
+        """Compute merged Spark config and (for Databricks) the cluster spec.
+
+        The four ``iceberg_*_config`` JSON strings are the ``IcebergConfig``
+        fields passed as ``op_kwargs`` (not the dataclass itself), so Airflow
+        renders any Jinja in them before this task runs. They are reassembled
+        into an ``IcebergConfig`` and the platform variant is selected here.
+        """
         full = rehydrate(setup_info)
+        iceberg_config = IcebergConfig(
+            spark_config=iceberg_primary_config,
+            wherobots_spark_config=iceberg_wherobots_config,
+            s3tables_spark_config=iceberg_s3tables_config,
+            wherobots_s3tables_spark_config=iceberg_wherobots_s3tables_config,
+        )
         return get_platform_handler(full["spark_family"], full).setup_cluster(
             python_packages=python_packages,
             spark_jar_paths=spark_jar_paths,
@@ -442,6 +461,7 @@ def _spark_agnostic_task_group(
         python_packages=python_packages,
     )
     jar_result = download_jars_task(setup_info=setup_result)
+    iceberg_config = iceberg_config or IcebergConfig()
     cluster_result = setup_cluster_task(
         setup_info=setup_result,
         extra_spark_conf=extra_spark_conf,
@@ -450,6 +470,10 @@ def _spark_agnostic_task_group(
         spark_jar_paths=spark_jar_paths,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        iceberg_primary_config=iceberg_config.spark_config,
+        iceberg_wherobots_config=iceberg_config.wherobots_spark_config,
+        iceberg_s3tables_config=iceberg_config.s3tables_spark_config,
+        iceberg_wherobots_s3tables_config=iceberg_config.wherobots_s3tables_spark_config,
     )
 
     execute_job_task(

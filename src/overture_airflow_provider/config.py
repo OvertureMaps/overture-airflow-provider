@@ -137,6 +137,11 @@ class IcebergConfig:
     platform family and merges them together. Pass only the variants you need;
     omit ``iceberg_config`` entirely for jobs that do not use Iceberg.
 
+    All four JSON config fields are forwarded to the task as ``op_kwargs``
+    strings, so Airflow Jinja in them (e.g. a warehouse ARN ending in
+    ``:bucket/{{ var.value.managed_bucket_iceberg }}``) is rendered at task
+    execution time — no need to resolve Variables before constructing this.
+
     Args:
         spark_config: Iceberg Spark config JSON string for Glue/Databricks.
             Defaults to ``"{}"`` (no Iceberg).

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
@@ -12,6 +13,20 @@ import boto3
 import requests
 from boto3.s3.transfer import S3Transfer
 from packaging.version import InvalidVersion, Version
+
+# Matches the ``password`` portion of a ``scheme://user:password@host`` URL so
+# it can be redacted before any URL (e.g. a CodeArtifact index URL embedding an
+# auth token) is logged or surfaced in an exception message.
+_URL_CREDENTIALS_RE = re.compile(r"(://[^/\s:@]+:)([^/\s@]+)(@)")
+
+
+def mask_url_credentials(text: str) -> str:
+    """Replace the password segment of any ``user:password@`` URL in ``text`` with ``***``.
+
+    Works on both bare URLs and free-form text (e.g. subprocess stderr) that may
+    contain one or more credential-bearing URLs.
+    """
+    return _URL_CREDENTIALS_RE.sub(r"\1***\3", text)
 
 
 class PackageVersionStrategy(Enum):
@@ -195,23 +210,28 @@ class PyPiDownloader:
             # We don't care if the package is incompatible with the local Airflow
             # python version; we only want to download it.
             "--ignore-requires-python",
-            "--index-url",
-            self.client.get_url(),
             "--dest",
             self.output_dir,
             *packages,
         ]
 
+        # The index URL embeds the CodeArtifact auth token. Pass it via the
+        # environment (PIP_INDEX_URL) instead of an ``--index-url`` argument so
+        # the token never appears in the process arguments, and therefore cannot
+        # leak through any subprocess error message that echoes the command line.
+        pip_env = {**os.environ, "PIP_INDEX_URL": self.client.get_url()}
+
         try:
             import sh
 
-            sh.pip(*pip_command)
+            sh.pip(*pip_command, _env=pip_env)
             logging.info("Successfully downloaded %s and dependencies.", packages)
         except sh.ErrorReturnCode as exc:
+            # Mask credentials in case pip echoed the index URL into stderr.
             logging.error(
                 "Error downloading pypi packages %s: %s",
                 packages,
-                exc.stderr.decode(),
+                mask_url_credentials(exc.stderr.decode()),
             )
             raise
 

@@ -7,6 +7,16 @@ populate ``airflow providers list`` output, and discover extra-links.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
+
+def _package_version() -> str:
+    """Resolve the installed package version, falling back when uninstalled."""
+    try:
+        return version("overture-airflow-provider")
+    except PackageNotFoundError:  # package not installed (e.g. source checkout)
+        return "0.0.0"
+
 
 def get_provider_info() -> dict:
     """Return Airflow provider metadata conforming to provider_info.schema.json."""
@@ -17,7 +27,7 @@ def get_provider_info() -> dict:
             "Airflow TaskGroup for submitting Spark jobs to AWS Glue, Databricks, "
             "or Wherobots Cloud from a single, platform-agnostic DAG entry point."
         ),
-        "versions": ["0.1.0"],
+        "versions": [_package_version()],
         "operators": [
             {
                 "integration-name": "Spark (Glue / Databricks / Wherobots)",

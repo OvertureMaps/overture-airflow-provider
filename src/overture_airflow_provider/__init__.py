@@ -15,9 +15,13 @@ caller actually touches a symbol that needs it.
 """
 
 from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("overture-airflow-provider")
+except PackageNotFoundError:  # package not installed (e.g. source checkout)
+    __version__ = "0.0.0"
 
 # name -> (submodule, attribute)
 _LAZY_IMPORTS = {

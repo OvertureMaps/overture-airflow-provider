@@ -35,8 +35,41 @@ Example::
     )
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def coerce_config_dict(value: Any, field_name: str = "config") -> dict:
+    """Coerce a JSON-string-or-dict config value into a dict.
+
+    JSON config fields (the four ``IcebergConfig`` variants, ``extra_spark_conf``)
+    are forwarded to tasks as JSON-string ``op_kwargs``. On DAGs with
+    ``render_template_as_native_obj=True`` Airflow's native renderer
+    ``literal_eval``s a rendered JSON-object string back into a dict before the
+    task runs, so the value can arrive already parsed. Accept both forms; reject
+    anything that does not denote a JSON object.
+
+    Args:
+        value: A dict (already parsed), a JSON object string, or a falsy/``"{}"``
+            placeholder meaning "no config".
+        field_name: Caller-facing field name used in error messages (e.g.
+            ``"IcebergConfig.spark_config"``).
+    """
+    if isinstance(value, dict):
+        return value
+    if not value or value == "{}":
+        return {}
+
+    try:
+        loaded = json.loads(value)
+    except (TypeError, ValueError) as exc:
+        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        raise ValueError(f"Invalid JSON in {field_name}: {detail}") from exc
+
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{field_name} must decode to a JSON object, got {type(loaded).__name__}")
+    return loaded
 
 
 @dataclass

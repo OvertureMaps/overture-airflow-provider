@@ -48,7 +48,6 @@ construct.
 
 import datetime
 import json
-from typing import Any
 
 from overture_airflow_provider._airflow_compat import task, task_group
 from overture_airflow_provider._setup import setup_spark_job
@@ -59,6 +58,7 @@ from overture_airflow_provider.config import (
     IcebergConfig,
     PackageRegistryConfig,
     WherobotsConfig,
+    coerce_config_dict,
 )
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
@@ -204,41 +204,6 @@ def spark_agnostic_mapped_task_group(
 # =============================================================================
 
 
-def _parse_json_or_dict(value: Any) -> dict:
-    """Accept either a parsed dict or a JSON string and return a dict."""
-    if isinstance(value, dict):
-        return value
-    if value and value != "{}":
-        return json.loads(value)
-    return {}
-
-
-def _load_json_config(raw: str | dict | None, field_name: str = "config") -> dict:
-    """Parse a JSON config string, returning an empty dict for falsy/empty values.
-
-    A dict is accepted as-is. The four ``IcebergConfig`` JSON strings are
-    forwarded as ``op_kwargs``; on DAGs with ``render_template_as_native_obj=True``
-    Airflow's native renderer ``literal_eval``s a rendered JSON-object string back
-    into a dict before the task runs, so ``raw`` arrives already parsed. This
-    mirrors ``_parse_json_or_dict`` used for ``extra_spark_conf``.
-    """
-    if isinstance(raw, dict):
-        return raw
-    if not raw or raw == "{}":
-        return {}
-
-    try:
-        loaded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in IcebergConfig.{field_name}: {exc.msg}") from exc
-
-    if not isinstance(loaded, dict):
-        raise ValueError(
-            f"IcebergConfig.{field_name} must decode to a JSON object, got {type(loaded).__name__}"
-        )
-    return loaded
-
-
 def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name: str) -> dict:
     """Pick the right Iceberg config variants for the resolved platform family.
 
@@ -250,17 +215,21 @@ def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name
         return {}
 
     if spark_family_name == "WHEROBOTS":
-        primary = _load_json_config(
-            iceberg_config.wherobots_spark_config, field_name="wherobots_spark_config"
+        primary = coerce_config_dict(
+            iceberg_config.wherobots_spark_config,
+            field_name="IcebergConfig.wherobots_spark_config",
         )
-        s3tables = _load_json_config(
+        s3tables = coerce_config_dict(
             iceberg_config.wherobots_s3tables_spark_config,
-            field_name="wherobots_s3tables_spark_config",
+            field_name="IcebergConfig.wherobots_s3tables_spark_config",
         )
     else:
-        primary = _load_json_config(iceberg_config.spark_config, field_name="spark_config")
-        s3tables = _load_json_config(
-            iceberg_config.s3tables_spark_config, field_name="s3tables_spark_config"
+        primary = coerce_config_dict(
+            iceberg_config.spark_config, field_name="IcebergConfig.spark_config"
+        )
+        s3tables = coerce_config_dict(
+            iceberg_config.s3tables_spark_config,
+            field_name="IcebergConfig.s3tables_spark_config",
         )
 
     if s3tables:
@@ -387,7 +356,7 @@ def _spark_agnostic_task_group(
         return get_platform_handler(full["spark_family"], full).setup_cluster(
             python_packages=python_packages,
             spark_jar_paths=spark_jar_paths,
-            extra_spark_conf=_parse_json_or_dict(extra_spark_conf),
+            extra_spark_conf=coerce_config_dict(extra_spark_conf, field_name="extra_spark_conf"),
             extra_spark_env_vars=extra_spark_env_vars,
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,

@@ -1128,7 +1128,7 @@ class TestWherobotsExecuteJob:
 
     def test_returns_job_url_in_result_after_execution(self):
         # Regression: execute_wherobots_job must return job_url so the final
-        # spark_agnostic XCom push (in spark_agnostic_taskgroup) preserves it.
+        # spark_agnostic XCom push (in spark_agnostic_task_group) preserves it.
         result, _ = self._run(simulate_submit=True)
         assert "job_url" in result
         assert result["job_url"].endswith("/runs/wb_run_123")

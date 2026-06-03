@@ -36,8 +36,19 @@ Example::
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any
+
+
+def _require_non_empty(cls_name: str, **fields: str) -> None:
+    """Raise ``ValueError`` for any required string field that is empty/blank.
+
+    Whitespace-only values are treated as empty so callers get a clear
+    construction-time error instead of a cryptic downstream AWS failure.
+    """
+    for name, value in fields.items():
+        if not value or not value.strip():
+            raise ValueError(f"{cls_name}.{name} must not be empty")
 
 
 def coerce_config_dict(value: Any, field_name: str = "config") -> dict:
@@ -101,6 +112,10 @@ class PackageRegistryConfig:
             (e.g. ``"maven/my-maven"``). Combined with the registry host to
             form the base Maven URL. Defaults to ``"maven/" + maven_repository``
             when empty.
+
+    Raises:
+        ValueError: If any required field (``domain_owner``, ``domain``,
+            ``repository``, ``region``) is empty or whitespace-only.
     """
 
     domain_owner: str
@@ -109,6 +124,27 @@ class PackageRegistryConfig:
     region: str = "us-east-1"
     maven_repository: str = ""
     maven_repository_path: str = ""
+    _validate: InitVar[bool] = True
+
+    def __post_init__(self, _validate: bool) -> None:
+        if not _validate:
+            return
+        _require_non_empty(
+            "PackageRegistryConfig",
+            domain_owner=self.domain_owner,
+            domain=self.domain,
+            repository=self.repository,
+            region=self.region,
+        )
+
+    @classmethod
+    def unset(cls) -> "PackageRegistryConfig":
+        """Build a disabled placeholder (registry not configured), skipping validation.
+
+        Used internally when a caller omits ``package_registry`` entirely; the
+        feature is treated as disabled rather than misconfigured.
+        """
+        return cls(domain_owner="", domain="", repository="", _validate=False)
 
 
 @dataclass
@@ -127,6 +163,9 @@ class ArtifactStoreConfig:
         force_pip_packages: Package-name substrings that must be installed via
             pip on the cluster instead of being uploaded as wheels (e.g.
             native packages needing platform-specific resolution at runtime).
+
+    Raises:
+        ValueError: If ``s3_bucket`` is empty or whitespace-only.
     """
 
     s3_bucket: str
@@ -153,6 +192,22 @@ class ArtifactStoreConfig:
             },
         )
     """
+
+    _validate: InitVar[bool] = True
+
+    def __post_init__(self, _validate: bool) -> None:
+        if not _validate:
+            return
+        _require_non_empty("ArtifactStoreConfig", s3_bucket=self.s3_bucket)
+
+    @classmethod
+    def unset(cls) -> "ArtifactStoreConfig":
+        """Build a disabled placeholder (asset store not configured), skipping validation.
+
+        Used internally when a caller omits ``artifact_store`` entirely; the
+        feature is treated as disabled rather than misconfigured.
+        """
+        return cls(s3_bucket="", _validate=False)
 
 
 @dataclass

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-03
+
+### Fixed
+
+- **IcebergConfig under native rendering (regression from
+  [#27](https://github.com/OvertureMaps/overture-airflow-provider/pull/27)):**
+  The four `IcebergConfig` JSON fields are forwarded as `setup_cluster_task`
+  `op_kwargs` so Airflow renders their Jinja at execution time. On DAGs with
+  `render_template_as_native_obj=True`, Airflow's native renderer `literal_eval`s
+  a rendered JSON-object string back into a `dict` before the task runs, so the
+  config arrived already parsed and the str-only parser raised
+  `TypeError: the JSON object must be str, bytes or bytearray, not dict`. The
+  config parsing now accepts an already-parsed `dict`.
+  ([#30](https://github.com/OvertureMaps/overture-airflow-provider/pull/30),
+  fixes [#29](https://github.com/OvertureMaps/overture-airflow-provider/issues/29))
+
+### Changed
+
+- Consolidated the three duplicate JSON-config parsers (`_parse_json_or_dict`,
+  and two copies of `_load_json_config` in `spark_agnostic_taskgroup` and
+  `render`) into a single `config.coerce_config_dict`. It is both validating
+  (field-named errors, must-be-a-JSON-object check) and tolerant of an
+  already-parsed `dict`. All four `IcebergConfig` variants (task group and
+  `render`) and `extra_spark_conf` now route through it; `extra_spark_conf`
+  gains the same object validation. A non-object payload — including a
+  native-rendered empty list — now raises a field-named error instead of being
+  silently dropped.
+
 ## [0.1.1] - 2026-06-02
 
 ### Fixed

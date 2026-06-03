@@ -77,6 +77,44 @@ class TestSelectIcebergConfPrimaryOnly:
             _select_iceberg_conf(cfg, "WHEROBOTS")
 
 
+class TestSelectIcebergConfDictInput:
+    """On DAGs with render_template_as_native_obj=True, Airflow's native renderer
+    literal_evals a rendered JSON-object op_kwarg back into a dict, so the
+    IcebergConfig fields arrive already parsed. _select_iceberg_conf must accept
+    dicts as well as JSON strings (regression for the json.loads(dict) TypeError).
+    """
+
+    def test_glue_accepts_dict_spark_config(self):
+        cfg = IcebergConfig(spark_config=_rest_catalog_config())
+        assert _select_iceberg_conf(cfg, "GLUE") == _rest_catalog_config()
+
+    def test_wherobots_accepts_dict_spark_config(self):
+        cfg = IcebergConfig(wherobots_spark_config=_wherobots_catalog_config())
+        assert _select_iceberg_conf(cfg, "WHEROBOTS") == _wherobots_catalog_config()
+
+    def test_glue_merges_dict_primary_and_dict_s3tables(self):
+        cfg = IcebergConfig(
+            spark_config=_rest_catalog_config(),
+            s3tables_spark_config=_s3tables_catalog_config(),
+        )
+        result = _select_iceberg_conf(cfg, "GLUE")
+        assert "spark.sql.catalog.iceberg_catalog" in result
+        assert "spark.sql.catalog.s3tables_catalog" in result
+
+    def test_dict_with_int_value_preserved(self):
+        """Spark config values may be ints (e.g. max-connections); native render
+        keeps them as ints in the dict, which must survive untouched."""
+        cfg = IcebergConfig(
+            spark_config={
+                "spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections": 3000
+            }
+        )
+        result = _select_iceberg_conf(cfg, "GLUE")
+        assert (
+            result["spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections"] == 3000
+        )
+
+
 class TestSelectIcebergConfS3Tables:
     def test_glue_merges_primary_and_s3tables(self):
         cfg = IcebergConfig(

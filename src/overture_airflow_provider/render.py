@@ -41,6 +41,7 @@ from overture_airflow_provider.config import (
     IcebergConfig,
     PackageRegistryConfig,
     WherobotsConfig,
+    coerce_config_dict,
 )
 from overture_airflow_provider.runner_assets import _RUNNER_FILES, _file_sha256, get_runner_path
 from overture_airflow_provider.spark import SparkFamily, SparkImpl, SparkSedona
@@ -126,24 +127,6 @@ def _jsonify(obj: Any) -> Any:
     return obj
 
 
-def _load_json_config(raw: str | None, field_name: str) -> dict[str, Any]:
-    """Parse a JSON config string and require a JSON object payload."""
-    if not raw or raw == "{}":
-        return {}
-
-    try:
-        loaded = json.loads(raw)
-    except (TypeError, ValueError) as exc:
-        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
-        raise ValueError(f"Invalid JSON in IcebergConfig.{field_name}: {detail}") from exc
-
-    if not isinstance(loaded, dict):
-        raise ValueError(
-            f"IcebergConfig.{field_name} must decode to a JSON object, got {type(loaded).__name__}"
-        )
-    return loaded
-
-
 def _select_iceberg_spark_config(
     iceberg_config: IcebergConfig | None, family: SparkFamily
 ) -> dict[str, Any]:
@@ -152,16 +135,19 @@ def _select_iceberg_spark_config(
         return {}
 
     if family == SparkFamily.WHEROBOTS:
-        primary = _load_json_config(iceberg_config.wherobots_spark_config, "wherobots_spark_config")
-        s3tables = _load_json_config(
+        primary = coerce_config_dict(
+            iceberg_config.wherobots_spark_config,
+            "IcebergConfig.wherobots_spark_config",
+        )
+        s3tables = coerce_config_dict(
             iceberg_config.wherobots_s3tables_spark_config,
-            "wherobots_s3tables_spark_config",
+            "IcebergConfig.wherobots_s3tables_spark_config",
         )
     else:
-        primary = _load_json_config(iceberg_config.spark_config, "spark_config")
-        s3tables = _load_json_config(
+        primary = coerce_config_dict(iceberg_config.spark_config, "IcebergConfig.spark_config")
+        s3tables = coerce_config_dict(
             iceberg_config.s3tables_spark_config,
-            "s3tables_spark_config",
+            "IcebergConfig.s3tables_spark_config",
         )
 
     return {**primary, **s3tables}

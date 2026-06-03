@@ -13,7 +13,10 @@ from unittest import mock
 
 from overture_airflow_provider._airflow_compat import DAG
 from overture_airflow_provider.config import IcebergConfig
-from overture_airflow_provider.spark_agnostic_taskgroup import spark_agnostic_task_group
+from overture_airflow_provider.spark_agnostic_taskgroup import (
+    _select_iceberg_conf,
+    spark_agnostic_task_group,
+)
 
 _WAREHOUSE_TEMPLATE = (
     "arn:aws:s3tables:us-west-2:123456789012:bucket/{{ var.value.managed_bucket_iceberg }}"
@@ -93,3 +96,46 @@ def test_no_iceberg_config_defaults_to_empty():
     assert op.op_kwargs["iceberg_wherobots_config"] == "{}"
     assert op.op_kwargs["iceberg_s3tables_config"] == "{}"
     assert op.op_kwargs["iceberg_wherobots_s3tables_config"] == "{}"
+
+
+def test_native_render_turns_op_kwarg_into_dict():
+    """On render_template_as_native_obj=True DAGs, Airflow's NativeEnvironment
+    literal_evals a rendered JSON-object op_kwarg into a dict. setup_cluster_task
+    reassembles IcebergConfig from these values, so _select_iceberg_conf must
+    tolerate dicts. Regression for: json.loads(dict) -> TypeError.
+    """
+    s3tables = {
+        "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.s3tables_catalog.warehouse": _WAREHOUSE_TEMPLATE,
+        "spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections": 3000,
+    }
+    # render_template_as_native_obj=True is the consumer-side DAG setting that
+    # triggers the bug; build it here so dag.get_template_env() is a
+    # NativeEnvironment and the rendered op_kwarg comes back as a dict.
+    with DAG(
+        dag_id="iceberg_native_probe",
+        schedule=None,
+        start_date=datetime.datetime(2026, 1, 1),
+        render_template_as_native_obj=True,
+    ) as dag:
+        spark_agnostic_task_group(
+            group_id="grp",
+            spark_impl_name="GLUE_v5",
+            sedona_version="1.7.0",
+            iceberg_config=IcebergConfig(spark_config=json.dumps(s3tables)),
+        )
+    op = dag.get_task("grp.setup_cluster")
+
+    _render(dag, op, "overture-managed-iceberg")
+
+    # NativeEnvironment converted the JSON-object string into a real dict.
+    rendered = op.op_kwargs["iceberg_primary_config"]
+    assert isinstance(rendered, dict)
+
+    # The reassembled IcebergConfig must resolve without raising.
+    cfg = IcebergConfig(spark_config=rendered)
+    result = _select_iceberg_conf(cfg, "GLUE")
+    assert result["spark.sql.catalog.s3tables_catalog.warehouse"].endswith(
+        ":bucket/overture-managed-iceberg"
+    )
+    assert result["spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections"] == 3000

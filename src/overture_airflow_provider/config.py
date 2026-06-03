@@ -46,26 +46,36 @@ def coerce_config_dict(value: Any, field_name: str = "config") -> dict:
     JSON config fields (the four ``IcebergConfig`` variants, ``extra_spark_conf``)
     are forwarded to tasks as JSON-string ``op_kwargs``. On DAGs with
     ``render_template_as_native_obj=True`` Airflow's native renderer
-    ``literal_eval``s a rendered JSON-object string back into a dict before the
-    task runs, so the value can arrive already parsed. Accept both forms; reject
-    anything that does not denote a JSON object.
+    ``literal_eval``s a rendered JSON payload into a native Python object before
+    the task runs, so the value can arrive already parsed (a dict for a JSON
+    object, but also a list/scalar for other JSON). Accept a dict or a JSON
+    object string; reject anything that does not denote a JSON object so
+    misconfiguration surfaces with a field-named error rather than being
+    silently dropped.
 
     Args:
-        value: A dict (already parsed), a JSON object string, or a falsy/``"{}"``
-            placeholder meaning "no config".
+        value: A dict (already parsed), a JSON object string, or one of the
+            "no config" placeholders ``None``, ``""``, or ``"{}"``.
         field_name: Caller-facing field name used in error messages (e.g.
             ``"IcebergConfig.spark_config"``).
     """
     if isinstance(value, dict):
         return value
-    if not value or value == "{}":
+
+    # Only these genuine placeholders mean "no config". A blanket falsy check
+    # would also swallow a native-rendered empty list/0/False as {}, masking a
+    # non-object payload that should raise.
+    if value is None or value == "" or value == "{}":
         return {}
 
-    try:
-        loaded = json.loads(value)
-    except (TypeError, ValueError) as exc:
-        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
-        raise ValueError(f"Invalid JSON in {field_name}: {detail}") from exc
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON in {field_name}: {exc.msg}") from exc
+    else:
+        # Native rendering already produced a Python object (e.g. a list).
+        loaded = value
 
     if not isinstance(loaded, dict):
         raise ValueError(f"{field_name} must decode to a JSON object, got {type(loaded).__name__}")

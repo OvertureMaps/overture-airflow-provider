@@ -37,3 +37,23 @@ def test_non_object_json_uses_field_name():
         match=r"IcebergConfig\.spark_config must decode to a JSON object, got list",
     ):
         coerce_config_dict("[]", field_name="IcebergConfig.spark_config")
+
+
+def test_native_rendered_empty_list_is_rejected_not_swallowed():
+    """A native-rendered empty JSON array is falsy but is NOT a "no config"
+    placeholder; it must raise rather than be silently treated as {}."""
+    with pytest.raises(
+        ValueError,
+        match=r"IcebergConfig\.spark_config must decode to a JSON object, got list",
+    ):
+        coerce_config_dict([], field_name="IcebergConfig.spark_config")
+
+
+def test_native_rendered_nonempty_list_is_rejected():
+    with pytest.raises(ValueError, match=r"must decode to a JSON object, got list"):
+        coerce_config_dict([{"a": 1}], field_name="IcebergConfig.spark_config")
+
+
+def test_native_rendered_scalar_is_rejected():
+    with pytest.raises(ValueError, match=r"must decode to a JSON object, got int"):
+        coerce_config_dict(0, field_name="extra_spark_conf")

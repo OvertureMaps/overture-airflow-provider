@@ -5,6 +5,20 @@ The ``execute_spark_job`` task pushes a JSON blob to XCom under the key
 ``job_url`` field so Airflow can render a clickable link on the task-instance
 detail page.
 
+Airflow 3.x flow
+----------------
+After the task completes, the task runner calls ``get_link`` and pushes the
+returned URL to the ``_link_SparkJobLink`` XCom key.  The web server reads
+that key directly — it never calls ``get_link`` itself.
+
+``XCom`` is imported via ``_airflow_compat`` so the correct implementation is
+used in each Airflow generation:
+
+- **Airflow 3.x**: ``airflow.sdk.execution_time.xcom.XCom`` (SUPERVISOR_COMMS
+  backed, available in the task-runner context where ``get_link`` is called).
+- **Airflow 2.x**: ``airflow.models.xcom.XCom`` (SQLAlchemy backed, available
+  in the web-server context where ``get_link`` is called in Airflow 2.x).
+
 Supported platforms and their link targets:
 - **Glue** — AWS Glue job-run console URL
 - **Databricks** — Databricks run-page URL
@@ -31,6 +45,7 @@ Alternatively, downstream tasks can read the URL directly from XCom::
         task_ids="my_job.execute_spark_job",
         key="spark_agnostic",
     )
+    # value is a JSON string; parse it to extract job_url
     job_url = json.loads(url).get("job_url")
 """
 
@@ -39,9 +54,7 @@ from __future__ import annotations
 import json
 import logging
 
-from airflow.models.xcom import XCom
-
-from overture_airflow_provider._airflow_compat import BaseOperatorLink
+from overture_airflow_provider._airflow_compat import BaseOperatorLink, XCom
 
 log = logging.getLogger(__name__)
 
@@ -53,9 +66,8 @@ class SparkJobLink(BaseOperatorLink):
     """Clickable link to the platform-native Spark job console.
 
     Reads ``job_url`` from the ``spark_agnostic`` XCom pushed by the
-    ``execute_spark_job`` task.  Returns ``None`` when the platform does not
-    provide a console URL (e.g. the job has not run yet or the platform
-    doesn't expose one).
+    ``execute_spark_job`` task.  Returns ``""`` when the platform does not
+    provide a console URL or the XCom is not yet available.
     """
 
     name = "Spark Job"
@@ -66,8 +78,8 @@ class SparkJobLink(BaseOperatorLink):
         *,
         ti_key=None,
         dttm=None,
-    ) -> str | None:
-        # ti_key-based lookup — preferred path (Airflow 2.3+ / dynamic mapping).
+    ) -> str:
+        # ti_key-based lookup — Airflow 2.3+ and all of Airflow 3.x.
         if ti_key is not None:
             raw = XCom.get_value(key=SPARK_AGNOSTIC_XCOM_KEY, ti_key=ti_key)
         else:
@@ -81,9 +93,11 @@ class SparkJobLink(BaseOperatorLink):
             )
 
         if not raw:
-            return None
+            return ""
         try:
-            return json.loads(raw).get("job_url")
-        except (json.JSONDecodeError, AttributeError):
+            if isinstance(raw, dict):
+                return raw.get("job_url") or ""
+            return json.loads(raw).get("job_url") or ""
+        except (json.JSONDecodeError, AttributeError, TypeError):
             log.debug("SparkJobLink: could not parse spark_agnostic XCom value")
-            return None
+            return ""

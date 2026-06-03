@@ -1084,16 +1084,30 @@ class TestSparkJobLink:
 
         assert url == "https://example.com/runs/456"
 
-    def test_returns_none_when_xcom_absent(self):
+    def test_returns_url_from_dict_xcom(self):
+        """Airflow 3.x may deserialize the XCom value to a dict directly."""
+        link = self._make_link()
+        operator = self._make_operator()
+        ti_key = MagicMock()
+
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            return_value={"job_url": "https://example.com/runs/789"},
+        ):
+            url = link.get_link(operator, ti_key=ti_key)
+
+        assert url == "https://example.com/runs/789"
+
+    def test_returns_empty_string_when_xcom_absent(self):
         link = self._make_link()
         operator = self._make_operator()
 
         with patch("overture_airflow_provider.links.XCom.get_value", return_value=None):
             url = link.get_link(operator, ti_key=MagicMock())
 
-        assert url is None
+        assert url == ""
 
-    def test_returns_none_when_job_url_missing_from_payload(self):
+    def test_returns_empty_string_when_job_url_missing_from_payload(self):
         link = self._make_link()
         operator = self._make_operator()
         payload = json.dumps({"status": "RUNNING"})
@@ -1101,13 +1115,13 @@ class TestSparkJobLink:
         with patch("overture_airflow_provider.links.XCom.get_value", return_value=payload):
             url = link.get_link(operator, ti_key=MagicMock())
 
-        assert url is None
+        assert url == ""
 
-    def test_returns_none_on_malformed_json(self):
+    def test_returns_empty_string_on_malformed_json(self):
         link = self._make_link()
         operator = self._make_operator()
 
         with patch("overture_airflow_provider.links.XCom.get_value", return_value="not-json{"):
             url = link.get_link(operator, ti_key=MagicMock())
 
-        assert url is None
+        assert url == ""

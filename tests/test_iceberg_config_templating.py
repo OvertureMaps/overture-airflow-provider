@@ -23,12 +23,11 @@ _WAREHOUSE_TEMPLATE = (
 )
 
 
-def _build_setup_cluster_op(iceberg_config, render_native=False):
+def _build_setup_cluster_op(iceberg_config):
     with DAG(
         dag_id="iceberg_templating_probe",
         schedule=None,
         start_date=datetime.datetime(2026, 1, 1),
-        render_template_as_native_obj=render_native,
     ) as dag:
         spark_agnostic_task_group(
             group_id="grp",
@@ -110,9 +109,22 @@ def test_native_render_turns_op_kwarg_into_dict():
         "spark.sql.catalog.s3tables_catalog.warehouse": _WAREHOUSE_TEMPLATE,
         "spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections": 3000,
     }
-    dag, op = _build_setup_cluster_op(
-        IcebergConfig(spark_config=json.dumps(s3tables)), render_native=True
-    )
+    # render_template_as_native_obj=True is the consumer-side DAG setting that
+    # triggers the bug; build it here so dag.get_template_env() is a
+    # NativeEnvironment and the rendered op_kwarg comes back as a dict.
+    with DAG(
+        dag_id="iceberg_native_probe",
+        schedule=None,
+        start_date=datetime.datetime(2026, 1, 1),
+        render_template_as_native_obj=True,
+    ) as dag:
+        spark_agnostic_task_group(
+            group_id="grp",
+            spark_impl_name="GLUE_v5",
+            sedona_version="1.7.0",
+            iceberg_config=IcebergConfig(spark_config=json.dumps(s3tables)),
+        )
+    op = dag.get_task("grp.setup_cluster")
 
     _render(dag, op, "overture-managed-iceberg")
 

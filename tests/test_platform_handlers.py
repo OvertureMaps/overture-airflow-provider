@@ -1125,3 +1125,95 @@ class TestWherobotsExecuteJob:
         calls = kwargs["context"]["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
+
+    def test_returns_job_url_in_result_after_execution(self):
+        # Regression: execute_wherobots_job must return job_url so the final
+        # spark_agnostic XCom push (in spark_agnostic_taskgroup) preserves it.
+        result, _ = self._run(simulate_submit=True)
+        assert "job_url" in result
+        assert result["job_url"].endswith("/runs/wb_run_123")
+        assert "api." not in result["job_url"]
+
+    def test_returns_no_job_url_when_run_id_never_pushed(self):
+        # When the operator never pushes run_id (e.g. dry-run / mock with no submit),
+        # job_url should be absent rather than present with a None/empty value.
+        result, _ = self._run(simulate_submit=False)
+        assert "job_url" not in result
+
+
+class TestSparkJobLink:
+    """Tests for SparkJobLink.get_link."""
+
+    def _make_link(self):
+        from overture_airflow_provider.links import SparkJobLink
+
+        return SparkJobLink()
+
+    def _make_operator(self, dag_id="test_dag", task_id="execute_spark_job"):
+        op = MagicMock()
+        op.dag_id = dag_id
+        op.task_id = task_id
+        return op
+
+    def test_returns_url_from_xcom_via_ti_key(self):
+        link = self._make_link()
+        operator = self._make_operator()
+        ti_key = MagicMock()
+        payload = json.dumps({"job_url": "https://example.com/runs/123"})
+
+        with patch("overture_airflow_provider.links.XCom.get_value", return_value=payload):
+            url = link.get_link(operator, ti_key=ti_key)
+
+        assert url == "https://example.com/runs/123"
+
+    def test_returns_url_from_xcom_via_dttm_fallback(self):
+        link = self._make_link()
+        operator = self._make_operator()
+        payload = json.dumps({"job_url": "https://example.com/runs/456"})
+
+        with patch("overture_airflow_provider.links.XCom.get_one", return_value=payload):
+            url = link.get_link(operator, dttm=MagicMock())
+
+        assert url == "https://example.com/runs/456"
+
+    def test_returns_url_from_dict_xcom(self):
+        """Airflow 3.x may deserialize the XCom value to a dict directly."""
+        link = self._make_link()
+        operator = self._make_operator()
+        ti_key = MagicMock()
+
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            return_value={"job_url": "https://example.com/runs/789"},
+        ):
+            url = link.get_link(operator, ti_key=ti_key)
+
+        assert url == "https://example.com/runs/789"
+
+    def test_returns_empty_string_when_xcom_absent(self):
+        link = self._make_link()
+        operator = self._make_operator()
+
+        with patch("overture_airflow_provider.links.XCom.get_value", return_value=None):
+            url = link.get_link(operator, ti_key=MagicMock())
+
+        assert url == ""
+
+    def test_returns_empty_string_when_job_url_missing_from_payload(self):
+        link = self._make_link()
+        operator = self._make_operator()
+        payload = json.dumps({"status": "RUNNING"})
+
+        with patch("overture_airflow_provider.links.XCom.get_value", return_value=payload):
+            url = link.get_link(operator, ti_key=MagicMock())
+
+        assert url == ""
+
+    def test_returns_empty_string_on_malformed_json(self):
+        link = self._make_link()
+        operator = self._make_operator()
+
+        with patch("overture_airflow_provider.links.XCom.get_value", return_value="not-json{"):
+            url = link.get_link(operator, ti_key=MagicMock())
+
+        assert url == ""

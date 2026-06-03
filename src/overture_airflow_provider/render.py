@@ -405,10 +405,8 @@ def render_spark_job(
     run; otherwise placeholder URIs (``s3://.../REPLACE-ME.whl``) are emitted
     so the operator kwargs structure is still complete.
     """
-    package_registry = package_registry or PackageRegistryConfig(
-        domain_owner="", domain="", repository=""
-    )
-    artifact_store = artifact_store or ArtifactStoreConfig(s3_bucket="")
+    package_registry = package_registry or PackageRegistryConfig.unset()
+    artifact_store = artifact_store or ArtifactStoreConfig.unset()
     glue_config = glue_config or GlueConfig()
     databricks_config = databricks_config or DatabricksConfig()
     wherobots_config = wherobots_config or WherobotsConfig()

@@ -410,11 +410,12 @@ def execute_wherobots_job(
     ti = context.get("ti") if hasattr(context, "get") else None
     original_xcom_push = getattr(ti, "xcom_push", None)
     early_xcom_pushed = False
+    captured_job_url = None
 
     if callable(original_xcom_push):
 
         def _xcom_push_with_early_agnostic(*args, **kwargs):
-            nonlocal early_xcom_pushed
+            nonlocal early_xcom_pushed, captured_job_url
             result = original_xcom_push(*args, **kwargs)
             key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
             value = (
@@ -428,6 +429,7 @@ def execute_wherobots_job(
                         value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
                     )
                     early_xcom_pushed = True
+                    captured_job_url = job_url
             return result
 
         ti.xcom_push = _xcom_push_with_early_agnostic
@@ -438,4 +440,7 @@ def execute_wherobots_job(
         if callable(original_xcom_push):
             ti.xcom_push = original_xcom_push
 
-    return {"platform_operator": platform_operator}
+    result = {"platform_operator": platform_operator}
+    if captured_job_url:
+        result["job_url"] = captured_job_url
+    return result

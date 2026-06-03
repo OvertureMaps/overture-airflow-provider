@@ -213,8 +213,17 @@ def _parse_json_or_dict(value: Any) -> dict:
     return {}
 
 
-def _load_json_config(raw: str | None, field_name: str = "config") -> dict:
-    """Parse a JSON config string, returning an empty dict for falsy/empty values."""
+def _load_json_config(raw: str | dict | None, field_name: str = "config") -> dict:
+    """Parse a JSON config string, returning an empty dict for falsy/empty values.
+
+    A dict is accepted as-is. The four ``IcebergConfig`` JSON strings are
+    forwarded as ``op_kwargs``; on DAGs with ``render_template_as_native_obj=True``
+    Airflow's native renderer ``literal_eval``s a rendered JSON-object string back
+    into a dict before the task runs, so ``raw`` arrives already parsed. This
+    mirrors ``_parse_json_or_dict`` used for ``extra_spark_conf``.
+    """
+    if isinstance(raw, dict):
+        return raw
     if not raw or raw == "{}":
         return {}
 

@@ -40,10 +40,8 @@ def setup_spark_job(
     (``spark_impl``, ``spark_family``, ``py_pi_client``) which are stripped
     before XCom push and rehydrated downstream.
     """
-    package_registry = package_registry or PackageRegistryConfig(
-        domain_owner="", domain="", repository=""
-    )
-    artifact_store = artifact_store or ArtifactStoreConfig(s3_bucket="")
+    package_registry = package_registry or PackageRegistryConfig.unset()
+    artifact_store = artifact_store or ArtifactStoreConfig.unset()
     glue_config = glue_config or GlueConfig()
     databricks_config = databricks_config or DatabricksConfig()
     wherobots_config = wherobots_config or WherobotsConfig()

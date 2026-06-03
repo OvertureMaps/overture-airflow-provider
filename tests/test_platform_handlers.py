@@ -1,6 +1,7 @@
 """Tests for SparkPlatformHandler subclasses."""
 
 import json
+from collections.abc import Mapping
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,26 @@ from overture_airflow_provider.spark_platform_handlers import (
 
 _ICEBERG_WHEROBOTS_KEY = "spark.sql.catalog.iceberg_catalog.catalog-impl"
 _ICEBERG_WHEROBOTS_IMPL = "org.apache.iceberg.aws.glue.GlueCatalog"
+
+
+class _AirflowContext(Mapping):
+    """A Mapping that is NOT a dict subclass.
+
+    Simulates the Airflow 3.x task Context, which is a Mapping but fails
+    ``isinstance(ctx, dict)`` (regression guard for issue #33).
+    """
+
+    def __init__(self, data):
+        self._data = dict(data)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
 
 
 _DEFAULT_PROVIDER_KEYS = {
@@ -213,13 +234,13 @@ class TestGlueSetupCluster:
 
 
 class TestGlueExecuteJob:
-    def _make_context(self):
-        ctx = {
+    def _make_context(self, mapping=False):
+        data = {
             "ti": MagicMock(),
             "dag": MagicMock(dag_id="test_dag"),
         }
-        ctx["ti"].task_id = "execute_spark_job"
-        return ctx
+        data["ti"].task_id = "execute_spark_job"
+        return _AirflowContext(data) if mapping else data
 
     def _run_glue(
         self,
@@ -230,6 +251,7 @@ class TestGlueExecuteJob:
         desired_workers="",
         iam_role_name="AWSGlueServiceRole",
         simulate_submit=False,
+        mapping_context=False,
     ):
         from overture_airflow_provider._glue import execute_glue_job
 
@@ -279,7 +301,7 @@ class TestGlueExecuteJob:
                 },
             ),
         ):
-            context = self._make_context()
+            context = self._make_context(mapping=mapping_context)
             result = execute_glue_job(
                 setup_info=setup_info,
                 package_info=package_info,
@@ -352,6 +374,14 @@ class TestGlueExecuteJob:
         payload = json.loads(spark_agnostic_calls[0].kwargs["value"])
         assert payload["job_url"].endswith("/run/jr_early123")
         assert payload["status"] == "RUNNING"
+
+    def test_early_xcom_push_fires_with_non_dict_context(self):
+        # Airflow 3.x passes a Mapping Context (not a dict). Regression for #33.
+        _, captured = self._run_glue(simulate_submit=True, mapping_context=True)
+        assert not isinstance(captured["context"], dict)
+        calls = captured["context"]["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls
 
     # ------------------------------------------------------------------
     # Scala --conf injection (Iceberg catalog registration)
@@ -750,6 +780,59 @@ class TestDatabricksExecuteJob:
         assert payload["job_url"] == "https://dbc.example/runs/12345"
         assert payload["status"] == "RUNNING"
 
+    def test_early_xcom_push_fires_with_non_dict_context(self):
+        # Airflow 3.x passes a Mapping Context (not a dict). Regression for #33.
+        from overture_airflow_provider._databricks import execute_databricks_job
+
+        setup_info = _databricks_setup_info()
+        cluster_info = {
+            "new_cluster": {"spark_version": "15.4.x-scala2.12"},
+            "libraries": [],
+            "databricks_conf": {"databricks_conn_id": "databricks_default"},
+            "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
+        }
+        context = _AirflowContext({"ti": MagicMock()})
+
+        mock_operator = MagicMock()
+
+        def fake_execute(ctx):
+            ctx["ti"].xcom_push(key="run_id", value="12345")
+            ctx["ti"].xcom_push(key="run_page_url", value="https://dbc.example/runs/12345")
+
+        mock_operator.execute.side_effect = fake_execute
+        mock_operator.xcom_pull.side_effect = lambda _ctx, key: {
+            "run_id": "12345",
+            "run_page_url": "https://dbc.example/runs/12345",
+        }[key]
+
+        mock_hook = MagicMock()
+        mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
+
+        with (
+            patch(
+                "airflow.providers.databricks.operators.databricks.DatabricksSubmitRunOperator",
+                return_value=mock_operator,
+            ),
+            patch(
+                "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+                return_value=mock_hook,
+            ),
+        ):
+            execute_databricks_job(
+                setup_info=setup_info,
+                cluster_info=cluster_info,
+                module_name="my_module",
+                class_name="MyClass",
+                parameters='{"key":"value"}',
+                task_id="execute_spark_job",
+                context=context,
+            )
+
+        assert not isinstance(context, dict)
+        calls = context["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls
+
 
 class TestWherobotsSetupCluster:
     def _run(self, extra_spark_conf=None, iceberg_spark_config=None):
@@ -814,6 +897,7 @@ class TestWherobotsExecuteJob:
         jar_info=None,
         parameters='{"key": "value"}',
         simulate_submit=False,
+        mapping_context=False,
     ):
         from overture_airflow_provider._wherobots import execute_wherobots_job
 
@@ -832,7 +916,7 @@ class TestWherobotsExecuteJob:
             jar_info = {"jars_s3": []}
 
         captured_operator_kwargs = {}
-        context = {"ti": MagicMock()}
+        context = _AirflowContext({"ti": MagicMock()}) if mapping_context else {"ti": MagicMock()}
 
         mock_operator = MagicMock()
         if simulate_submit:
@@ -1033,3 +1117,11 @@ class TestWherobotsExecuteJob:
         assert payload["job_url"].endswith("/runs/wb_run_123")
         assert "api." not in payload["job_url"]
         assert payload["status"] == "RUNNING"
+
+    def test_early_xcom_push_fires_with_non_dict_context(self):
+        # Airflow 3.x passes a Mapping Context (not a dict). Regression for #33.
+        _, kwargs = self._run(simulate_submit=True, mapping_context=True)
+        assert not isinstance(kwargs["context"], dict)
+        calls = kwargs["context"]["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls

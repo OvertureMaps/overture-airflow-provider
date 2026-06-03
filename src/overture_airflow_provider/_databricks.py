@@ -415,7 +415,7 @@ def execute_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
-    ti = context.get("ti") if isinstance(context, dict) else None
+    ti = context.get("ti") if hasattr(context, "get") else None
     original_xcom_push = getattr(ti, "xcom_push", None)
     early_xcom_pushed = False
 

@@ -45,6 +45,10 @@ def _render(dag, op, bucket):
     context = {
         "ti": mock.MagicMock(),
         "task_instance": mock.MagicMock(),
+        # Airflow 2.x XComArg.resolve() reads this key for upstream map-index
+        # lookup; absent on the 3.x render path. Supplied here so the shared
+        # render path runs identically on both Airflow generations.
+        "expanded_ti_count": None,
         "var": SimpleNamespace(value=SimpleNamespace(managed_bucket_iceberg=bucket)),
     }
     op.render_template_fields(context, jinja_env=dag.get_template_env())

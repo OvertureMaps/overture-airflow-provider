@@ -42,10 +42,44 @@ jobs:
       - name: Run pytest
         run: uv run pytest -v
 
+  pytest-airflow2:
+    name: pytest (Airflow 2.11)
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read  # checkout only
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      # The committed lock pins Airflow 3.x. This leg instead pins Airflow 2.11
+      # via Airflow's official constraints so the 2.x compat branch (which
+      # downstream consumers run) is exercised. 2.11 supports Python 3.9-3.12,
+      # so it runs on 3.12. ruff is intentionally omitted (lint has its own
+      # workflow, and the 2.11 constraints pin ruff<0.6); only the test runners
+      # are installed, unconstrained, on top of the constrained runtime.
+      - name: Create Airflow 2.11 environment
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[all]" "apache-airflow==2.11.*" \
+            --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.11.0/constraints-3.12.txt
+          uv pip install "pytest>=8.0" "pytest-mock>=3.12"
+
+      - name: Run pytest
+        run: .venv/bin/pytest -v
+
   all-pass:
     name: All pytest versions passed
     runs-on: ubuntu-slim
-    needs: pytest
+    needs: [pytest, pytest-airflow2]
     if: always()
     steps:
       - uses: lowlydba/are-we-good@bb8ee9e793e4233fac1992bb880e2a28bed7f42f # v1.0.3

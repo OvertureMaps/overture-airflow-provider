@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45),
   fixes [#46](https://github.com/OvertureMaps/overture-airflow-provider/issues/46))
 
+### Fixed
+
+- **Glue deferral resume crashed with `KeyError: 'run_id'`.** On resume,
+  `GluePlatformHandler.complete_job` read the run id from the trigger event under
+  `run_id`, but the upstream `GlueJobCompleteTrigger` follows the
+  `AwsBaseWaiterTrigger` contract and emits it under `value`. The handler now
+  reads `value` (with a `run_id` fallback), so a successful Glue job resumes and
+  finalizes correctly. Caught by a live smoke test.
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
+
 ## [0.2.0] - 2026-06-10
 
 ### Changed

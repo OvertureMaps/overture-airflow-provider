@@ -539,6 +539,39 @@ class TestCompleteGlueJob:
             self._run("ERROR")
 
 
+class TestGlueHandlerCompleteJobEventContract:
+    """GlueJobCompleteTrigger emits the run id under "value" (AwsBaseWaiterTrigger
+    contract), not "run_id" like the Databricks trigger. Regression for the live
+    KeyError: 'run_id' bug.
+    """
+
+    def _complete(self, event):
+        handler = GluePlatformHandler(_glue_setup_info())
+        captured = {}
+
+        def _fake_complete(setup_info, run_id, context):
+            captured["run_id"] = run_id
+            return {"job_url": "https://example/run/x", "status": "SUCCEEDED"}
+
+        with patch(
+            "overture_airflow_provider._glue.complete_glue_job",
+            side_effect=_fake_complete,
+        ):
+            handler.complete_job(event, {"ti": MagicMock()})
+        return captured["run_id"]
+
+    def test_reads_value_key_from_glue_trigger_event(self):
+        # Shape emitted live by GlueJobCompleteTrigger.
+        event = {"status": "success", "message": "Job done", "value": "jr_34fddb5c"}
+        assert self._complete(event) == "jr_34fddb5c"
+
+    def test_falls_back_to_run_id_key(self):
+        assert self._complete({"run_id": "jr_legacy"}) == "jr_legacy"
+
+    def test_none_event_yields_none_run_id(self):
+        assert self._complete(None) is None
+
+
 class TestDatabricksSetupCluster:
     def _run(
         self,

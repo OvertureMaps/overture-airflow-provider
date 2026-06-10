@@ -210,7 +210,12 @@ class GluePlatformHandler(SparkPlatformHandler):
     ) -> dict:
         from overture_airflow_provider._glue import complete_glue_job
 
-        run_id = event["run_id"] if event else None
+        # GlueJobCompleteTrigger follows the AwsBaseWaiterTrigger contract and
+        # emits the job run id under "value" (not "run_id" like the Databricks
+        # trigger). Accept both so we're robust to either contract.
+        run_id = None
+        if event:
+            run_id = event.get("run_id") or event.get("value")
         return complete_glue_job(self.setup_info, run_id, context)
 
 

@@ -792,16 +792,22 @@ class TestDatabricksSubmitJob:
     }
 
     def _run(self, context):
+        from overture_airflow_provider._airflow_compat import TaskDeferred
         from overture_airflow_provider._databricks import submit_databricks_job
+
+        mock_trigger = MagicMock(
+            name="DatabricksExecutionTrigger",
+            run_page_url="https://dbc.example/runs/12345",
+        )
 
         mock_operator = MagicMock()
         mock_operator.run_id = "12345"
-        # Synchronous: execute() blocks and returns (no TaskDeferred).
-        mock_operator.execute.return_value = None
+        mock_operator.execute.side_effect = TaskDeferred(
+            trigger=mock_trigger, method_name="execute_complete"
+        )
 
         mock_hook = MagicMock()
         mock_hook.get_run_page_url.return_value = "https://dbc.example/runs/12345"
-        mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
 
         with (
             patch(
@@ -825,16 +831,17 @@ class TestDatabricksSubmitJob:
             )
         return result
 
-    def test_returns_result_and_run_id_synchronous(self):
-        # Databricks runs synchronously: submit returns the final result with
-        # trigger=None, so the operator finalizes without deferring (same
-        # contract as Wherobots; only Glue defers).
+    def test_returns_trigger_and_run_id(self):
+        # Databricks runs synchronously in this release (deferral descoped), so
+        # the operator no longer sets deferrable=True. This test forces a
+        # TaskDeferred to exercise the RETAINED trigger-reuse machinery in
+        # submit_databricks_job, which makes re-enabling deferral a one-flag
+        # change. The synchronous production path is covered by
+        # test_synchronous_completion_returns_result_without_trigger.
         result = self._run({"ti": MagicMock()})
         assert result["run_id"] == "12345"
-        assert result["trigger"] is None
+        assert result["trigger"] is not None
         assert result["run_page_url"] == "https://dbc.example/runs/12345"
-        assert result["result"]["job_url"] == "https://dbc.example/runs/12345"
-        assert "status" in result["result"]
 
     def test_pushes_spark_agnostic_xcom_after_submission(self):
         context = {"ti": MagicMock()}
@@ -856,9 +863,9 @@ class TestDatabricksSubmitJob:
         assert spark_agnostic_calls
 
     def test_operator_kwargs_synchronous_no_deferrable(self):
-        # Databricks runs synchronously: no deferrable flag is set, but
+        # Databricks deferral is descoped (Glue-only deferral ships first); the
+        # operator runs synchronously, so no deferrable flag is set but
         # wait_for_termination stays True so execute() blocks to completion.
-        # (Only Glue defers.)
         from overture_airflow_provider._databricks import build_databricks_operator_kwargs
 
         result = build_databricks_operator_kwargs(
@@ -870,6 +877,45 @@ class TestDatabricksSubmitJob:
         )
         assert "deferrable" not in result["operator_kwargs"]
         assert result["operator_kwargs"]["wait_for_termination"] is True
+
+    def test_synchronous_completion_returns_result_without_trigger(self):
+        # If the run reaches a terminal (successful) state within the submit
+        # window, DatabricksSubmitRunOperator.execute() returns normally instead
+        # of raising TaskDeferred. We must finalize with a result, not crash.
+        from overture_airflow_provider._databricks import submit_databricks_job
+
+        mock_operator = MagicMock()
+        mock_operator.run_id = "12345"
+        mock_operator.execute.return_value = None  # no TaskDeferred -> synchronous
+
+        mock_hook = MagicMock()
+        mock_hook.get_run_page_url.return_value = "https://dbc.example/runs/12345"
+        mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
+
+        with (
+            patch(
+                "airflow.providers.databricks.operators.databricks.DatabricksSubmitRunOperator",
+                return_value=mock_operator,
+            ),
+            patch(
+                "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+                return_value=mock_hook,
+            ),
+            patch("overture_airflow_provider._databricks.preflight_databricks_runner"),
+        ):
+            result = submit_databricks_job(
+                setup_info=_databricks_setup_info(),
+                cluster_info=self._CLUSTER_INFO,
+                module_name="my_module",
+                class_name="MyClass",
+                parameters='{"key":"value"}',
+                task_id="execute_spark_job",
+                context={"ti": MagicMock()},
+            )
+
+        assert result["trigger"] is None
+        assert result["result"]["job_url"] == "https://dbc.example/runs/12345"
+        assert "status" in result["result"]
 
 
 class TestCompleteDatabricksJob:

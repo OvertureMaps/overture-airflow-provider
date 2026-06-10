@@ -9,17 +9,15 @@ Airflow resumes it correctly after the platform trigger fires.
 
 Flow:
 
-- ``execute`` resolves the platform handler, submits the job, and either defers
-  on the provider trigger (Glue) or returns the synchronous result (Databricks,
-  Wherobots). Databricks deferral is descoped for now and tracked for a
-  follow-up; the operator handles both a deferred trigger and a synchronous
-  result uniformly.
+- ``execute`` resolves the platform handler, submits the job non-blocking, and
+  either defers on the provider trigger (Glue, Databricks) or returns the
+  synchronous result (Wherobots).
 - ``execute_complete`` resolves the deferred run into the final result and
   pushes the cross-platform ``spark_agnostic`` XCom that ``SparkJobLink`` reads.
 
-For deferred (Glue) runs the worker slot is released the moment the job is
-submitted; the Triggerer polls via asyncio until completion, so long Spark jobs
-no longer pin a Celery worker for hours.
+The worker slot is released the moment the job is submitted; the Triggerer
+polls via asyncio until completion, so long Spark jobs no longer pin a Celery
+worker for hours.
 """
 
 import datetime

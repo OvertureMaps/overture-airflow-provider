@@ -178,6 +178,15 @@ pipeline. The advisory preflight checks **both** assets and warns (without
 failing) if either appears missing; a genuinely missing init script still
 surfaces authoritatively as a Databricks cluster-launch error at run time.
 
+> **Note (upstream log noise):** while a Databricks job is deferred, the
+> Triggerer may log `aiohttp` "Unclosed client session / connector" *ERROR*
+> lines. These originate in the upstream
+> `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async
+> client is not explicitly closed on the event loop), not in this provider. The
+> task defers, polls, and resumes correctly regardless. This provider
+> deliberately reuses the installed provider's trigger, so it does not fork the
+> trigger to silence the message.
+
 ## Local rendering (testing without Airflow)
 
 The `overture_airflow_provider.render` module produces the exact platform

@@ -497,16 +497,11 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
-        # Databricks deferral is descoped from this change set (Glue-only
-        # deferral ships first; deferrable Databricks is tracked for a
-        # follow-up). The operator therefore runs SYNCHRONOUSLY: with
-        # wait_for_termination=True and no deferrable flag, execute() blocks
-        # until the run terminates, returning on success or raising on failure.
-        # The submit_databricks_job synchronous path handles that return.
-        # Re-enabling deferral later is a one-line change: add
-        # "deferrable": True here (the trigger-reuse machinery in
-        # submit_databricks_job / complete_databricks_job is retained and
-        # tested).
+        "deferrable": True,
+        # Required for the deferrable path: the operator only defers when
+        # wait_for_termination is True (otherwise it submits and returns without
+        # ever creating a trigger). Set explicitly so we don't depend on the
+        # provider's default.
         "wait_for_termination": True,
     }
 
@@ -538,20 +533,15 @@ def submit_databricks_job(
     task_id: str,
     context,
 ) -> dict:
-    """Submit a Databricks run and return its result (synchronous).
+    """Submit a Databricks run (non-blocking) and return a trigger to defer on.
 
-    Databricks deferral is descoped from the current change set — Glue-only
-    deferral ships first and deferrable Databricks is tracked for a follow-up.
-    The upstream ``DatabricksSubmitRunOperator`` is therefore built WITHOUT
-    ``deferrable=True`` (see ``build_databricks_operator_kwargs``), so
-    ``execute()`` blocks until the run terminates: it returns on success or
-    raises ``AirflowException`` on failure, and never raises ``TaskDeferred``.
-    The ``trigger`` in the returned dict is therefore ``None`` and the operator
-    finalizes synchronously.
-
-    The ``TaskDeferred`` handling and trigger-reuse machinery below is retained
-    (and unit-tested) so re-enabling deferral later is a one-line change. The
-    early ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works.
+    Builds the upstream ``DatabricksSubmitRunOperator`` with ``deferrable=True``
+    and calls its ``execute()``. In deferrable mode the operator submits the run
+    and then raises ``TaskDeferred`` carrying a ``DatabricksExecutionTrigger`` it
+    constructs itself — so the trigger is always built with the kwargs the
+    *installed* databricks provider expects. We catch that exception and reuse
+    the trigger. The early ``spark_agnostic`` XCom is pushed here so
+    ``SparkJobLink`` works while the task is deferred.
     """
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
@@ -578,11 +568,11 @@ def submit_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
-    # Synchronous (Databricks deferral descoped): wait_for_termination=True with
-    # no deferrable flag means execute() blocks until the run terminates,
-    # returning on success or raising AirflowException on failure — it does not
-    # raise TaskDeferred. The except branch is retained so re-enabling
-    # "deferrable": True later restores trigger reuse with no other change.
+    # deferrable=True + wait_for_termination=True -> execute() submits the run,
+    # then (for a still-running job) raises TaskDeferred with the provider's own
+    # DatabricksExecutionTrigger, which we reuse. If the run is already terminal
+    # within the submit window the operator completes synchronously instead:
+    # execute() returns on success, or raises AirflowException on failure.
     trigger = None
     synchronous_success = False
     try:

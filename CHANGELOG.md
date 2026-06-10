@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed the published PyPI distribution from `overture-airflow-provider` to
+  `airflow-provider-overture`** to match the common Airflow third-party provider
+  naming convention. The import module (`overture_airflow_provider`) and the
+  GitHub repository are unchanged; only `pip install` and PyPI metadata differ.
+  ([#26](https://github.com/OvertureMaps/overture-airflow-provider/issues/26))
+- Bumped the package development status classifier from Alpha to Beta.
+  ([#28](https://github.com/OvertureMaps/overture-airflow-provider/issues/28))
+
+### Added
+
+- **Fail-fast preflight for the Databricks runner notebook.** Notebook jobs now
+  verify the bundled runner is deployed to the workspace before submitting and
+  raise an actionable error (pointing at
+  `upload_databricks_runner_to_workspace`) instead of failing opaquely mid-run.
+  Documented the one-time Databricks runner deploy step in the README.
+  ([#13](https://github.com/OvertureMaps/overture-airflow-provider/issues/13))
+
 ## [0.1.5] - 2026-06-03
 
 ### Fixed

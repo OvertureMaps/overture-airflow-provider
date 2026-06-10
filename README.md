@@ -1,5 +1,9 @@
 # overture-airflow-provider
 
+[![PyPI version](https://img.shields.io/pypi/v/airflow-provider-overture.svg)](https://pypi.org/project/airflow-provider-overture/)
+[![Python versions](https://img.shields.io/pypi/pyversions/airflow-provider-overture.svg)](https://pypi.org/project/airflow-provider-overture/)
+[![License: MIT](https://img.shields.io/pypi/l/airflow-provider-overture.svg)](LICENSE)
+
 An Apache Airflow provider exposing a **Spark-agnostic task group** that runs
 PySpark or Scala/Spark jobs on AWS Glue, Databricks, or Wherobots Cloud — from
 a single, unified DAG-level API.
@@ -19,15 +23,15 @@ organization.
 ## Install
 
 ```bash
-pip install overture-airflow-provider
+pip install airflow-provider-overture
 ```
 
 Optional extras for platforms that need extra SDKs:
 
 ```bash
-pip install "overture-airflow-provider[databricks]"
-pip install "overture-airflow-provider[wherobots]"
-pip install "overture-airflow-provider[all]"
+pip install "airflow-provider-overture[databricks]"
+pip install "airflow-provider-overture[wherobots]"
+pip install "airflow-provider-overture[all]"
 ```
 
 Requires Python `>=3.11` and Apache Airflow `>=2.11`.
@@ -125,6 +129,35 @@ that targets all three platforms.
 
 See [`SPEC.md`](SPEC.md) for the full architecture.
 
+## Databricks runner deployment
+
+Unlike Glue and Wherobots — whose bundled runner scripts are auto-uploaded to
+S3 during task-group setup — the **Databricks runner is a Workspace Notebook
+that must be deployed once, out-of-band**, before your first run. The provider
+references it at submit time but does not push it for you (notebook deployment
+needs Workspace API credentials many teams keep in CI/CD, not on Airflow
+workers).
+
+Deploy it via your CI/CD pipeline or the bundled helper:
+
+```python
+from overture_airflow_provider.runner_assets import (
+    upload_databricks_runner_to_workspace,
+)
+
+upload_databricks_runner_to_workspace(
+    databricks_host="https://my-workspace.cloud.databricks.com",
+    databricks_token="dapi...",  # PAT or CI/CD secret
+    # Must match DatabricksConfig.workspace_scripts_path_template (after
+    # {s3_assets_root} substitution) + "/job_runner_databricks".
+    workspace_path="/Workspace/Shared/<s3_assets_root>/job_runner_databricks",
+)
+```
+
+If the notebook is missing, the task group runs a **fail-fast preflight** during
+job execution and raises an actionable error instead of failing opaquely
+mid-run.
+
 ## Local rendering (testing without Airflow)
 
 The `overture_airflow_provider.render` module produces the exact platform
@@ -187,6 +220,3 @@ uv run ruff format --check .
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## License
-
-MIT — see [`LICENSE`](LICENSE).

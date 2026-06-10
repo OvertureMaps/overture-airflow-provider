@@ -3,7 +3,7 @@ requires = ["uv_build>=0.5"]
 build-backend = "uv_build"
 
 [project]
-name = "overture-airflow-provider"
+name = "airflow-provider-overture"
 version = "0.1.5"
 description = "Spark-agnostic Airflow task group for running jobs on AWS Glue, Databricks, or Wherobots from a single DAG entry point."
 readme = "README.md"
@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 authors = [{ name = "Overture Maps Foundation" }]
 keywords = ["airflow", "spark", "glue", "databricks", "wherobots", "sedona", "iceberg"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Framework :: Apache Airflow",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -49,7 +49,7 @@ Documentation = "https://github.com/OvertureMaps/overture-airflow-provider#readm
 Issues = "https://github.com/OvertureMaps/overture-airflow-provider/issues"
 
 [project.entry-points."apache_airflow_provider"]
-overture-airflow-provider = "overture_airflow_provider.provider_info:get_provider_info"
+airflow-provider-overture = "overture_airflow_provider.provider_info:get_provider_info"
 
 [dependency-groups]
 dev = [

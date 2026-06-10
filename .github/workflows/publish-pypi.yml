@@ -1,10 +1,10 @@
 ---
-# Publishes the overture-airflow-provider package in two scenarios:
+# Publishes the airflow-provider-overture package in two scenarios:
 #   1. Release (production): triggered when a GitHub Release is published → publishes to PyPI.
 #   2. Dry-run: triggered manually via workflow_dispatch → publishes to Test PyPI to verify
 #      the build and publish pipeline end-to-end without affecting the production package index.
 # Uses OIDC trusted publishing — no API token required.
-name: Publish overture-airflow-provider
+name: Publish airflow-provider-overture
 
 on:
   release:

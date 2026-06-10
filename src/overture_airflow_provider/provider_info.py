@@ -13,7 +13,7 @@ from importlib.metadata import PackageNotFoundError, version
 def _package_version() -> str:
     """Resolve the installed package version, falling back when uninstalled."""
     try:
-        return version("overture-airflow-provider")
+        return version("airflow-provider-overture")
     except PackageNotFoundError:  # package not installed (e.g. source checkout)
         return "0.0.0"
 
@@ -21,11 +21,16 @@ def _package_version() -> str:
 def get_provider_info() -> dict:
     """Return Airflow provider metadata conforming to provider_info.schema.json."""
     return {
-        "package-name": "overture-airflow-provider",
+        "package-name": "airflow-provider-overture",
         "name": "Overture Maps Spark-agnostic Provider",
         "description": (
-            "Airflow TaskGroup for submitting Spark jobs to AWS Glue, Databricks, "
-            "or Wherobots Cloud from a single, platform-agnostic DAG entry point."
+            "Airflow TaskGroup for submitting Spark jobs to "
+            "`AWS Glue <https://docs.aws.amazon.com/glue/>`_, "
+            "`Databricks <https://docs.databricks.com/>`_, or "
+            "`Wherobots Cloud <https://docs.wherobots.com/>`_ from a single, "
+            "platform-agnostic DAG entry point. See the "
+            "`GitHub repository "
+            "<https://github.com/OvertureMaps/overture-airflow-provider>`_."
         ),
         "versions": [_package_version()],
         "operators": [

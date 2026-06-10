@@ -70,7 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   API-addressable. Caught by a live smoke test.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
 
-## [0.2.0] - 2026-06-10
+### Known issues
+
+- **Upstream `aiohttp` log noise during Databricks deferral.** While a
+  Databricks job is deferred, the Triggerer may log `aiohttp` "Unclosed client
+  session / connector" *ERROR* lines. These originate in the upstream
+  `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async
+  client is not closed on the event loop), not in this provider. The task
+  defers, polls, and resumes correctly regardless. This provider deliberately
+  reuses the installed provider's trigger (to always match the installed
+  version), so it does not fork the trigger to silence the message.
 
 ### Changed
 

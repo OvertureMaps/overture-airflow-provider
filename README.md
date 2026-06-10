@@ -150,7 +150,7 @@ upload_databricks_runner_to_workspace(
     databricks_token="dapi...",  # PAT or CI/CD secret
     # Must match DatabricksConfig.workspace_scripts_path_template (after
     # {s3_assets_root} substitution) + "/job_runner_databricks".
-    workspace_path="/Workspace/Shared/<s3_assets_root>/job_runner_databricks",
+    workspace_path="/Shared/<s3_assets_root>/job_runner_databricks",
 )
 ```
 
@@ -174,9 +174,18 @@ A Databricks run requires **two** workspace assets in the
 
 The init script is **not** bundled with the provider — its contents are
 platform/CI-owned — so deploy it to the same workspace folder via your CI/CD
-pipeline. The preflight checks **both** assets and fails fast with one
-actionable error if either is missing (a missing init script otherwise surfaces
-as an opaque cluster-launch failure).
+pipeline. The advisory preflight checks **both** assets and warns (without
+failing) if either appears missing; a genuinely missing init script still
+surfaces authoritatively as a Databricks cluster-launch error at run time.
+
+> **Note (upstream log noise):** while a Databricks job is deferred, the
+> Triggerer may log `aiohttp` "Unclosed client session / connector" *ERROR*
+> lines. These originate in the upstream
+> `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async
+> client is not explicitly closed on the event loop), not in this provider. The
+> task defers, polls, and resumes correctly regardless. This provider
+> deliberately reuses the installed provider's trigger, so it does not fork the
+> trigger to silence the message.
 
 ## Local rendering (testing without Airflow)
 

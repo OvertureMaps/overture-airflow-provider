@@ -832,6 +832,12 @@ class TestDatabricksSubmitJob:
         return result
 
     def test_returns_trigger_and_run_id(self):
+        # Databricks runs synchronously in this release (deferral descoped), so
+        # the operator no longer sets deferrable=True. This test forces a
+        # TaskDeferred to exercise the RETAINED trigger-reuse machinery in
+        # submit_databricks_job, which makes re-enabling deferral a one-flag
+        # change. The synchronous production path is covered by
+        # test_synchronous_completion_returns_result_without_trigger.
         result = self._run({"ti": MagicMock()})
         assert result["run_id"] == "12345"
         assert result["trigger"] is not None
@@ -856,7 +862,10 @@ class TestDatabricksSubmitJob:
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
 
-    def test_operator_kwargs_include_deferrable_true(self):
+    def test_operator_kwargs_synchronous_no_deferrable(self):
+        # Databricks deferral is descoped (Glue-only deferral ships first); the
+        # operator runs synchronously, so no deferrable flag is set but
+        # wait_for_termination stays True so execute() blocks to completion.
         from overture_airflow_provider._databricks import build_databricks_operator_kwargs
 
         result = build_databricks_operator_kwargs(
@@ -866,8 +875,7 @@ class TestDatabricksSubmitJob:
             class_name="MyClass",
             task_id="execute_spark_job",
         )
-        assert result["operator_kwargs"]["deferrable"] is True
-        # Databricks only defers when wait_for_termination is True.
+        assert "deferrable" not in result["operator_kwargs"]
         assert result["operator_kwargs"]["wait_for_termination"] is True
 
     def test_synchronous_completion_returns_result_without_trigger(self):

@@ -424,7 +424,7 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
-        "deferrable": True,
+        "wait_for_termination": False,
     }
 
     # Equivalent payload for `databricks jobs submit --json @file.json`.
@@ -446,7 +446,7 @@ def build_databricks_operator_kwargs(
     }
 
 
-def execute_databricks_job(
+def submit_databricks_job(
     setup_info: dict,
     cluster_info: dict,
     module_name: str,
@@ -455,12 +455,22 @@ def execute_databricks_job(
     task_id: str,
     context,
 ) -> dict:
-    """Submit and wait for a Databricks job."""
+    """Submit a Databricks run (non-blocking) and return a trigger to defer on.
+
+    Runs the upstream ``DatabricksSubmitRunOperator`` with
+    ``wait_for_termination=False`` so it submits the run and returns without
+    polling, then hands back a ``DatabricksExecutionTrigger`` for the Triggerer.
+    The early ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works
+    while the task is deferred.
+    """
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
     from airflow.providers.databricks.hooks.databricks import DatabricksHook
     from airflow.providers.databricks.operators.databricks import (
         DatabricksSubmitRunOperator,
+    )
+    from airflow.providers.databricks.triggers.databricks import (
+        DatabricksExecutionTrigger,
     )
 
     # Notebook jobs (module_name set) require the bundled runner notebook to be
@@ -479,43 +489,62 @@ def execute_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
+    # wait_for_termination=False -> execute() submits and returns without polling.
+    platform_operator.execute(context)
+
+    conn_id = cluster_info["databricks_conf"]["databricks_conn_id"]
+    run_id = platform_operator.run_id
+    hook = DatabricksHook(databricks_conn_id=conn_id)
+    run_page_url = hook.get_run_page_url(run_id)
+
     ti = context.get("ti") if hasattr(context, "get") else None
-    original_xcom_push = getattr(ti, "xcom_push", None)
-    early_xcom_pushed = False
+    if ti is not None and callable(getattr(ti, "xcom_push", None)):
+        ti.xcom_push(
+            key="spark_agnostic",
+            value=_build_agnostic_xcom_payload(setup_info, job_url=run_page_url),
+        )
 
-    if callable(original_xcom_push):
+    trigger = DatabricksExecutionTrigger(
+        run_id=run_id,
+        databricks_conn_id=conn_id,
+        run_page_url=run_page_url,
+    )
+    return {
+        "trigger": trigger,
+        "run_id": run_id,
+        "run_page_url": run_page_url,
+        "platform_operator": platform_operator,
+    }
 
-        def _xcom_push_with_early_agnostic(*args, **kwargs):
-            nonlocal early_xcom_pushed
-            result = original_xcom_push(*args, **kwargs)
-            key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
-            value = (
-                kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
-            )
-            if key == "run_page_url" and value and not early_xcom_pushed:
-                original_xcom_push(
-                    key="spark_agnostic",
-                    value=_build_agnostic_xcom_payload(setup_info, job_url=value),
-                )
-                early_xcom_pushed = True
-            return result
 
-        ti.xcom_push = _xcom_push_with_early_agnostic
+def complete_databricks_job(
+    setup_info: dict,
+    cluster_info: dict,
+    event: dict,
+    context,
+) -> dict:
+    """Resolve a completed Databricks run into the final result dict.
 
-    try:
-        platform_operator.execute(context)
-    finally:
-        if callable(original_xcom_push):
-            ti.xcom_push = original_xcom_push
+    Called from the deferrable operator's ``execute_complete`` after the
+    ``DatabricksExecutionTrigger`` reports the run reached a terminal state.
+    """
+    from overture_airflow_provider._airflow_compat import AirflowException
 
-    job_url = platform_operator.xcom_pull(context, key="run_page_url")
+    from airflow.providers.databricks.hooks.databricks import DatabricksHook, RunState
 
-    run_id = platform_operator.xcom_pull(context, key="run_id")
+    run_id = event["run_id"]
+    run_page_url = event.get("run_page_url")
+    run_state = RunState.from_json(event["run_state"])
+    if not run_state.is_successful:
+        raise AirflowException(
+            f"Databricks run {run_id} failed with state {run_state}; "
+            f"errors: {event.get('errors')}"
+        )
+
     hook = DatabricksHook(databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"])
     status = hook.get_run(run_id)
 
     return {
-        "job_url": job_url,
+        "job_url": run_page_url,
         "status": status,
-        "platform_operator": platform_operator,
     }

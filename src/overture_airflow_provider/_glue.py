@@ -188,52 +188,6 @@ def download_jars_glue(
     }
 
 
-def _get_glue_job_url_and_status(
-    platform_operator: GlueJobOperator,
-    context: dict,
-    setup_info: dict,
-) -> dict:
-    """Return console URL + job state; raise on terminal failure."""
-    glue_client = boto3.client("glue", region_name=setup_info["aws_region"])
-
-    glue_job_run_details = platform_operator.xcom_pull(
-        context, task_ids=context["ti"].task_id, key="glue_job_run_details"
-    )
-
-    if isinstance(glue_job_run_details, dict):
-        region = glue_job_run_details["region_name"]
-        domain = glue_job_run_details["aws_domain"]
-        job_name = glue_job_run_details["job_name"]
-        job_run_id = glue_job_run_details["job_run_id"]
-    else:
-        details = list(glue_job_run_details)
-        region = details[0]["region_name"]
-        domain = details[0]["aws_domain"]
-        job_name = details[0]["job_name"]
-        job_run_id = details[0]["job_run_id"]
-
-    job_url = (
-        f"https://{region}.console.{domain}/gluestudio/home?region={region}"
-        f"#/job/{job_name}/run/{job_run_id}"
-    )
-
-    job_status = glue_client.get_job_run(JobName=job_name, RunId=job_run_id)
-    job_state = job_status["JobRun"]["JobRunState"]
-    if job_state not in ["SUCCEEDED"]:
-        msg = f"Glue job {job_name} (run {job_run_id}) did not succeed. Final state: {job_state}"
-        if job_state in ["STOPPED", "FAILED", "TIMEOUT", "ERROR"]:
-            print(f"ERROR: {msg}")
-            raise AirflowException(msg)
-        print(
-            f"WARNING: Glue job {job_name} (run {job_run_id}) is in unexpected state: {job_state}"
-        )
-
-    return {
-        "job_url": job_url,
-        "status": job_status["JobRun"],
-    }
-
-
 def build_glue_operator_kwargs(
     setup_info: dict,
     package_info: dict,
@@ -380,7 +334,7 @@ def build_glue_operator_kwargs(
         "create_job_kwargs": create_job_kwargs,
         "run_job_kwargs": {"JobRunQueuingEnabled": True},
         "verbose": True,
-        "deferrable": True,
+        "wait_for_completion": False,
     }
 
     return {
@@ -392,7 +346,15 @@ def build_glue_operator_kwargs(
     }
 
 
-def execute_glue_job(
+def _glue_console_url(region: str, job_name: str, run_id: str) -> str:
+    """Build the AWS Glue Studio console URL for a job run."""
+    return (
+        f"https://{region}.console.aws.amazon.com/gluestudio/home?region={region}"
+        f"#/job/{job_name}/run/{run_id}"
+    )
+
+
+def submit_glue_job(
     setup_info: dict,
     package_info: dict,
     jar_info: dict,
@@ -406,7 +368,16 @@ def execute_glue_job(
     context: dict,
     execution_class: str = "STANDARD",
 ) -> dict:
-    """Submit and wait for an AWS Glue job."""
+    """Submit a Glue job (non-blocking) and return a trigger to defer on.
+
+    Builds and runs the upstream ``GlueJobOperator`` with
+    ``wait_for_completion=False`` so it submits the run and returns immediately,
+    then hands back a ``GlueJobCompleteTrigger`` for the Triggerer to poll. The
+    early ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works while
+    the task is deferred.
+    """
+    from airflow.providers.amazon.aws.triggers.glue import GlueJobCompleteTrigger
+
     if not module_name:
         # Scala job: ensure placeholder script exists.
         scala_script = package_info["scala_script_location"]
@@ -457,44 +428,53 @@ def execute_glue_job(
             **built["create_job_kwargs"],
             "Tags": built["tags"],
         }
+
+    # wait_for_completion=False -> execute() submits and returns the run id.
+    run_id = platform_operator.execute(context)
+
+    region = setup_info["aws_region"]
+    job_name = setup_info["job_name"]
+    job_url = _glue_console_url(region, job_name, run_id)
+
     ti = context.get("ti") if hasattr(context, "get") else None
-    original_xcom_push = getattr(ti, "xcom_push", None)
-    early_xcom_pushed = False
+    if ti is not None and callable(getattr(ti, "xcom_push", None)):
+        ti.xcom_push(
+            key="spark_agnostic",
+            value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
+        )
 
-    if callable(original_xcom_push):
+    trigger = GlueJobCompleteTrigger(
+        job_name=job_name,
+        run_id=run_id,
+        verbose=True,
+        aws_conn_id=platform_operator.aws_conn_id,
+        region_name=region,
+    )
+    return {
+        "trigger": trigger,
+        "run_id": run_id,
+        "platform_operator": platform_operator,
+    }
 
-        def _xcom_push_with_early_agnostic(*args, **kwargs):
-            nonlocal early_xcom_pushed
-            result = original_xcom_push(*args, **kwargs)
-            key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
-            value = (
-                kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
-            )
-            if key == "glue_job_run_id" and value and not early_xcom_pushed:
-                region = setup_info["aws_region"]
-                job_name = setup_info["job_name"]
-                job_url = (
-                    f"https://{region}.console.aws.amazon.com/gluestudio/home?region={region}"
-                    f"#/job/{job_name}/run/{value}"
-                )
-                original_xcom_push(
-                    key="spark_agnostic",
-                    value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
-                )
-                early_xcom_pushed = True
-            return result
 
-        ti.xcom_push = _xcom_push_with_early_agnostic
+def complete_glue_job(setup_info: dict, run_id: str, context: dict) -> dict:
+    """Resolve a completed Glue run into the final result dict.
 
-    try:
-        platform_operator.execute(context)
-    finally:
-        if callable(original_xcom_push):
-            ti.xcom_push = original_xcom_push
+    Called from the deferrable operator's ``execute_complete`` after the
+    ``GlueJobCompleteTrigger`` reports the run reached a terminal state.
+    """
+    region = setup_info["aws_region"]
+    job_name = setup_info["job_name"]
+    glue_client = boto3.client("glue", region_name=region)
 
-    job_result = _get_glue_job_url_and_status(platform_operator, context, setup_info)
+    job_status = glue_client.get_job_run(JobName=job_name, RunId=run_id)
+    job_state = job_status["JobRun"]["JobRunState"]
+    if job_state != "SUCCEEDED":
+        msg = f"Glue job {job_name} (run {run_id}) did not succeed. Final state: {job_state}"
+        print(f"ERROR: {msg}")
+        raise AirflowException(msg)
 
     return {
-        **job_result,
-        "platform_operator": platform_operator,
+        "job_url": _glue_console_url(region, job_name, run_id),
+        "status": job_status["JobRun"],
     }

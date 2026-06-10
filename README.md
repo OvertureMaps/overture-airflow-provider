@@ -154,9 +154,12 @@ upload_databricks_runner_to_workspace(
 )
 ```
 
-If the notebook is missing, the task group runs a **fail-fast preflight** during
-job execution and raises an actionable error instead of failing opaquely
-mid-run.
+If a required asset is missing, the task group runs an **advisory preflight**
+during job execution and prints a clear warning pointing at the resolved
+workspace path. It does **not** hard-fail: the Databricks `get-status` API
+returns 404 for both a truly missing object and a permission-denied read, so a
+principal that can *run* but not *read* the asset must not be blocked. A
+genuinely missing asset still fails the run with Databricks' own error.
 
 ### Cluster init script
 

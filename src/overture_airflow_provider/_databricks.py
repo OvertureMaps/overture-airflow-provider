@@ -365,7 +365,7 @@ def _workspace_object_exists(hook, path: str) -> bool:
 
 
 def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
-    """Fail fast when required Databricks workspace assets are not deployed.
+    """Advisory check for required Databricks workspace assets.
 
     Unlike Glue/Wherobots — whose runners auto-upload to S3 during setup — the
     Databricks job depends on workspace assets that must be staged out-of-band
@@ -377,18 +377,22 @@ def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
       the provider.
 
     If either is missing the submit otherwise fails opaquely mid-run (the init
-    script as a cluster-launch failure). This checks the resolved workspace
-    paths up front and raises one actionable error instead.
+    script as a cluster-launch failure). This pre-checks the resolved workspace
+    paths and prints an actionable warning so the cause is obvious up front.
+
+    **Best-effort and never fatal.** ``2.0/workspace/get-status`` returns HTTP
+    404 for *both* a truly absent object *and* a permission-denied read, so a
+    principal that can *run* the notebook but lacks workspace *read* (a common,
+    already-working prod setup) would otherwise be falsely blocked. Because a 404
+    is ambiguous, a missing-asset result is downgraded to a loud warning and the
+    run proceeds — the real submit surfaces a genuinely missing asset via
+    Databricks' own run error, which a permissions gap cannot fake. Any other
+    error (auth, transient HTTP, SDK/provider mismatch) is likewise warned and
+    skipped, so a working deployment is never turned into a hard failure.
 
     The check reuses the official ``DatabricksHook`` and the same
-    ``databricks_conn_id`` the submit uses, so preflight auth always matches the
-    job's auth (no false skips) and no extra dependency or credential surface is
-    introduced. It hits ``2.0/workspace/get-status`` — the same endpoint the
-    provider's own ``get_repo_by_path`` uses.
-
-    Best-effort: if the workspace can't be queried (auth, permissions, transient
-    HTTP error, or an SDK/provider mismatch), a warning is printed and the check
-    is skipped so a working deployment is never turned into a hard failure.
+    ``databricks_conn_id`` the submit uses — the same endpoint the provider's own
+    ``get_repo_by_path`` uses.
     """
     scripts_path = cluster_info["databricks_deployed_scripts_path"]
     conn_id = cluster_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
@@ -434,12 +438,14 @@ def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
             )
             continue
         if not exists:
-            raise RuntimeError(
-                f"Databricks {label} not found at {path!r}. Unlike Glue and "
-                "Wherobots, required Databricks workspace assets must be deployed "
-                f"before the first run. {hint} See the README "
-                "'Databricks runner deployment' section."
-            ) from None
+            print(
+                f"[Databricks] WARNING: {label} not found at {path} via workspace "
+                "get-status. Note Databricks returns HTTP 404 for BOTH a missing "
+                "object AND a permission-denied read, so this may be a false alarm "
+                "when the job's principal can run but not read the asset. Proceeding; "
+                f"if it is genuinely missing the run will fail with a clear error. {hint} "
+                "See the README 'Databricks runner deployment' section."
+            )
 
 
 def build_databricks_operator_kwargs(

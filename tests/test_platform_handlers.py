@@ -982,7 +982,9 @@ class TestDatabricksRunnerPreflight:
             wrap_http_errors=False,
         )
 
-    def test_raises_actionable_error_when_notebook_missing(self):
+    def test_warns_and_proceeds_when_notebook_missing(self, capsys):
+        # 404 is ambiguous on Databricks (absent OR permission-denied), so a
+        # missing-asset result must NOT hard-fail a runnable job.
         from requests.exceptions import HTTPError
 
         from overture_airflow_provider._databricks import preflight_databricks_runner
@@ -994,8 +996,11 @@ class TestDatabricksRunnerPreflight:
             "airflow.providers.databricks.hooks.databricks.DatabricksHook",
             return_value=mock_hook,
         ):
-            with pytest.raises(RuntimeError, match="runner notebook not found"):
-                preflight_databricks_runner({}, self._CLUSTER_INFO)
+            preflight_databricks_runner({}, self._CLUSTER_INFO)
+
+        out = capsys.readouterr().out
+        assert "runner notebook not found" in out
+        assert "permission-denied" in out
 
     def test_warns_and_proceeds_on_non_404_http_error(self, capsys):
         from requests.exceptions import HTTPError
@@ -1044,7 +1049,7 @@ class TestDatabricksRunnerPreflight:
         assert self._NOTEBOOK_PATH in checked_paths
         assert "/Workspace/Shared/spark-agnostic-operator/init.sh" in checked_paths
 
-    def test_raises_actionable_error_when_init_script_missing(self):
+    def test_warns_and_proceeds_when_init_script_missing(self, capsys):
         from requests.exceptions import HTTPError
 
         from overture_airflow_provider._databricks import preflight_databricks_runner
@@ -1064,8 +1069,9 @@ class TestDatabricksRunnerPreflight:
             "airflow.providers.databricks.hooks.databricks.DatabricksHook",
             return_value=mock_hook,
         ):
-            with pytest.raises(RuntimeError, match="cluster init script not found"):
-                preflight_databricks_runner(setup_info, self._CLUSTER_INFO)
+            preflight_databricks_runner(setup_info, self._CLUSTER_INFO)
+
+        assert "cluster init script not found" in capsys.readouterr().out
 
 
 class TestWherobotsSetupCluster:

@@ -46,12 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reads `value` (with a `run_id` fallback), so a successful Glue job resumes and
   finalizes correctly. Caught by a live smoke test.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
-- **Databricks preflight now also verifies the cluster init script.** The
-  preflight previously only checked the runner notebook, so a missing init
-  script (named by `DatabricksConfig.cluster_init_script_name`, wired into the
-  cluster's `init_scripts`) sailed past it and surfaced later as an opaque
-  cluster-launch failure. Both required workspace assets are now checked up
-  front and fail fast with one actionable error.
+- **Databricks preflight now also checks the cluster init script, and is
+  advisory (never fatal).** The preflight previously only checked the runner
+  notebook; it now also checks the cluster init script
+  (`DatabricksConfig.cluster_init_script_name`, wired into the cluster's
+  `init_scripts`). Both checks are best-effort: because Databricks'
+  `get-status` returns HTTP 404 for both a missing object *and* a
+  permission-denied read, a principal that can run but not read an asset (a
+  common, already-working setup) would be falsely blocked. A missing-asset
+  result is therefore downgraded to a loud, actionable warning and the run
+  proceeds — a genuinely missing asset still fails via Databricks' own run
+  error.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
 - **Databricks workspace paths now use the bare workspace path, not the
   `/Workspace` FUSE prefix.** `DatabricksConfig.workspace_scripts_path_template`

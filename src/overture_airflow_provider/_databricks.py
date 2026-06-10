@@ -320,12 +320,12 @@ def setup_databricks_cluster(
 def _is_runner_not_found(exc: Exception) -> bool:
     """Identify a Databricks workspace "object does not exist" error.
 
-    Avoids importing the databricks-sdk error type (kept lazy / optional) by
-    matching on the exception class name and the SDK's ``error_code`` field.
+    The workspace ``get-status`` REST endpoint returns HTTP 404 when the path
+    is absent (matching how the official ``DatabricksHook.get_repo_by_path``
+    treats a missing object).
     """
-    if type(exc).__name__ in ("NotFound", "ResourceDoesNotExist"):
-        return True
-    return getattr(exc, "error_code", "") == "RESOURCE_DOES_NOT_EXIST"
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 404
 
 
 def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
@@ -337,19 +337,28 @@ def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
     it's missing, the submit otherwise fails opaquely mid-run. This checks the
     resolved workspace path up front and raises an actionable error instead.
 
-    Best-effort: if the workspace can't be queried (missing ``[databricks]``
-    extra, auth, or permissions), a warning is printed and the check is skipped
-    so a working deployment is never turned into a hard failure on an edge-case
-    auth setup.
+    The check reuses the official ``DatabricksHook`` and the same
+    ``databricks_conn_id`` the submit uses, so preflight auth always matches the
+    job's auth (no false skips) and no extra dependency or credential surface is
+    introduced. It hits ``2.0/workspace/get-status`` — the same endpoint the
+    provider's own ``get_repo_by_path`` uses.
+
+    Best-effort: if the workspace can't be queried (auth, permissions, transient
+    HTTP error, or an SDK/provider mismatch), a warning is printed and the check
+    is skipped so a working deployment is never turned into a hard failure.
     """
     notebook_path = f"{cluster_info['databricks_deployed_scripts_path']}/job_runner_databricks"
     conn_id = cluster_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
 
     try:
-        from overture_airflow_provider.hooks import DatabricksSdkHook
+        from airflow.providers.databricks.hooks.databricks import DatabricksHook
 
-        with DatabricksSdkHook(conn_id).get_workspace_client() as client:
-            client.workspace.get_status(notebook_path)
+        hook = DatabricksHook(databricks_conn_id=conn_id)
+        hook._do_api_call(
+            ("GET", "2.0/workspace/get-status"),
+            {"path": notebook_path},
+            wrap_http_errors=False,
+        )
     except Exception as exc:
         if _is_runner_not_found(exc):
             raise RuntimeError(

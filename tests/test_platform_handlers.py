@@ -762,6 +762,7 @@ class TestDatabricksExecuteJob:
                 "airflow.providers.databricks.hooks.databricks.DatabricksHook",
                 return_value=mock_hook,
             ),
+            patch("overture_airflow_provider._databricks.preflight_databricks_runner"),
         ):
             execute_databricks_job(
                 setup_info=setup_info,
@@ -817,6 +818,7 @@ class TestDatabricksExecuteJob:
                 "airflow.providers.databricks.hooks.databricks.DatabricksHook",
                 return_value=mock_hook,
             ),
+            patch("overture_airflow_provider._databricks.preflight_databricks_runner"),
         ):
             execute_databricks_job(
                 setup_info=setup_info,
@@ -832,6 +834,77 @@ class TestDatabricksExecuteJob:
         calls = context["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
+
+
+class TestDatabricksRunnerPreflight:
+    _CLUSTER_INFO = {
+        "databricks_conf": {"databricks_conn_id": "databricks_default"},
+        "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
+    }
+    _NOTEBOOK_PATH = "/Workspace/Shared/spark-agnostic-operator/job_runner_databricks"
+
+    def test_passes_when_notebook_exists(self):
+        from overture_airflow_provider._databricks import preflight_databricks_runner
+
+        mock_hook = MagicMock()
+        mock_hook._do_api_call.return_value = {"object_type": "NOTEBOOK"}
+
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+            return_value=mock_hook,
+        ):
+            preflight_databricks_runner({}, self._CLUSTER_INFO)
+
+        mock_hook._do_api_call.assert_called_once_with(
+            ("GET", "2.0/workspace/get-status"),
+            {"path": self._NOTEBOOK_PATH},
+            wrap_http_errors=False,
+        )
+
+    def test_raises_actionable_error_when_notebook_missing(self):
+        from requests.exceptions import HTTPError
+
+        from overture_airflow_provider._databricks import preflight_databricks_runner
+
+        mock_hook = MagicMock()
+        mock_hook._do_api_call.side_effect = HTTPError(response=MagicMock(status_code=404))
+
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+            return_value=mock_hook,
+        ):
+            with pytest.raises(RuntimeError, match="runner notebook not found"):
+                preflight_databricks_runner({}, self._CLUSTER_INFO)
+
+    def test_warns_and_proceeds_on_non_404_http_error(self, capsys):
+        from requests.exceptions import HTTPError
+
+        from overture_airflow_provider._databricks import preflight_databricks_runner
+
+        mock_hook = MagicMock()
+        mock_hook._do_api_call.side_effect = HTTPError(response=MagicMock(status_code=500))
+
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+            return_value=mock_hook,
+        ):
+            preflight_databricks_runner({}, self._CLUSTER_INFO)
+
+        assert "could not verify runner notebook" in capsys.readouterr().out
+
+    def test_warns_and_proceeds_on_auth_error(self, capsys):
+        from overture_airflow_provider._databricks import preflight_databricks_runner
+
+        mock_hook = MagicMock()
+        mock_hook._do_api_call.side_effect = RuntimeError("auth boom")
+
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+            return_value=mock_hook,
+        ):
+            preflight_databricks_runner({}, self._CLUSTER_INFO)
+
+        assert "could not verify runner notebook" in capsys.readouterr().out
 
 
 class TestWherobotsSetupCluster:

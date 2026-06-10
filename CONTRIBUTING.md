@@ -44,7 +44,7 @@ Use `[WIP]` as a prefix on repos without draft PR support.
 
 ## Publishing
 
-Package published to [PyPI](https://pypi.org/project/overture-airflow-provider/) via the
+Package published to [PyPI](https://pypi.org/project/airflow-provider-overture/) via the
 [`publish-pypi.yml`](.github/workflows/publish-pypi.yml) workflow using
 [OIDC trusted publishing](https://docs.pypi.org/trusted-publishers/) — no API token needed.
 This repo, workflow, and GitHub environment must be pre-configured in PyPI and Test PyPI.
@@ -60,7 +60,7 @@ This repo, workflow, and GitHub environment must be pre-configured in PyPI and T
 ### Dry-run / Test PyPI
 
 Trigger the workflow manually via `workflow_dispatch` to publish to
-[Test PyPI](https://test.pypi.org/project/overture-airflow-provider/) instead of production.
+[Test PyPI](https://test.pypi.org/project/airflow-provider-overture/) instead of production.
 Useful for verifying the build and publish pipeline end-to-end. Uses `skip-existing: true`
 so version conflicts don't fail the run.
 

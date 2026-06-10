@@ -19,7 +19,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 try:
-    __version__ = version("overture-airflow-provider")
+    __version__ = version("airflow-provider-overture")
 except PackageNotFoundError:  # package not installed (e.g. source checkout)
     __version__ = "0.0.0"
 

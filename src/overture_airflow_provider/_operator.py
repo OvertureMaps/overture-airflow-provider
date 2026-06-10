@@ -11,9 +11,8 @@ Flow:
 
 - ``execute`` resolves the platform handler, submits the job, and either defers
   on the provider trigger (Glue) or returns the synchronous result (Databricks,
-  Wherobots). Databricks deferral is descoped for now and tracked for a
-  follow-up; the operator handles both a deferred trigger and a synchronous
-  result uniformly.
+  Wherobots). The operator handles both a deferred trigger and a synchronous
+  result uniformly, so a platform that does not defer needs no special-casing.
 - ``execute_complete`` resolves the deferred run into the final result and
   pushes the cross-platform ``spark_agnostic`` XCom that ``SparkJobLink`` reads.
 

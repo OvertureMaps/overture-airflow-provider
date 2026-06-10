@@ -497,16 +497,11 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
-        # Databricks deferral is descoped from this change set (Glue-only
-        # deferral ships first; deferrable Databricks is tracked for a
-        # follow-up). The operator therefore runs SYNCHRONOUSLY: with
-        # wait_for_termination=True and no deferrable flag, execute() blocks
-        # until the run terminates, returning on success or raising on failure.
-        # The submit_databricks_job synchronous path handles that return.
-        # Re-enabling deferral later is a one-line change: add
-        # "deferrable": True here (the trigger-reuse machinery in
-        # submit_databricks_job / complete_databricks_job is retained and
-        # tested).
+        # Databricks runs synchronously: with wait_for_termination=True and no
+        # deferrable flag, execute() blocks until the run terminates, returning
+        # on success or raising on failure. submit_databricks_job consumes that
+        # result and returns trigger=None, so the operator finalizes the run the
+        # same way it does for Wherobots. (Only Glue defers.)
         "wait_for_termination": True,
     }
 
@@ -540,18 +535,13 @@ def submit_databricks_job(
 ) -> dict:
     """Submit a Databricks run and return its result (synchronous).
 
-    Databricks deferral is descoped from the current change set — Glue-only
-    deferral ships first and deferrable Databricks is tracked for a follow-up.
-    The upstream ``DatabricksSubmitRunOperator`` is therefore built WITHOUT
-    ``deferrable=True`` (see ``build_databricks_operator_kwargs``), so
-    ``execute()`` blocks until the run terminates: it returns on success or
-    raises ``AirflowException`` on failure, and never raises ``TaskDeferred``.
-    The ``trigger`` in the returned dict is therefore ``None`` and the operator
-    finalizes synchronously.
-
-    The ``TaskDeferred`` handling and trigger-reuse machinery below is retained
-    (and unit-tested) so re-enabling deferral later is a one-line change. The
-    early ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works.
+    Databricks runs synchronously: the upstream ``DatabricksSubmitRunOperator``
+    is built with ``wait_for_termination=True`` and no ``deferrable`` flag (see
+    ``build_databricks_operator_kwargs``), so ``execute()`` blocks until the run
+    terminates — it returns on success or raises ``AirflowException`` on failure.
+    Like Wherobots, this returns ``trigger=None`` so the operator finalizes
+    immediately rather than deferring (only Glue defers). The early
+    ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works.
     """
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
@@ -559,8 +549,6 @@ def submit_databricks_job(
     from airflow.providers.databricks.operators.databricks import (
         DatabricksSubmitRunOperator,
     )
-
-    from overture_airflow_provider._airflow_compat import TaskDeferred
 
     # Notebook jobs (module_name set) require the bundled runner notebook to be
     # pre-deployed to the workspace; fail fast with guidance if it's missing.
@@ -578,24 +566,15 @@ def submit_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
-    # Synchronous (Databricks deferral descoped): wait_for_termination=True with
-    # no deferrable flag means execute() blocks until the run terminates,
-    # returning on success or raising AirflowException on failure — it does not
-    # raise TaskDeferred. The except branch is retained so re-enabling
-    # "deferrable": True later restores trigger reuse with no other change.
-    trigger = None
-    synchronous_success = False
-    try:
-        platform_operator.execute(context)
-    except TaskDeferred as deferred:
-        trigger = deferred.trigger
-    else:
-        synchronous_success = True
+    # Synchronous: wait_for_termination=True with no deferrable flag means
+    # execute() blocks until the run terminates — it returns on success or
+    # raises AirflowException on failure.
+    platform_operator.execute(context)
 
     conn_id = cluster_info["databricks_conf"]["databricks_conn_id"]
     run_id = platform_operator.run_id
     hook = DatabricksHook(databricks_conn_id=conn_id)
-    run_page_url = getattr(trigger, "run_page_url", None) or hook.get_run_page_url(run_id)
+    run_page_url = hook.get_run_page_url(run_id)
 
     ti = context.get("ti") if hasattr(context, "get") else None
     if ti is not None and callable(getattr(ti, "xcom_push", None)):
@@ -604,14 +583,10 @@ def submit_databricks_job(
             value=_build_agnostic_xcom_payload(setup_info, job_url=run_page_url),
         )
 
-    result = None
-    if synchronous_success:
-        # Run finished (successfully) before we could defer; build the final
-        # result so the operator can finalize without a trigger.
-        result = {"job_url": run_page_url, "status": hook.get_run(run_id)}
+    result = {"job_url": run_page_url, "status": hook.get_run(run_id)}
 
     return {
-        "trigger": trigger,
+        "trigger": None,
         "run_id": run_id,
         "run_page_url": run_page_url,
         "result": result,
@@ -627,8 +602,13 @@ def complete_databricks_job(
 ) -> dict:
     """Resolve a completed Databricks run into the final result dict.
 
-    Called from the deferrable operator's ``execute_complete`` after the
-    ``DatabricksExecutionTrigger`` reports the run reached a terminal state.
+    Databricks runs synchronously, so this is not invoked on the live path —
+    like Wherobots, ``submit_databricks_job`` returns ``trigger=None`` and the
+    operator finalizes without deferring. It is retained for
+    ``SparkPlatformHandler`` interface parity and as the resume handler should
+    Databricks deferral be enabled: it parses the ``DatabricksExecutionTrigger``
+    event (``run_state`` via ``RunState`` + ``run_page_url``) and raises on a
+    failed run.
     """
     from airflow.providers.databricks.hooks.databricks import DatabricksHook, RunState
 

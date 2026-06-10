@@ -30,13 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `execute_complete`, so Airflow resumes it correctly.
 
   **Scope:** deferral ships for **Glue only** in this release. Databricks
-  continues to run **synchronously** (its prior behavior) — deferrable
-  Databricks is validated but descoped here and tracked for a follow-up; the
-  trigger-reuse machinery is retained so it is a one-flag change to re-enable.
-  Wherobots has no upstream trigger and also runs synchronously. No DAG changes
-  required — deferral is a platform-internal concern and is not exposed as a
-  parameter on `spark_agnostic_task_group`. Requires an Airflow Triggerer
-  (standard in MWAA 2.4+).
+  continues to run **synchronously** (its behavior before this work) — the
+  shared operator handles a synchronous platform the same way it handles
+  Wherobots (no trigger, finalize immediately). Deferrable Databricks is a
+  tracked follow-up. Wherobots has no upstream trigger and also runs
+  synchronously. No DAG changes required — deferral is a platform-internal
+  concern and is not exposed as a parameter on `spark_agnostic_task_group`.
+  Requires an Airflow Triggerer (standard in MWAA 2.4+).
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45),
   fixes [#46](https://github.com/OvertureMaps/overture-airflow-provider/issues/46))
 

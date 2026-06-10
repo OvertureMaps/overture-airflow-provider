@@ -424,7 +424,7 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
-        "wait_for_termination": False,
+        "deferrable": True,
     }
 
     # Equivalent payload for `databricks jobs submit --json @file.json`.
@@ -457,11 +457,13 @@ def submit_databricks_job(
 ) -> dict:
     """Submit a Databricks run (non-blocking) and return a trigger to defer on.
 
-    Runs the upstream ``DatabricksSubmitRunOperator`` with
-    ``wait_for_termination=False`` so it submits the run and returns without
-    polling, then hands back a ``DatabricksExecutionTrigger`` for the Triggerer.
-    The early ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works
-    while the task is deferred.
+    Builds the upstream ``DatabricksSubmitRunOperator`` with ``deferrable=True``
+    and calls its ``execute()``. In deferrable mode the operator submits the run
+    and then raises ``TaskDeferred`` carrying a ``DatabricksExecutionTrigger`` it
+    constructs itself — so the trigger is always built with the kwargs the
+    *installed* databricks provider expects. We catch that exception and reuse
+    the trigger. The early ``spark_agnostic`` XCom is pushed here so
+    ``SparkJobLink`` works while the task is deferred.
     """
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
@@ -469,9 +471,8 @@ def submit_databricks_job(
     from airflow.providers.databricks.operators.databricks import (
         DatabricksSubmitRunOperator,
     )
-    from airflow.providers.databricks.triggers.databricks import (
-        DatabricksExecutionTrigger,
-    )
+
+    from overture_airflow_provider._airflow_compat import TaskDeferred
 
     # Notebook jobs (module_name set) require the bundled runner notebook to be
     # pre-deployed to the workspace; fail fast with guidance if it's missing.
@@ -489,13 +490,21 @@ def submit_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
-    # wait_for_termination=False -> execute() submits and returns without polling.
-    platform_operator.execute(context)
+    # deferrable=True -> execute() submits the run, then raises TaskDeferred with
+    # the provider's own DatabricksExecutionTrigger. We reuse that trigger.
+    try:
+        platform_operator.execute(context)
+    except TaskDeferred as deferred:
+        trigger = deferred.trigger
+    else:  # pragma: no cover - deferrable execute always defers
+        raise RuntimeError(
+            "DatabricksSubmitRunOperator did not defer; expected deferrable=True to raise."
+        )
 
     conn_id = cluster_info["databricks_conf"]["databricks_conn_id"]
     run_id = platform_operator.run_id
     hook = DatabricksHook(databricks_conn_id=conn_id)
-    run_page_url = hook.get_run_page_url(run_id)
+    run_page_url = getattr(trigger, "run_page_url", None) or hook.get_run_page_url(run_id)
 
     ti = context.get("ti") if hasattr(context, "get") else None
     if ti is not None and callable(getattr(ti, "xcom_push", None)):
@@ -504,11 +513,6 @@ def submit_databricks_job(
             value=_build_agnostic_xcom_payload(setup_info, job_url=run_page_url),
         )
 
-    trigger = DatabricksExecutionTrigger(
-        run_id=run_id,
-        databricks_conn_id=conn_id,
-        run_page_url=run_page_url,
-    )
     return {
         "trigger": trigger,
         "run_id": run_id,

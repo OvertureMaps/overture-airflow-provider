@@ -334,7 +334,7 @@ def build_glue_operator_kwargs(
         "create_job_kwargs": create_job_kwargs,
         "run_job_kwargs": {"JobRunQueuingEnabled": True},
         "verbose": True,
-        "wait_for_completion": False,
+        "deferrable": True,
     }
 
     return {
@@ -370,13 +370,17 @@ def submit_glue_job(
 ) -> dict:
     """Submit a Glue job (non-blocking) and return a trigger to defer on.
 
-    Builds and runs the upstream ``GlueJobOperator`` with
-    ``wait_for_completion=False`` so it submits the run and returns immediately,
-    then hands back a ``GlueJobCompleteTrigger`` for the Triggerer to poll. The
-    early ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works while
-    the task is deferred.
+    Builds the upstream ``GlueJobOperator`` with ``deferrable=True`` and calls
+    its ``execute()``. In deferrable mode the operator submits the run and then
+    raises ``TaskDeferred`` carrying a ``GlueJobCompleteTrigger`` it constructs
+    itself — so the trigger is always built with the kwargs the *installed*
+    amazon provider expects (older versions don't accept ``region_name``). We
+    catch that exception and hand the trigger back to our operator's
+    ``execute_complete`` instead of the inner operator's. The early
+    ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works while the
+    task is deferred.
     """
-    from airflow.providers.amazon.aws.triggers.glue import GlueJobCompleteTrigger
+    from overture_airflow_provider._airflow_compat import TaskDeferred
 
     if not module_name:
         # Scala job: ensure placeholder script exists.
@@ -429,9 +433,16 @@ def submit_glue_job(
             "Tags": built["tags"],
         }
 
-    # wait_for_completion=False -> execute() submits and returns the run id.
-    run_id = platform_operator.execute(context)
+    # deferrable=True -> execute() submits the run, then raises TaskDeferred with
+    # the provider's own GlueJobCompleteTrigger. We reuse that trigger.
+    try:
+        platform_operator.execute(context)
+    except TaskDeferred as deferred:
+        trigger = deferred.trigger
+    else:  # pragma: no cover - deferrable execute always defers
+        raise RuntimeError("GlueJobOperator did not defer; expected deferrable=True to raise.")
 
+    run_id = getattr(platform_operator, "_job_run_id", None) or getattr(trigger, "run_id", None)
     region = setup_info["aws_region"]
     job_name = setup_info["job_name"]
     job_url = _glue_console_url(region, job_name, run_id)
@@ -443,13 +454,6 @@ def submit_glue_job(
             value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
         )
 
-    trigger = GlueJobCompleteTrigger(
-        job_name=job_name,
-        run_id=run_id,
-        verbose=True,
-        aws_conn_id=platform_operator.aws_conn_id,
-        region_name=region,
-    )
     return {
         "trigger": trigger,
         "run_id": run_id,

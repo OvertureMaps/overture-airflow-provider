@@ -272,10 +272,18 @@ class TestGlueExecuteJob:
 
         captured = {}
 
-        # GlueJobOperator.execute() with wait_for_completion=False returns the run id.
+        from overture_airflow_provider._airflow_compat import TaskDeferred
+
+        # deferrable=True -> GlueJobOperator.execute() submits then raises
+        # TaskDeferred carrying its own trigger.
+        mock_trigger = MagicMock(name="GlueJobCompleteTrigger", run_id="jr_early123")
+
         mock_operator = MagicMock()
-        mock_operator.execute.return_value = "jr_early123"
+        mock_operator._job_run_id = "jr_early123"
         mock_operator.aws_conn_id = "aws_default"
+        mock_operator.execute.side_effect = TaskDeferred(
+            trigger=mock_trigger, method_name="execute_complete"
+        )
 
         mock_glue_client = MagicMock()
 
@@ -350,9 +358,9 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["GlueVersion"] == "5.0"
 
-    def test_operator_kwargs_include_wait_for_completion_false(self):
+    def test_operator_kwargs_include_deferrable_true(self):
         _, captured = self._run_glue()
-        assert captured["call_kwargs"]["wait_for_completion"] is False
+        assert captured["call_kwargs"]["deferrable"] is True
 
     def test_result_contains_trigger_and_run_id(self):
         result, _ = self._run_glue()
@@ -716,10 +724,19 @@ class TestDatabricksSubmitJob:
     }
 
     def _run(self, context):
+        from overture_airflow_provider._airflow_compat import TaskDeferred
         from overture_airflow_provider._databricks import submit_databricks_job
+
+        mock_trigger = MagicMock(
+            name="DatabricksExecutionTrigger",
+            run_page_url="https://dbc.example/runs/12345",
+        )
 
         mock_operator = MagicMock()
         mock_operator.run_id = "12345"
+        mock_operator.execute.side_effect = TaskDeferred(
+            trigger=mock_trigger, method_name="execute_complete"
+        )
 
         mock_hook = MagicMock()
         mock_hook.get_run_page_url.return_value = "https://dbc.example/runs/12345"
@@ -771,7 +788,7 @@ class TestDatabricksSubmitJob:
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
 
-    def test_operator_kwargs_include_wait_for_termination_false(self):
+    def test_operator_kwargs_include_deferrable_true(self):
         from overture_airflow_provider._databricks import build_databricks_operator_kwargs
 
         result = build_databricks_operator_kwargs(
@@ -781,7 +798,7 @@ class TestDatabricksSubmitJob:
             class_name="MyClass",
             task_id="execute_spark_job",
         )
-        assert result["operator_kwargs"]["wait_for_termination"] is False
+        assert result["operator_kwargs"]["deferrable"] is True
 
 
 class TestCompleteDatabricksJob:

@@ -237,9 +237,6 @@ def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name
     return primary
 
 
-
-
-
 @task_group
 def _spark_agnostic_task_group(
     *,

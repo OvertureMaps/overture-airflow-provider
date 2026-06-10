@@ -253,7 +253,7 @@ class TestGlueExecuteJob:
         simulate_submit=False,
         mapping_context=False,
     ):
-        from overture_airflow_provider._glue import execute_glue_job
+        from overture_airflow_provider._glue import submit_glue_job
 
         setup_info = _glue_setup_info()
         package_info = {
@@ -272,17 +272,12 @@ class TestGlueExecuteJob:
 
         captured = {}
 
-        def fake_execute(context):
-            if simulate_submit:
-                context["ti"].xcom_push(key="glue_job_run_id", value="jr_early123")
-
+        # GlueJobOperator.execute() with wait_for_completion=False returns the run id.
         mock_operator = MagicMock()
-        mock_operator.execute.side_effect = fake_execute
+        mock_operator.execute.return_value = "jr_early123"
+        mock_operator.aws_conn_id = "aws_default"
 
         mock_glue_client = MagicMock()
-        mock_glue_client.get_job.side_effect = MagicMock(
-            side_effect=mock_glue_client.exceptions.EntityNotFoundException
-        )
 
         with (
             patch(
@@ -293,16 +288,9 @@ class TestGlueExecuteJob:
                 "overture_airflow_provider._glue.boto3.client",
                 return_value=mock_glue_client,
             ),
-            patch(
-                "overture_airflow_provider._glue._get_glue_job_url_and_status",
-                return_value={
-                    "job_url": "https://console.aws.amazon.com/...",
-                    "status": {"JobRunState": "SUCCEEDED"},
-                },
-            ),
         ):
             context = self._make_context(mapping=mapping_context)
-            result = execute_glue_job(
+            result = submit_glue_job(
                 setup_info=setup_info,
                 package_info=package_info,
                 jar_info=jar_info,
@@ -362,16 +350,17 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["GlueVersion"] == "5.0"
 
-    def test_operator_kwargs_include_deferrable_true(self):
+    def test_operator_kwargs_include_wait_for_completion_false(self):
         _, captured = self._run_glue()
-        assert captured["call_kwargs"]["deferrable"] is True
+        assert captured["call_kwargs"]["wait_for_completion"] is False
 
-    def test_result_contains_job_url(self):
+    def test_result_contains_trigger_and_run_id(self):
         result, _ = self._run_glue()
-        assert "job_url" in result
+        assert result["run_id"] == "jr_early123"
+        assert result["trigger"] is not None
 
     def test_pushes_spark_agnostic_xcom_after_submission(self):
-        _, captured = self._run_glue(simulate_submit=True)
+        _, captured = self._run_glue()
         calls = captured["context"]["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
@@ -381,7 +370,7 @@ class TestGlueExecuteJob:
 
     def test_early_xcom_push_fires_with_non_dict_context(self):
         # Airflow 3.x passes a Mapping Context (not a dict). Regression for #33.
-        _, captured = self._run_glue(simulate_submit=True, mapping_context=True)
+        _, captured = self._run_glue(mapping_context=True)
         assert not isinstance(captured["context"], dict)
         calls = captured["context"]["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
@@ -501,21 +490,10 @@ class TestGlueExecuteJob:
             assert "spark.jars.packages" not in default_args["--conf"]
 
 
-class TestGetGlueJobUrlAndStatus:
-    def _make_operator(self, job_state):
-        op = MagicMock()
-        op.xcom_pull.return_value = {
-            "region_name": "us-west-2",
-            "aws_domain": "aws.amazon.com",
-            "job_name": "test-job",
-            "job_run_id": "jr_abc123",
-        }
-        return op
-
+class TestCompleteGlueJob:
     def _run(self, job_state):
-        from overture_airflow_provider._glue import _get_glue_job_url_and_status
+        from overture_airflow_provider._glue import complete_glue_job
 
-        operator = self._make_operator(job_state)
         context = {"ti": MagicMock(task_id="execute_spark_job")}
 
         mock_glue = MagicMock()
@@ -525,16 +503,16 @@ class TestGetGlueJobUrlAndStatus:
             "overture_airflow_provider._glue.boto3.client",
             return_value=mock_glue,
         ):
-            return _get_glue_job_url_and_status(operator, context, _glue_setup_info())
+            return complete_glue_job(_glue_setup_info(), "jr_abc123", context)
 
     def test_succeeded_returns_result(self):
         result = self._run("SUCCEEDED")
         assert "job_url" in result
         assert "status" in result
 
-    def test_job_url_contains_job_name(self):
+    def test_job_url_contains_run_id(self):
         result = self._run("SUCCEEDED")
-        assert "test-job" in result["job_url"]
+        assert result["job_url"].endswith("/run/jr_abc123")
 
     def test_failed_raises(self):
         with pytest.raises(AirflowException, match="did not succeed"):
@@ -729,33 +707,22 @@ class TestDatabricksSetupCluster:
         assert handler.download_jars() is None
 
 
-class TestDatabricksExecuteJob:
-    def test_pushes_spark_agnostic_xcom_after_submission(self):
-        from overture_airflow_provider._databricks import execute_databricks_job
+class TestDatabricksSubmitJob:
+    _CLUSTER_INFO = {
+        "new_cluster": {"spark_version": "15.4.x-scala2.12"},
+        "libraries": [],
+        "databricks_conf": {"databricks_conn_id": "databricks_default"},
+        "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
+    }
 
-        setup_info = _databricks_setup_info()
-        cluster_info = {
-            "new_cluster": {"spark_version": "15.4.x-scala2.12"},
-            "libraries": [],
-            "databricks_conf": {"databricks_conn_id": "databricks_default"},
-            "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
-        }
-        context = {"ti": MagicMock()}
+    def _run(self, context):
+        from overture_airflow_provider._databricks import submit_databricks_job
 
         mock_operator = MagicMock()
-
-        def fake_execute(ctx):
-            ctx["ti"].xcom_push(key="run_id", value="12345")
-            ctx["ti"].xcom_push(key="run_page_url", value="https://dbc.example/runs/12345")
-
-        mock_operator.execute.side_effect = fake_execute
-        mock_operator.xcom_pull.side_effect = lambda _ctx, key: {
-            "run_id": "12345",
-            "run_page_url": "https://dbc.example/runs/12345",
-        }[key]
+        mock_operator.run_id = "12345"
 
         mock_hook = MagicMock()
-        mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
+        mock_hook.get_run_page_url.return_value = "https://dbc.example/runs/12345"
 
         with (
             patch(
@@ -768,16 +735,26 @@ class TestDatabricksExecuteJob:
             ),
             patch("overture_airflow_provider._databricks.preflight_databricks_runner"),
         ):
-            execute_databricks_job(
-                setup_info=setup_info,
-                cluster_info=cluster_info,
+            result = submit_databricks_job(
+                setup_info=_databricks_setup_info(),
+                cluster_info=self._CLUSTER_INFO,
                 module_name="my_module",
                 class_name="MyClass",
                 parameters='{"key":"value"}',
                 task_id="execute_spark_job",
                 context=context,
             )
+        return result
 
+    def test_returns_trigger_and_run_id(self):
+        result = self._run({"ti": MagicMock()})
+        assert result["run_id"] == "12345"
+        assert result["trigger"] is not None
+        assert result["run_page_url"] == "https://dbc.example/runs/12345"
+
+    def test_pushes_spark_agnostic_xcom_after_submission(self):
+        context = {"ti": MagicMock()}
+        self._run(context)
         calls = context["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
@@ -787,76 +764,71 @@ class TestDatabricksExecuteJob:
 
     def test_early_xcom_push_fires_with_non_dict_context(self):
         # Airflow 3.x passes a Mapping Context (not a dict). Regression for #33.
-        from overture_airflow_provider._databricks import execute_databricks_job
-
-        setup_info = _databricks_setup_info()
-        cluster_info = {
-            "new_cluster": {"spark_version": "15.4.x-scala2.12"},
-            "libraries": [],
-            "databricks_conf": {"databricks_conn_id": "databricks_default"},
-            "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
-        }
         context = _AirflowContext({"ti": MagicMock()})
+        self._run(context)
+        assert not isinstance(context, dict)
+        calls = context["ti"].xcom_push.call_args_list
+        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
+        assert spark_agnostic_calls
 
-        mock_operator = MagicMock()
+    def test_operator_kwargs_include_wait_for_termination_false(self):
+        from overture_airflow_provider._databricks import build_databricks_operator_kwargs
 
-        def fake_execute(ctx):
-            ctx["ti"].xcom_push(key="run_id", value="12345")
-            ctx["ti"].xcom_push(key="run_page_url", value="https://dbc.example/runs/12345")
+        result = build_databricks_operator_kwargs(
+            setup_info=_databricks_setup_info(),
+            cluster_info=self._CLUSTER_INFO,
+            module_name="my_module",
+            class_name="MyClass",
+            task_id="execute_spark_job",
+        )
+        assert result["operator_kwargs"]["wait_for_termination"] is False
 
-        mock_operator.execute.side_effect = fake_execute
-        mock_operator.xcom_pull.side_effect = lambda _ctx, key: {
+
+class TestCompleteDatabricksJob:
+    _CLUSTER_INFO = {
+        "databricks_conf": {"databricks_conn_id": "databricks_default"},
+    }
+
+    def _run(self, *, successful):
+        from overture_airflow_provider._databricks import complete_databricks_job
+
+        event = {
             "run_id": "12345",
             "run_page_url": "https://dbc.example/runs/12345",
-        }[key]
+            "run_state": '{"life_cycle_state": "TERMINATED"}',
+            "errors": [],
+        }
+
+        mock_run_state = MagicMock()
+        mock_run_state.is_successful = successful
+        mock_run_state_cls = MagicMock()
+        mock_run_state_cls.from_json.return_value = mock_run_state
 
         mock_hook = MagicMock()
         mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
 
         with (
             patch(
-                "airflow.providers.databricks.operators.databricks.DatabricksSubmitRunOperator",
-                return_value=mock_operator,
-            ),
-            patch(
                 "airflow.providers.databricks.hooks.databricks.DatabricksHook",
                 return_value=mock_hook,
             ),
-            patch("overture_airflow_provider._databricks.preflight_databricks_runner"),
+            patch(
+                "airflow.providers.databricks.hooks.databricks.RunState",
+                mock_run_state_cls,
+            ),
         ):
-            execute_databricks_job(
-                setup_info=setup_info,
-                cluster_info=cluster_info,
-                module_name="my_module",
-                class_name="MyClass",
-                parameters='{"key":"value"}',
-                task_id="execute_spark_job",
-                context=context,
+            return complete_databricks_job(
+                _databricks_setup_info(), self._CLUSTER_INFO, event, {"ti": MagicMock()}
             )
 
-        assert not isinstance(context, dict)
-        calls = context["ti"].xcom_push.call_args_list
-        spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
-        assert spark_agnostic_calls
+    def test_success_returns_result(self):
+        result = self._run(successful=True)
+        assert result["job_url"] == "https://dbc.example/runs/12345"
+        assert "status" in result
 
-    def test_operator_kwargs_include_deferrable_true(self):
-        from overture_airflow_provider._databricks import build_databricks_operator_kwargs
-
-        setup_info = _databricks_setup_info()
-        cluster_info = {
-            "new_cluster": {"spark_version": "15.4.x-scala2.12"},
-            "libraries": [],
-            "databricks_conf": {"databricks_conn_id": "databricks_default"},
-            "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
-        }
-        result = build_databricks_operator_kwargs(
-            setup_info=setup_info,
-            cluster_info=cluster_info,
-            module_name="my_module",
-            class_name="MyClass",
-            task_id="execute_spark_job",
-        )
-        assert result["operator_kwargs"]["deferrable"] is True
+    def test_failure_raises(self):
+        with pytest.raises(AirflowException, match="failed"):
+            self._run(successful=False)
 
 
 class TestDatabricksRunnerPreflight:

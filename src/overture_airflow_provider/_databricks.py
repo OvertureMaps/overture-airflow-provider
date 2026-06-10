@@ -528,17 +528,16 @@ def complete_databricks_job(
     Called from the deferrable operator's ``execute_complete`` after the
     ``DatabricksExecutionTrigger`` reports the run reached a terminal state.
     """
-    from overture_airflow_provider._airflow_compat import AirflowException
-
     from airflow.providers.databricks.hooks.databricks import DatabricksHook, RunState
+
+    from overture_airflow_provider._airflow_compat import AirflowException
 
     run_id = event["run_id"]
     run_page_url = event.get("run_page_url")
     run_state = RunState.from_json(event["run_state"])
     if not run_state.is_successful:
         raise AirflowException(
-            f"Databricks run {run_id} failed with state {run_state}; "
-            f"errors: {event.get('errors')}"
+            f"Databricks run {run_id} failed with state {run_state}; errors: {event.get('errors')}"
         )
 
     hook = DatabricksHook(databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"])

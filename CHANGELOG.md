@@ -11,17 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`GlueJobOperator` and `DatabricksSubmitRunOperator` are now deferrable.**
-  Both operators are constructed with `deferrable=True` inside the provider.
-  Instead of blocking a Celery worker for the full job duration (up to 8 hours),
-  the operator submits the job and immediately releases the worker slot by raising
-  `TaskDeferred`. Airflow's Triggerer process handles polling asynchronously at
-  negligible memory cost (~MB for hundreds of tasks vs. ~200–500 MB per blocked
-  worker). This eliminates the OOM SIGKILL pressure on MWAA worker fleets running
-  concurrent long-running Spark jobs. No DAG changes required — `deferrable` is a
-  platform-internal concern and is not exposed as a parameter on
-  `spark_agnostic_task_group`. Requires Airflow 2.2+ Triggerer (standard in MWAA
-  2.4+).
+- **Spark job execution is now deferrable via a custom operator.** The
+  `execute_spark_job` task is now a real `BaseOperator`
+  (`SparkAgnosticExecuteOperator`) instead of a `@task`-decorated
+  `PythonOperator`. It submits the Glue/Databricks job non-blocking and defers
+  on the upstream provider's own trigger (`GlueJobCompleteTrigger`,
+  `DatabricksExecutionTrigger`), resuming via its own `execute_complete` when the
+  Triggerer reports completion. Instead of blocking a Celery worker for the full
+  job duration (up to 8 hours), the worker slot is released within seconds of
+  submission; the Triggerer polls asynchronously at negligible memory cost (~MB
+  for hundreds of tasks vs. ~200–500 MB per blocked worker). This eliminates the
+  OOM SIGKILL pressure on MWAA worker fleets running concurrent long-running
+  Spark jobs.
+
+  The earlier `deferrable=True` flag on the inner operators did **not** work:
+  because the provider called `operator.execute()` inside a `PythonOperator`, the
+  resulting `TaskDeferred` deferred the `PythonOperator`, whose missing
+  `execute_complete` crashed on resume. The custom operator owns
+  `execute_complete`, so Airflow resumes it correctly.
+
+  No DAG changes required — deferral is a platform-internal concern and is not
+  exposed as a parameter on `spark_agnostic_task_group`. Wherobots has no
+  upstream trigger and continues to run synchronously. Requires an Airflow
+  Triggerer (standard in MWAA 2.4+).
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45),
   fixes [#46](https://github.com/OvertureMaps/overture-airflow-provider/issues/46))
 

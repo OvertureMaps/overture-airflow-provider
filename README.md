@@ -17,7 +17,7 @@ value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed
 in via typed config dataclasses. No defaults are baked in for any one
 organization.
 
-> Status: `0.1.0` — initial MVP. Unit + mock test coverage only; live-platform
+> Status: `0.2.0` — Beta. Unit + mock test coverage only; live-platform
 > E2E tests are tracked as a follow-up.
 
 ## Install

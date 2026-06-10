@@ -289,7 +289,11 @@ class DatabricksConfig:
         dbfs_root_template: Template for the DBFS root used to stage job assets.
             ``{s3_assets_root}`` is substituted at runtime.
         workspace_scripts_path_template: Template for the workspace path
-            holding init scripts. ``{s3_assets_root}`` is substituted at runtime.
+            holding the runner notebook and init script. ``{s3_assets_root}`` is
+            substituted at runtime. Use a **bare** workspace path (e.g.
+            ``/Shared/...``, ``/Users/...``), not the ``/Workspace/...`` FUSE-mount
+            prefix: the Workspace REST and Jobs APIs address objects by bare path.
+            A leading ``/Workspace`` is stripped automatically if supplied.
         cluster_init_script_name: Filename of the cluster init script located
             under ``workspace_scripts_path_template``.
         custom_tags: Cluster ``custom_tags`` dict applied to every cluster the
@@ -344,7 +348,7 @@ class DatabricksConfig:
     cluster_conf: dict[str, Any] = field(default_factory=dict)
     extra_libraries: list[dict[str, Any]] = field(default_factory=list)
     dbfs_root_template: str = "dbfs:/FileStore/deploy/{s3_assets_root}"
-    workspace_scripts_path_template: str = "/Workspace/Shared/{s3_assets_root}"
+    workspace_scripts_path_template: str = "/Shared/{s3_assets_root}"
     cluster_init_script_name: str = "agnostic_operator_cluster_init_databricks.sh"
     custom_tags: dict[str, str] = field(default_factory=dict)
     spark_conf: dict[str, Any] = field(default_factory=dict)

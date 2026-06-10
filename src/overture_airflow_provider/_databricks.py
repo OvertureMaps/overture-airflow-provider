@@ -15,6 +15,22 @@ _SPARK_TO_ICEBERG_VERSION_MAP = {
 }
 
 
+def _normalize_workspace_path(path: str) -> str:
+    """Return a bare Databricks workspace path, stripping the ``/Workspace`` prefix.
+
+    ``/Workspace/...`` is the cluster FUSE-mount convention; the Workspace REST
+    API (``2.0/workspace/get-status``), notebook ``notebook_path`` and workspace
+    ``init_scripts`` destinations all address objects by their bare path
+    (``/Shared/...``, ``/Users/...``). Stripping the prefix keeps preflight, the
+    notebook task and the init-script reference consistent and API-addressable.
+    """
+    if path == "/Workspace":
+        return "/"
+    if path.startswith("/Workspace/"):
+        return path[len("/Workspace") :]
+    return path
+
+
 def discover_gpu_cluster_options(
     databricks_conn_id: str, *, need_nodes: bool = True, need_runtime: bool = True
 ) -> dict:
@@ -225,9 +241,11 @@ def setup_databricks_cluster(
     )
 
     databricks_conf = setup_info["databricks_conf"]
-    databricks_deployed_scripts_path = setup_info[
-        "databricks_workspace_scripts_path_template"
-    ].format(s3_assets_root=setup_info["s3_assets_root"])
+    databricks_deployed_scripts_path = _normalize_workspace_path(
+        setup_info["databricks_workspace_scripts_path_template"].format(
+            s3_assets_root=setup_info["s3_assets_root"]
+        )
+    )
     cluster_init_script_name = setup_info["databricks_cluster_init_script_name"]
     custom_tags = dict(setup_info.get("databricks_custom_tags", {}) or {})
 

@@ -572,6 +572,30 @@ class TestGlueHandlerCompleteJobEventContract:
         assert self._complete(None) is None
 
 
+class TestNormalizeWorkspacePath:
+    def test_strips_workspace_prefix(self):
+        from overture_airflow_provider._databricks import _normalize_workspace_path
+
+        assert _normalize_workspace_path("/Workspace/Shared/x") == "/Shared/x"
+
+    def test_bare_path_unchanged(self):
+        from overture_airflow_provider._databricks import _normalize_workspace_path
+
+        assert _normalize_workspace_path("/Shared/x") == "/Shared/x"
+        assert _normalize_workspace_path("/Users/me/x") == "/Users/me/x"
+
+    def test_bare_workspace_root_becomes_slash(self):
+        from overture_airflow_provider._databricks import _normalize_workspace_path
+
+        assert _normalize_workspace_path("/Workspace") == "/"
+
+    def test_does_not_strip_substring_match(self):
+        from overture_airflow_provider._databricks import _normalize_workspace_path
+
+        # "/WorkspaceShared" is not the "/Workspace/" mount prefix.
+        assert _normalize_workspace_path("/WorkspaceShared/x") == "/WorkspaceShared/x"
+
+
 class TestDatabricksSetupCluster:
     def _run(
         self,
@@ -609,6 +633,17 @@ class TestDatabricksSetupCluster:
     def test_iceberg_keys_in_merged_conf(self):
         conf = self._run()["merged_spark_conf"]
         assert "spark.sql.extensions" in conf
+
+    def test_workspace_path_normalized_strips_workspace_prefix(self):
+        # Fixture template is "/Workspace/Shared/{s3_assets_root}"; the Workspace
+        # REST/Jobs APIs want the bare path, so setup_cluster must strip it.
+        result = self._run()
+        assert result["databricks_deployed_scripts_path"] == "/Shared/spark-agnostic-operator"
+        init_dest = result["new_cluster"]["init_scripts"][0]["workspace"]["destination"]
+        assert init_dest == (
+            "/Shared/spark-agnostic-operator/agnostic_operator_cluster_init_databricks.sh"
+        )
+        assert not init_dest.startswith("/Workspace/")
 
     def test_libraries_contain_python_packages(self):
         result = self._run(python_packages="overture-spark==1.0 numba")

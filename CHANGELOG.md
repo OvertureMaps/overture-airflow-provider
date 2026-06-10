@@ -53,6 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cluster-launch failure. Both required workspace assets are now checked up
   front and fail fast with one actionable error.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
+- **Databricks workspace paths now use the bare workspace path, not the
+  `/Workspace` FUSE prefix.** `DatabricksConfig.workspace_scripts_path_template`
+  defaulted to `/Workspace/Shared/{s3_assets_root}`, but the Workspace REST
+  (`2.0/workspace/get-status`) and Jobs (`notebook_path`, `init_scripts`) APIs
+  address objects by bare path (`/Shared/...`). The `/Workspace` prefix caused a
+  false-negative preflight (`RESOURCE_DOES_NOT_EXIST`) even when the assets were
+  deployed at `/Shared/...`. The default is now `/Shared/{s3_assets_root}`, and
+  a leading `/Workspace` is stripped from the resolved path so preflight, the
+  notebook task and the init-script reference stay consistent and
+  API-addressable. Caught by a live smoke test.
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
 
 ## [0.2.0] - 2026-06-10
 

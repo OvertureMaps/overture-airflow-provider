@@ -158,6 +158,23 @@ If the notebook is missing, the task group runs a **fail-fast preflight** during
 job execution and raises an actionable error instead of failing opaquely
 mid-run.
 
+### Cluster init script
+
+A Databricks run requires **two** workspace assets in the
+`workspace_scripts_path_template` folder:
+
+1. the runner notebook (`job_runner_databricks`, above), and
+2. the **cluster init script** named by
+   `DatabricksConfig.cluster_init_script_name` (default
+   `agnostic_operator_cluster_init_databricks.sh`), wired into the cluster's
+   `init_scripts`.
+
+The init script is **not** bundled with the provider — its contents are
+platform/CI-owned — so deploy it to the same workspace folder via your CI/CD
+pipeline. The preflight checks **both** assets and fails fast with one
+actionable error if either is missing (a missing init script otherwise surfaces
+as an opaque cluster-launch failure).
+
 ## Local rendering (testing without Airflow)
 
 The `overture_airflow_provider.render` module produces the exact platform

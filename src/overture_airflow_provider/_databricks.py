@@ -328,14 +328,39 @@ def _is_runner_not_found(exc: Exception) -> bool:
     return getattr(response, "status_code", None) == 404
 
 
+def _workspace_object_exists(hook, path: str) -> bool:
+    """Return True if a Databricks workspace object exists, False if absent (404).
+
+    Re-raises any non-404 error so the caller can decide whether to warn-and-skip.
+    """
+    try:
+        hook._do_api_call(
+            ("GET", "2.0/workspace/get-status"),
+            {"path": path},
+            wrap_http_errors=False,
+        )
+        return True
+    except Exception as exc:
+        if _is_runner_not_found(exc):
+            return False
+        raise
+
+
 def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
-    """Fail fast when the Databricks runner notebook is not deployed.
+    """Fail fast when required Databricks workspace assets are not deployed.
 
     Unlike Glue/Wherobots — whose runners auto-upload to S3 during setup — the
-    Databricks runner is a Workspace Notebook that must be staged out-of-band
-    (CI/CD or :func:`runner_assets.upload_databricks_runner_to_workspace`). If
-    it's missing, the submit otherwise fails opaquely mid-run. This checks the
-    resolved workspace path up front and raises an actionable error instead.
+    Databricks job depends on workspace assets that must be staged out-of-band
+    (CI/CD or :func:`runner_assets.upload_databricks_runner_to_workspace`):
+
+    - the runner **notebook** (``job_runner_databricks``), and
+    - the cluster **init script** (``databricks_cluster_init_script_name``),
+      which is wired into ``new_cluster.init_scripts`` and is *not* bundled with
+      the provider.
+
+    If either is missing the submit otherwise fails opaquely mid-run (the init
+    script as a cluster-launch failure). This checks the resolved workspace
+    paths up front and raises one actionable error instead.
 
     The check reuses the official ``DatabricksHook`` and the same
     ``databricks_conn_id`` the submit uses, so preflight auth always matches the
@@ -347,32 +372,56 @@ def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
     HTTP error, or an SDK/provider mismatch), a warning is printed and the check
     is skipped so a working deployment is never turned into a hard failure.
     """
-    notebook_path = f"{cluster_info['databricks_deployed_scripts_path']}/job_runner_databricks"
+    scripts_path = cluster_info["databricks_deployed_scripts_path"]
     conn_id = cluster_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
+
+    # (workspace path, human label, remediation hint) per required asset.
+    required_assets = [
+        (
+            f"{scripts_path}/job_runner_databricks",
+            "runner notebook",
+            "Deploy it via your CI/CD pipeline or overture_airflow_provider."
+            "runner_assets.upload_databricks_runner_to_workspace(...).",
+        ),
+    ]
+    init_script_name = setup_info.get("databricks_cluster_init_script_name")
+    if init_script_name:
+        required_assets.append(
+            (
+                f"{scripts_path}/{init_script_name}",
+                "cluster init script",
+                "Deploy it to the workspace scripts path via your CI/CD pipeline; "
+                "it is not bundled with the provider.",
+            )
+        )
 
     try:
         from airflow.providers.databricks.hooks.databricks import DatabricksHook
 
         hook = DatabricksHook(databricks_conn_id=conn_id)
-        hook._do_api_call(
-            ("GET", "2.0/workspace/get-status"),
-            {"path": notebook_path},
-            wrap_http_errors=False,
-        )
     except Exception as exc:
-        if _is_runner_not_found(exc):
-            raise RuntimeError(
-                f"Databricks runner notebook not found at {notebook_path!r}. Unlike "
-                "Glue and Wherobots, the Databricks runner is a Workspace Notebook that "
-                "must be deployed before the first run. Deploy it via your CI/CD pipeline "
-                "or overture_airflow_provider.runner_assets."
-                "upload_databricks_runner_to_workspace(...). See the README "
-                "'Databricks runner deployment' section."
-            ) from None
         print(
-            f"[Databricks] WARNING: could not verify runner notebook at {notebook_path} "
+            f"[Databricks] WARNING: could not construct hook to verify runner assets "
             f"({type(exc).__name__}: {exc}); proceeding without preflight"
         )
+        return
+
+    for path, label, hint in required_assets:
+        try:
+            exists = _workspace_object_exists(hook, path)
+        except Exception as exc:
+            print(
+                f"[Databricks] WARNING: could not verify {label} at {path} "
+                f"({type(exc).__name__}: {exc}); proceeding without preflight"
+            )
+            continue
+        if not exists:
+            raise RuntimeError(
+                f"Databricks {label} not found at {path!r}. Unlike Glue and "
+                "Wherobots, required Databricks workspace assets must be deployed "
+                f"before the first run. {hint} See the README "
+                "'Databricks runner deployment' section."
+            ) from None
 
 
 def build_databricks_operator_kwargs(

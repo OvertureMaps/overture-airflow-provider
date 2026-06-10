@@ -992,6 +992,46 @@ class TestDatabricksRunnerPreflight:
 
         assert "could not verify runner notebook" in capsys.readouterr().out
 
+    def test_checks_both_assets_when_init_script_present(self):
+        from overture_airflow_provider._databricks import preflight_databricks_runner
+
+        mock_hook = MagicMock()
+        mock_hook._do_api_call.return_value = {"object_type": "NOTEBOOK"}
+
+        setup_info = {"databricks_cluster_init_script_name": "init.sh"}
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+            return_value=mock_hook,
+        ):
+            preflight_databricks_runner(setup_info, self._CLUSTER_INFO)
+
+        checked_paths = [c.args[1]["path"] for c in mock_hook._do_api_call.call_args_list]
+        assert self._NOTEBOOK_PATH in checked_paths
+        assert "/Workspace/Shared/spark-agnostic-operator/init.sh" in checked_paths
+
+    def test_raises_actionable_error_when_init_script_missing(self):
+        from requests.exceptions import HTTPError
+
+        from overture_airflow_provider._databricks import preflight_databricks_runner
+
+        init_path = "/Workspace/Shared/spark-agnostic-operator/init.sh"
+
+        def _status(method, params, **kwargs):
+            if params["path"] == init_path:
+                raise HTTPError(response=MagicMock(status_code=404))
+            return {"object_type": "NOTEBOOK"}
+
+        mock_hook = MagicMock()
+        mock_hook._do_api_call.side_effect = _status
+
+        setup_info = {"databricks_cluster_init_script_name": "init.sh"}
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+            return_value=mock_hook,
+        ):
+            with pytest.raises(RuntimeError, match="cluster init script not found"):
+                preflight_databricks_runner(setup_info, self._CLUSTER_INFO)
+
 
 class TestWherobotsSetupCluster:
     def _run(self, extra_spark_conf=None, iceberg_spark_config=None):

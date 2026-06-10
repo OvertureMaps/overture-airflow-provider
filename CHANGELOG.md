@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reads `value` (with a `run_id` fallback), so a successful Glue job resumes and
   finalizes correctly. Caught by a live smoke test.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
+- **Databricks preflight now also verifies the cluster init script.** The
+  preflight previously only checked the runner notebook, so a missing init
+  script (named by `DatabricksConfig.cluster_init_script_name`, wired into the
+  cluster's `init_scripts`) sailed past it and surfaced later as an opaque
+  cluster-launch failure. Both required workspace assets are now checked up
+  front and fail fast with one actionable error.
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
 
 ## [0.2.0] - 2026-06-10
 

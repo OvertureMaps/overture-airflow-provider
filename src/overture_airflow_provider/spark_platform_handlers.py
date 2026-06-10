@@ -281,7 +281,11 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
             task_id=task_id,
             context=context,
         )
-        return {"trigger": submitted["trigger"], "run_id": submitted["run_id"]}
+        return {
+            "trigger": submitted["trigger"],
+            "run_id": submitted["run_id"],
+            "result": submitted.get("result"),
+        }
 
     def complete_job(
         self,

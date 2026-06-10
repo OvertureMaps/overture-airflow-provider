@@ -799,6 +799,47 @@ class TestDatabricksSubmitJob:
             task_id="execute_spark_job",
         )
         assert result["operator_kwargs"]["deferrable"] is True
+        # Databricks only defers when wait_for_termination is True.
+        assert result["operator_kwargs"]["wait_for_termination"] is True
+
+    def test_synchronous_completion_returns_result_without_trigger(self):
+        # If the run reaches a terminal (successful) state within the submit
+        # window, DatabricksSubmitRunOperator.execute() returns normally instead
+        # of raising TaskDeferred. We must finalize with a result, not crash.
+        from overture_airflow_provider._databricks import submit_databricks_job
+
+        mock_operator = MagicMock()
+        mock_operator.run_id = "12345"
+        mock_operator.execute.return_value = None  # no TaskDeferred -> synchronous
+
+        mock_hook = MagicMock()
+        mock_hook.get_run_page_url.return_value = "https://dbc.example/runs/12345"
+        mock_hook.get_run.return_value = {"state": {"result_state": "SUCCESS"}}
+
+        with (
+            patch(
+                "airflow.providers.databricks.operators.databricks.DatabricksSubmitRunOperator",
+                return_value=mock_operator,
+            ),
+            patch(
+                "airflow.providers.databricks.hooks.databricks.DatabricksHook",
+                return_value=mock_hook,
+            ),
+            patch("overture_airflow_provider._databricks.preflight_databricks_runner"),
+        ):
+            result = submit_databricks_job(
+                setup_info=_databricks_setup_info(),
+                cluster_info=self._CLUSTER_INFO,
+                module_name="my_module",
+                class_name="MyClass",
+                parameters='{"key":"value"}',
+                task_id="execute_spark_job",
+                context={"ti": MagicMock()},
+            )
+
+        assert result["trigger"] is None
+        assert result["result"]["job_url"] == "https://dbc.example/runs/12345"
+        assert "status" in result["result"]
 
 
 class TestCompleteDatabricksJob:

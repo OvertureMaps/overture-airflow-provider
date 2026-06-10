@@ -425,6 +425,11 @@ def build_databricks_operator_kwargs(
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
         "deferrable": True,
+        # Required for the deferrable path: the operator only defers when
+        # wait_for_termination is True (otherwise it submits and returns without
+        # ever creating a trigger). Set explicitly so we don't depend on the
+        # provider's default.
+        "wait_for_termination": True,
     }
 
     # Equivalent payload for `databricks jobs submit --json @file.json`.
@@ -490,16 +495,19 @@ def submit_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
-    # deferrable=True -> execute() submits the run, then raises TaskDeferred with
-    # the provider's own DatabricksExecutionTrigger. We reuse that trigger.
+    # deferrable=True + wait_for_termination=True -> execute() submits the run,
+    # then (for a still-running job) raises TaskDeferred with the provider's own
+    # DatabricksExecutionTrigger, which we reuse. If the run is already terminal
+    # within the submit window the operator completes synchronously instead:
+    # execute() returns on success, or raises AirflowException on failure.
+    trigger = None
+    synchronous_success = False
     try:
         platform_operator.execute(context)
     except TaskDeferred as deferred:
         trigger = deferred.trigger
-    else:  # pragma: no cover - deferrable execute always defers
-        raise RuntimeError(
-            "DatabricksSubmitRunOperator did not defer; expected deferrable=True to raise."
-        )
+    else:
+        synchronous_success = True
 
     conn_id = cluster_info["databricks_conf"]["databricks_conn_id"]
     run_id = platform_operator.run_id
@@ -513,10 +521,17 @@ def submit_databricks_job(
             value=_build_agnostic_xcom_payload(setup_info, job_url=run_page_url),
         )
 
+    result = None
+    if synchronous_success:
+        # Run finished (successfully) before we could defer; build the final
+        # result so the operator can finalize without a trigger.
+        result = {"job_url": run_page_url, "status": hook.get_run(run_id)}
+
     return {
         "trigger": trigger,
         "run_id": run_id,
         "run_page_url": run_page_url,
+        "result": result,
         "platform_operator": platform_operator,
     }
 

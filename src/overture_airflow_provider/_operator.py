@@ -126,7 +126,9 @@ class SparkAgnosticExecuteOperator(BaseOperator):
 
         trigger = submitted.get("trigger")
         if trigger is None:
-            # Synchronous platform (Wherobots): result is already final.
+            # No trigger -> the run already finished (Wherobots always; Databricks
+            # when it reached a terminal state within the submit window). Finalize
+            # the result directly instead of deferring.
             return self._finalize(context, submitted["result"])
 
         self.defer(trigger=trigger, method_name="execute_complete")

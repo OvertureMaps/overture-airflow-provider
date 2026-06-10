@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-10
+
+### Changed
+
+- **`GlueJobOperator` and `DatabricksSubmitRunOperator` are now deferrable.**
+  Both operators are constructed with `deferrable=True` inside the provider.
+  Instead of blocking a Celery worker for the full job duration (up to 8 hours),
+  the operator submits the job and immediately releases the worker slot by raising
+  `TaskDeferred`. Airflow's Triggerer process handles polling asynchronously at
+  negligible memory cost (~MB for hundreds of tasks vs. ~200–500 MB per blocked
+  worker). This eliminates the OOM SIGKILL pressure on MWAA worker fleets running
+  concurrent long-running Spark jobs. No DAG changes required — `deferrable` is a
+  platform-internal concern and is not exposed as a parameter on
+  `spark_agnostic_task_group`. Requires Airflow 2.2+ Triggerer (standard in MWAA
+  2.4+).
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45),
+  fixes [#46](https://github.com/OvertureMaps/overture-airflow-provider/issues/46))
+
 ## [0.2.0] - 2026-06-10
 
 ### Changed

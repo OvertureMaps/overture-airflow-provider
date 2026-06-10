@@ -380,6 +380,7 @@ def build_glue_operator_kwargs(
         "create_job_kwargs": create_job_kwargs,
         "run_job_kwargs": {"JobRunQueuingEnabled": True},
         "verbose": True,
+        "deferrable": True,
     }
 
     return {

@@ -424,6 +424,7 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
+        "deferrable": True,
     }
 
     # Equivalent payload for `databricks jobs submit --json @file.json`.

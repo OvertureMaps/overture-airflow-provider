@@ -362,6 +362,10 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["GlueVersion"] == "5.0"
 
+    def test_operator_kwargs_include_deferrable_true(self):
+        _, captured = self._run_glue()
+        assert captured["call_kwargs"]["deferrable"] is True
+
     def test_result_contains_job_url(self):
         result, _ = self._run_glue()
         assert "job_url" in result
@@ -834,6 +838,25 @@ class TestDatabricksExecuteJob:
         calls = context["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
+
+    def test_operator_kwargs_include_deferrable_true(self):
+        from overture_airflow_provider._databricks import build_databricks_operator_kwargs
+
+        setup_info = _databricks_setup_info()
+        cluster_info = {
+            "new_cluster": {"spark_version": "15.4.x-scala2.12"},
+            "libraries": [],
+            "databricks_conf": {"databricks_conn_id": "databricks_default"},
+            "databricks_deployed_scripts_path": "/Workspace/Shared/spark-agnostic-operator",
+        }
+        result = build_databricks_operator_kwargs(
+            setup_info=setup_info,
+            cluster_info=cluster_info,
+            module_name="my_module",
+            class_name="MyClass",
+            task_id="execute_spark_job",
+        )
+        assert result["operator_kwargs"]["deferrable"] is True
 
 
 class TestDatabricksRunnerPreflight:

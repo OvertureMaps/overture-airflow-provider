@@ -88,7 +88,7 @@ class SparkPlatformHandler(ABC):
 
         Returns a dict that always contains ``"merged_spark_conf"``; Databricks
         additionally returns the ``new_cluster``/``libraries``/``databricks_conf``
-        payload consumed by ``execute_job``.
+        payload consumed by ``submit_job``.
         """
 
     @abstractmethod

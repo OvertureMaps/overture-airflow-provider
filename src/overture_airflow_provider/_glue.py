@@ -208,7 +208,7 @@ def build_glue_operator_kwargs(
     "script_location", "tags"}``.
 
     Side-effect-free: does NOT instantiate any operator, call boto3, or
-    invoke ``.execute()``. Used by both ``execute_glue_job`` (real submit)
+    invoke ``.execute()``. Used by both ``submit_glue_job`` (real submit)
     and ``overture_airflow_provider.render`` (Airflow-free preview).
     """
     if module_name:

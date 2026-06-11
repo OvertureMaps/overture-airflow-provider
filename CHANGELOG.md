@@ -46,28 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reads `value` (with a `run_id` fallback), so a successful Glue job resumes and
   finalizes correctly. Caught by a live smoke test.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
-- **Databricks preflight now also checks the cluster init script, and is
-  advisory (never fatal).** The preflight previously only checked the runner
-  notebook; it now also checks the cluster init script
-  (`DatabricksConfig.cluster_init_script_name`, wired into the cluster's
-  `init_scripts`). Both checks are best-effort: because Databricks'
-  `get-status` returns HTTP 404 for both a missing object *and* a
-  permission-denied read, a principal that can run but not read an asset (a
-  common, already-working setup) would be falsely blocked. A missing-asset
-  result is therefore downgraded to a loud, actionable warning and the run
-  proceeds — a genuinely missing asset still fails via Databricks' own run
-  error.
-  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
 - **Databricks workspace paths now use the bare workspace path, not the
   `/Workspace` FUSE prefix.** `DatabricksConfig.workspace_scripts_path_template`
   defaulted to `/Workspace/Shared/{s3_assets_root}`, but the Workspace REST
   (`2.0/workspace/get-status`) and Jobs (`notebook_path`, `init_scripts`) APIs
   address objects by bare path (`/Shared/...`). The `/Workspace` prefix caused a
-  false-negative preflight (`RESOURCE_DOES_NOT_EXIST`) even when the assets were
-  deployed at `/Shared/...`. The default is now `/Shared/{s3_assets_root}`, and
-  a leading `/Workspace` is stripped from the resolved path so preflight, the
-  notebook task and the init-script reference stay consistent and
-  API-addressable. Caught by a live smoke test.
+  mismatch even when the assets were deployed at `/Shared/...`. The default is
+  now `/Shared/{s3_assets_root}`, and a leading `/Workspace` is stripped from the
+  resolved path so the notebook task and the init-script reference stay
+  consistent and API-addressable. Caught by a live smoke test.
   ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
 
 ### Known issues
@@ -93,11 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Fail-fast preflight for the Databricks runner notebook.** Notebook jobs now
-  verify the bundled runner is deployed to the workspace before submitting and
-  raise an actionable error (pointing at
-  `upload_databricks_runner_to_workspace`) instead of failing opaquely mid-run.
-  Documented the one-time Databricks runner deploy step in the README.
+- **Documented the one-time Databricks runner deploy step in the README.** The
+  runner notebook and cluster init script must be staged to the workspace
+  out-of-band (CI/CD or `upload_databricks_runner_to_workspace`) before the
+  first run; a missing asset surfaces as Databricks' own authoritative
+  cluster-launch / run error.
   ([#13](https://github.com/OvertureMaps/overture-airflow-provider/issues/13))
 
 ## [0.1.5] - 2026-06-03

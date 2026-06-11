@@ -21,8 +21,8 @@ def _normalize_workspace_path(path: str) -> str:
     ``/Workspace/...`` is the cluster FUSE-mount convention; the Workspace REST
     API (``2.0/workspace/get-status``), notebook ``notebook_path`` and workspace
     ``init_scripts`` destinations all address objects by their bare path
-    (``/Shared/...``, ``/Users/...``). Stripping the prefix keeps preflight, the
-    notebook task and the init-script reference consistent and API-addressable.
+    (``/Shared/...``, ``/Users/...``). Stripping the prefix keeps the notebook
+    task and the init-script reference consistent and API-addressable.
     """
     if path == "/Workspace":
         return "/"
@@ -335,119 +335,6 @@ def setup_databricks_cluster(
     }
 
 
-def _is_runner_not_found(exc: Exception) -> bool:
-    """Identify a Databricks workspace "object does not exist" error.
-
-    The workspace ``get-status`` REST endpoint returns HTTP 404 when the path
-    is absent (matching how the official ``DatabricksHook.get_repo_by_path``
-    treats a missing object).
-    """
-    response = getattr(exc, "response", None)
-    return getattr(response, "status_code", None) == 404
-
-
-def _workspace_object_exists(hook, path: str) -> bool:
-    """Return True if a Databricks workspace object exists, False if absent (404).
-
-    Re-raises any non-404 error so the caller can decide whether to warn-and-skip.
-    """
-    try:
-        hook._do_api_call(
-            ("GET", "2.0/workspace/get-status"),
-            {"path": path},
-            wrap_http_errors=False,
-        )
-        return True
-    except Exception as exc:
-        if _is_runner_not_found(exc):
-            return False
-        raise
-
-
-def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
-    """Advisory check for required Databricks workspace assets.
-
-    Unlike Glue/Wherobots — whose runners auto-upload to S3 during setup — the
-    Databricks job depends on workspace assets that must be staged out-of-band
-    (CI/CD or :func:`runner_assets.upload_databricks_runner_to_workspace`):
-
-    - the runner **notebook** (``job_runner_databricks``), and
-    - the cluster **init script** (``databricks_cluster_init_script_name``),
-      which is wired into ``new_cluster.init_scripts`` and is *not* bundled with
-      the provider.
-
-    If either is missing the submit otherwise fails opaquely mid-run (the init
-    script as a cluster-launch failure). This pre-checks the resolved workspace
-    paths and prints an actionable warning so the cause is obvious up front.
-
-    **Best-effort and never fatal.** ``2.0/workspace/get-status`` returns HTTP
-    404 for *both* a truly absent object *and* a permission-denied read, so a
-    principal that can *run* the notebook but lacks workspace *read* (a common,
-    already-working prod setup) would otherwise be falsely blocked. Because a 404
-    is ambiguous, a missing-asset result is downgraded to a loud warning and the
-    run proceeds — the real submit surfaces a genuinely missing asset via
-    Databricks' own run error, which a permissions gap cannot fake. Any other
-    error (auth, transient HTTP, SDK/provider mismatch) is likewise warned and
-    skipped, so a working deployment is never turned into a hard failure.
-
-    The check reuses the official ``DatabricksHook`` and the same
-    ``databricks_conn_id`` the submit uses — the same endpoint the provider's own
-    ``get_repo_by_path`` uses.
-    """
-    scripts_path = cluster_info["databricks_deployed_scripts_path"]
-    conn_id = cluster_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
-
-    # (workspace path, human label, remediation hint) per required asset.
-    required_assets = [
-        (
-            f"{scripts_path}/job_runner_databricks",
-            "runner notebook",
-            "Deploy it via your CI/CD pipeline or overture_airflow_provider."
-            "runner_assets.upload_databricks_runner_to_workspace(...).",
-        ),
-    ]
-    init_script_name = setup_info.get("databricks_cluster_init_script_name")
-    if init_script_name:
-        required_assets.append(
-            (
-                f"{scripts_path}/{init_script_name}",
-                "cluster init script",
-                "Deploy it to the workspace scripts path via your CI/CD pipeline; "
-                "it is not bundled with the provider.",
-            )
-        )
-
-    try:
-        from airflow.providers.databricks.hooks.databricks import DatabricksHook
-
-        hook = DatabricksHook(databricks_conn_id=conn_id)
-    except Exception as exc:
-        print(
-            f"[Databricks] WARNING: could not construct hook to verify runner assets "
-            f"({type(exc).__name__}: {exc}); proceeding without preflight"
-        )
-        return
-
-    for path, label, hint in required_assets:
-        try:
-            exists = _workspace_object_exists(hook, path)
-        except Exception as exc:
-            print(
-                f"[Databricks] WARNING: could not verify {label} at {path} "
-                f"({type(exc).__name__}: {exc}); proceeding without preflight"
-            )
-            continue
-        if not exists:
-            print(
-                f"[Databricks] WARNING: {label} not found at {path} via workspace "
-                "get-status. Note Databricks returns HTTP 404 for BOTH a missing "
-                "object AND a permission-denied read, so this may be a false alarm "
-                "when the job's principal can run but not read the asset. Proceeding; "
-                f"if it is genuinely missing the run will fail with a clear error. {hint} "
-                "See the README 'Databricks runner deployment' section."
-            )
-
-
 def build_databricks_operator_kwargs(
     setup_info: dict,
     cluster_info: dict,
@@ -551,11 +438,6 @@ def submit_databricks_job(
     )
 
     from overture_airflow_provider._airflow_compat import TaskDeferred
-
-    # Notebook jobs (module_name set) require the bundled runner notebook to be
-    # pre-deployed to the workspace; fail fast with guidance if it's missing.
-    if module_name:
-        preflight_databricks_runner(setup_info, cluster_info)
 
     built = build_databricks_operator_kwargs(
         setup_info=setup_info,

@@ -154,12 +154,10 @@ upload_databricks_runner_to_workspace(
 )
 ```
 
-If a required asset is missing, the task group runs an **advisory preflight**
-during job execution and prints a clear warning pointing at the resolved
-workspace path. It does **not** hard-fail: the Databricks `get-status` API
-returns 404 for both a truly missing object and a permission-denied read, so a
-principal that can *run* but not *read* the asset must not be blocked. A
-genuinely missing asset still fails the run with Databricks' own error.
+Both the runner notebook and the cluster init script must be present in the
+workspace before the run. If either is missing the Databricks run fails at
+cluster launch with Databricks' own authoritative error pointing at the
+missing asset.
 
 ### Cluster init script
 
@@ -174,9 +172,8 @@ A Databricks run requires **two** workspace assets in the
 
 The init script is **not** bundled with the provider — its contents are
 platform/CI-owned — so deploy it to the same workspace folder via your CI/CD
-pipeline. The advisory preflight checks **both** assets and warns (without
-failing) if either appears missing; a genuinely missing init script still
-surfaces authoritatively as a Databricks cluster-launch error at run time.
+pipeline. A missing init script surfaces authoritatively as a Databricks
+cluster-launch error at run time.
 
 > **Note (upstream log noise):** while a Databricks job is deferred, the
 > Triggerer may log `aiohttp` "Unclosed client session / connector" *ERROR*

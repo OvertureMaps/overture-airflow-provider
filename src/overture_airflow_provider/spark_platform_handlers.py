@@ -88,11 +88,11 @@ class SparkPlatformHandler(ABC):
 
         Returns a dict that always contains ``"merged_spark_conf"``; Databricks
         additionally returns the ``new_cluster``/``libraries``/``databricks_conf``
-        payload consumed by ``execute_job``.
+        payload consumed by ``submit_job``.
         """
 
     @abstractmethod
-    def execute_job(
+    def submit_job(
         self,
         package_info: dict | None,
         jar_info: dict | None,
@@ -110,7 +110,32 @@ class SparkPlatformHandler(ABC):
         task_id: str,
         context: dict,
     ) -> dict:
-        """Submit the Spark job to this platform and return the result dict."""
+        """Submit the Spark job without blocking on completion.
+
+        Returns a dict with:
+
+        - ``"trigger"``: a provider trigger to defer on, or ``None`` for
+          platforms that run synchronously (Wherobots).
+        - ``"run_id"``: the platform run identifier (when deferrable).
+        - ``"result"``: the final result dict, only for synchronous platforms
+          where there is nothing to defer on.
+
+        Deferrable platforms (Glue, Databricks) push the early ``spark_agnostic``
+        XCom here so ``SparkJobLink`` works while the task is deferred.
+        """
+
+    @abstractmethod
+    def complete_job(
+        self,
+        event: dict | None,
+        context: dict,
+        cluster_info: dict | None = None,
+    ) -> dict:
+        """Resolve a deferred run into the final result dict.
+
+        Called from the operator's ``execute_complete`` after the trigger
+        reports a terminal state. Raises on job failure.
+        """
 
 
 class GluePlatformHandler(SparkPlatformHandler):
@@ -141,7 +166,7 @@ class GluePlatformHandler(SparkPlatformHandler):
         )
         return {"merged_spark_conf": merged}
 
-    def execute_job(
+    def submit_job(
         self,
         package_info: dict | None,
         jar_info: dict | None,
@@ -159,9 +184,9 @@ class GluePlatformHandler(SparkPlatformHandler):
         task_id: str,
         context: dict,
     ) -> dict:
-        from overture_airflow_provider._glue import execute_glue_job
+        from overture_airflow_provider._glue import submit_glue_job
 
-        return execute_glue_job(
+        submitted = submit_glue_job(
             setup_info=self.setup_info,
             package_info=package_info,
             jar_info=jar_info,
@@ -175,6 +200,23 @@ class GluePlatformHandler(SparkPlatformHandler):
             context=context,
             execution_class=self.setup_info.get("glue_execution_class", "STANDARD"),
         )
+        return {"trigger": submitted["trigger"], "run_id": submitted["run_id"]}
+
+    def complete_job(
+        self,
+        event: dict | None,
+        context: dict,
+        cluster_info: dict | None = None,
+    ) -> dict:
+        from overture_airflow_provider._glue import complete_glue_job
+
+        # GlueJobCompleteTrigger follows the AwsBaseWaiterTrigger contract and
+        # emits the job run id under "value" (not "run_id" like the Databricks
+        # trigger). Accept both so we're robust to either contract.
+        run_id = None
+        if event:
+            run_id = event.get("run_id") or event.get("value")
+        return complete_glue_job(self.setup_info, run_id, context)
 
 
 class DatabricksPlatformHandler(SparkPlatformHandler):
@@ -215,7 +257,7 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
         cluster_config["merged_spark_conf"] = merged
         return cluster_config
 
-    def execute_job(
+    def submit_job(
         self,
         package_info: dict | None,
         jar_info: dict | None,
@@ -233,9 +275,9 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
         task_id: str,
         context: dict,
     ) -> dict:
-        from overture_airflow_provider._databricks import execute_databricks_job
+        from overture_airflow_provider._databricks import submit_databricks_job
 
-        return execute_databricks_job(
+        submitted = submit_databricks_job(
             setup_info=self.setup_info,
             cluster_info=cluster_info,
             module_name=module_name,
@@ -244,6 +286,21 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
             task_id=task_id,
             context=context,
         )
+        return {
+            "trigger": submitted["trigger"],
+            "run_id": submitted["run_id"],
+            "result": submitted.get("result"),
+        }
+
+    def complete_job(
+        self,
+        event: dict | None,
+        context: dict,
+        cluster_info: dict | None = None,
+    ) -> dict:
+        from overture_airflow_provider._databricks import complete_databricks_job
+
+        return complete_databricks_job(self.setup_info, cluster_info, event, context)
 
 
 class WherobotsPlatformHandler(SparkPlatformHandler):
@@ -274,7 +331,7 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
         merged = _merge_spark_conf(_WHEROBOTS_DEFAULTS, iceberg_spark_config, extra_spark_conf)
         return {"merged_spark_conf": merged}
 
-    def execute_job(
+    def submit_job(
         self,
         package_info: dict | None,
         jar_info: dict | None,
@@ -294,7 +351,9 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
     ) -> dict:
         from overture_airflow_provider._wherobots import execute_wherobots_job
 
-        return execute_wherobots_job(
+        # Wherobots has no upstream Airflow trigger, so it runs synchronously and
+        # returns the final result with no deferral.
+        result = execute_wherobots_job(
             setup_info=self.setup_info,
             package_info=package_info,
             jar_info=jar_info,
@@ -309,6 +368,15 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
             context=context,
             version="preview",
         )
+        return {"trigger": None, "result": result}
+
+    def complete_job(
+        self,
+        event: dict | None,
+        context: dict,
+        cluster_info: dict | None = None,
+    ) -> dict:
+        raise RuntimeError("Wherobots jobs run synchronously and never defer.")
 
 
 _HANDLERS = {

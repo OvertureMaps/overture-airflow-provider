@@ -23,16 +23,19 @@ module to the ``airflow.sdk`` branch (or just inline the imports).
 from airflow.exceptions import AirflowException
 
 try:  # Airflow 3.x
-    from airflow.sdk import DAG, task, task_group
+    from airflow.sdk import DAG, BaseOperator, task, task_group
     from airflow.sdk.bases.hook import BaseHook
     from airflow.sdk.bases.operatorlink import BaseOperatorLink
+    from airflow.sdk.exceptions import TaskDeferred
     from airflow.sdk.execution_time.xcom import XCom
 
     AIRFLOW_MAJOR = 3
 except ImportError:  # Airflow 2.x
     from airflow import DAG
     from airflow.decorators import task, task_group
+    from airflow.exceptions import TaskDeferred
     from airflow.hooks.base import BaseHook
+    from airflow.models.baseoperator import BaseOperator
     from airflow.models.baseoperatorlink import BaseOperatorLink
     from airflow.models.xcom import XCom
 
@@ -43,7 +46,9 @@ __all__ = [
     "DAG",
     "AirflowException",
     "BaseHook",
+    "BaseOperator",
     "BaseOperatorLink",
+    "TaskDeferred",
     "XCom",
     "task",
     "task_group",

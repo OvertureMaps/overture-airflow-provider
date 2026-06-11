@@ -15,6 +15,22 @@ _SPARK_TO_ICEBERG_VERSION_MAP = {
 }
 
 
+def _normalize_workspace_path(path: str) -> str:
+    """Return a bare Databricks workspace path, stripping the ``/Workspace`` prefix.
+
+    ``/Workspace/...`` is the cluster FUSE-mount convention; the Workspace REST
+    API (``2.0/workspace/get-status``), notebook ``notebook_path`` and workspace
+    ``init_scripts`` destinations all address objects by their bare path
+    (``/Shared/...``, ``/Users/...``). Stripping the prefix keeps the notebook
+    task and the init-script reference consistent and API-addressable.
+    """
+    if path == "/Workspace":
+        return "/"
+    if path.startswith("/Workspace/"):
+        return path[len("/Workspace") :]
+    return path
+
+
 def discover_gpu_cluster_options(
     databricks_conn_id: str, *, need_nodes: bool = True, need_runtime: bool = True
 ) -> dict:
@@ -225,9 +241,11 @@ def setup_databricks_cluster(
     )
 
     databricks_conf = setup_info["databricks_conf"]
-    databricks_deployed_scripts_path = setup_info[
-        "databricks_workspace_scripts_path_template"
-    ].format(s3_assets_root=setup_info["s3_assets_root"])
+    databricks_deployed_scripts_path = _normalize_workspace_path(
+        setup_info["databricks_workspace_scripts_path_template"].format(
+            s3_assets_root=setup_info["s3_assets_root"]
+        )
+    )
     cluster_init_script_name = setup_info["databricks_cluster_init_script_name"]
     custom_tags = dict(setup_info.get("databricks_custom_tags", {}) or {})
 
@@ -317,64 +335,6 @@ def setup_databricks_cluster(
     }
 
 
-def _is_runner_not_found(exc: Exception) -> bool:
-    """Identify a Databricks workspace "object does not exist" error.
-
-    The workspace ``get-status`` REST endpoint returns HTTP 404 when the path
-    is absent (matching how the official ``DatabricksHook.get_repo_by_path``
-    treats a missing object).
-    """
-    response = getattr(exc, "response", None)
-    return getattr(response, "status_code", None) == 404
-
-
-def preflight_databricks_runner(setup_info: dict, cluster_info: dict) -> None:
-    """Fail fast when the Databricks runner notebook is not deployed.
-
-    Unlike Glue/Wherobots — whose runners auto-upload to S3 during setup — the
-    Databricks runner is a Workspace Notebook that must be staged out-of-band
-    (CI/CD or :func:`runner_assets.upload_databricks_runner_to_workspace`). If
-    it's missing, the submit otherwise fails opaquely mid-run. This checks the
-    resolved workspace path up front and raises an actionable error instead.
-
-    The check reuses the official ``DatabricksHook`` and the same
-    ``databricks_conn_id`` the submit uses, so preflight auth always matches the
-    job's auth (no false skips) and no extra dependency or credential surface is
-    introduced. It hits ``2.0/workspace/get-status`` — the same endpoint the
-    provider's own ``get_repo_by_path`` uses.
-
-    Best-effort: if the workspace can't be queried (auth, permissions, transient
-    HTTP error, or an SDK/provider mismatch), a warning is printed and the check
-    is skipped so a working deployment is never turned into a hard failure.
-    """
-    notebook_path = f"{cluster_info['databricks_deployed_scripts_path']}/job_runner_databricks"
-    conn_id = cluster_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
-
-    try:
-        from airflow.providers.databricks.hooks.databricks import DatabricksHook
-
-        hook = DatabricksHook(databricks_conn_id=conn_id)
-        hook._do_api_call(
-            ("GET", "2.0/workspace/get-status"),
-            {"path": notebook_path},
-            wrap_http_errors=False,
-        )
-    except Exception as exc:
-        if _is_runner_not_found(exc):
-            raise RuntimeError(
-                f"Databricks runner notebook not found at {notebook_path!r}. Unlike "
-                "Glue and Wherobots, the Databricks runner is a Workspace Notebook that "
-                "must be deployed before the first run. Deploy it via your CI/CD pipeline "
-                "or overture_airflow_provider.runner_assets."
-                "upload_databricks_runner_to_workspace(...). See the README "
-                "'Databricks runner deployment' section."
-            ) from None
-        print(
-            f"[Databricks] WARNING: could not verify runner notebook at {notebook_path} "
-            f"({type(exc).__name__}: {exc}); proceeding without preflight"
-        )
-
-
 def build_databricks_operator_kwargs(
     setup_info: dict,
     cluster_info: dict,
@@ -424,6 +384,12 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
+        "deferrable": True,
+        # Required for the deferrable path: the operator only defers when
+        # wait_for_termination is True (otherwise it submits and returns without
+        # ever creating a trigger). Set explicitly so we don't depend on the
+        # provider's default.
+        "wait_for_termination": True,
     }
 
     # Equivalent payload for `databricks jobs submit --json @file.json`.
@@ -445,7 +411,7 @@ def build_databricks_operator_kwargs(
     }
 
 
-def execute_databricks_job(
+def submit_databricks_job(
     setup_info: dict,
     cluster_info: dict,
     module_name: str,
@@ -454,7 +420,16 @@ def execute_databricks_job(
     task_id: str,
     context,
 ) -> dict:
-    """Submit and wait for a Databricks job."""
+    """Submit a Databricks run (non-blocking) and return a trigger to defer on.
+
+    Builds the upstream ``DatabricksSubmitRunOperator`` with ``deferrable=True``
+    and calls its ``execute()``. In deferrable mode the operator submits the run
+    and then raises ``TaskDeferred`` carrying a ``DatabricksExecutionTrigger`` it
+    constructs itself — so the trigger is always built with the kwargs the
+    *installed* databricks provider expects. We catch that exception and reuse
+    the trigger. The early ``spark_agnostic`` XCom is pushed here so
+    ``SparkJobLink`` works while the task is deferred.
+    """
     # Lazy imports so the builder + render path work without the
     # [databricks] extra installed.
     from airflow.providers.databricks.hooks.databricks import DatabricksHook
@@ -462,10 +437,7 @@ def execute_databricks_job(
         DatabricksSubmitRunOperator,
     )
 
-    # Notebook jobs (module_name set) require the bundled runner notebook to be
-    # pre-deployed to the workspace; fail fast with guidance if it's missing.
-    if module_name:
-        preflight_databricks_runner(setup_info, cluster_info)
+    from overture_airflow_provider._airflow_compat import TaskDeferred
 
     built = build_databricks_operator_kwargs(
         setup_info=setup_info,
@@ -478,43 +450,74 @@ def execute_databricks_job(
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")
 
     platform_operator = DatabricksSubmitRunOperator(**built["operator_kwargs"])
-    ti = context.get("ti") if hasattr(context, "get") else None
-    original_xcom_push = getattr(ti, "xcom_push", None)
-    early_xcom_pushed = False
-
-    if callable(original_xcom_push):
-
-        def _xcom_push_with_early_agnostic(*args, **kwargs):
-            nonlocal early_xcom_pushed
-            result = original_xcom_push(*args, **kwargs)
-            key = kwargs.get("key") if "key" in kwargs else (args[0] if args else None)
-            value = (
-                kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
-            )
-            if key == "run_page_url" and value and not early_xcom_pushed:
-                original_xcom_push(
-                    key="spark_agnostic",
-                    value=_build_agnostic_xcom_payload(setup_info, job_url=value),
-                )
-                early_xcom_pushed = True
-            return result
-
-        ti.xcom_push = _xcom_push_with_early_agnostic
-
+    # deferrable=True + wait_for_termination=True -> execute() submits the run,
+    # then (for a still-running job) raises TaskDeferred with the provider's own
+    # DatabricksExecutionTrigger, which we reuse. If the run is already terminal
+    # within the submit window the operator completes synchronously instead:
+    # execute() returns on success, or raises AirflowException on failure.
+    trigger = None
+    synchronous_success = False
     try:
         platform_operator.execute(context)
-    finally:
-        if callable(original_xcom_push):
-            ti.xcom_push = original_xcom_push
+    except TaskDeferred as deferred:
+        trigger = deferred.trigger
+    else:
+        synchronous_success = True
 
-    job_url = platform_operator.xcom_pull(context, key="run_page_url")
+    conn_id = cluster_info["databricks_conf"]["databricks_conn_id"]
+    run_id = platform_operator.run_id
+    hook = DatabricksHook(databricks_conn_id=conn_id)
+    run_page_url = getattr(trigger, "run_page_url", None) or hook.get_run_page_url(run_id)
 
-    run_id = platform_operator.xcom_pull(context, key="run_id")
+    ti = context.get("ti") if hasattr(context, "get") else None
+    if ti is not None and callable(getattr(ti, "xcom_push", None)):
+        ti.xcom_push(
+            key="spark_agnostic",
+            value=_build_agnostic_xcom_payload(setup_info, job_url=run_page_url),
+        )
+
+    result = None
+    if synchronous_success:
+        # Run finished (successfully) before we could defer; build the final
+        # result so the operator can finalize without a trigger.
+        result = {"job_url": run_page_url, "status": hook.get_run(run_id)}
+
+    return {
+        "trigger": trigger,
+        "run_id": run_id,
+        "run_page_url": run_page_url,
+        "result": result,
+        "platform_operator": platform_operator,
+    }
+
+
+def complete_databricks_job(
+    setup_info: dict,
+    cluster_info: dict,
+    event: dict,
+    context,
+) -> dict:
+    """Resolve a completed Databricks run into the final result dict.
+
+    Called from the deferrable operator's ``execute_complete`` after the
+    ``DatabricksExecutionTrigger`` reports the run reached a terminal state.
+    """
+    from airflow.providers.databricks.hooks.databricks import DatabricksHook, RunState
+
+    from overture_airflow_provider._airflow_compat import AirflowException
+
+    run_id = event["run_id"]
+    run_page_url = event.get("run_page_url")
+    run_state = RunState.from_json(event["run_state"])
+    if not run_state.is_successful:
+        raise AirflowException(
+            f"Databricks run {run_id} failed with state {run_state}; errors: {event.get('errors')}"
+        )
+
     hook = DatabricksHook(databricks_conn_id=cluster_info["databricks_conf"]["databricks_conn_id"])
     status = hook.get_run(run_id)
 
     return {
-        "job_url": job_url,
+        "job_url": run_page_url,
         "status": status,
-        "platform_operator": platform_operator,
     }

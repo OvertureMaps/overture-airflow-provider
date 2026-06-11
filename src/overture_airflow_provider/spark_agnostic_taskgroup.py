@@ -46,10 +46,8 @@ See ``overture_airflow_provider.config`` for the dataclasses callers should
 construct.
 """
 
-import datetime
-import json
-
 from overture_airflow_provider._airflow_compat import task, task_group
+from overture_airflow_provider._operator import SparkAgnosticExecuteOperator
 from overture_airflow_provider._setup import setup_spark_job
 from overture_airflow_provider.config import (
     ArtifactStoreConfig,
@@ -239,13 +237,6 @@ def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name
     return primary
 
 
-def _xcom_datetime_default(obj):
-    """JSON serializer that handles datetime objects pushed through XCom."""
-    if isinstance(obj, datetime.datetime):
-        return obj.isoformat()
-    raise TypeError(f"Type {type(obj)} not serializable")
-
-
 @task_group
 def _spark_agnostic_task_group(
     *,
@@ -365,66 +356,6 @@ def _spark_agnostic_task_group(
             ),
         )
 
-    @task(task_id="execute_spark_job", **execute_kwargs)
-    def execute_job_task(
-        setup_info: dict,
-        package_info: dict,
-        jar_info: dict,
-        cluster_info: dict,
-        module_name: str = "",
-        class_name: str = "",
-        parameters: str = "{}",
-        extra_spark_env_vars: str = "{}",
-        spark_cluster_size_name: str = "",
-        spark_cluster_desired_worker_cores: str = "",
-        spark_cluster_desired_workers: str = "",
-        **context,
-    ):
-        """Submit the Spark job to the resolved platform and wait for completion."""
-        full = rehydrate(setup_info)
-        merged_spark_conf = (cluster_info or {}).get("merged_spark_conf", {})
-
-        def _int_or_none(value: str):
-            return int(value) if value else None
-
-        execution_result = get_platform_handler(full["spark_family"], full).execute_job(
-            package_info=package_info,
-            jar_info=jar_info,
-            cluster_info=cluster_info,
-            module_name=module_name,
-            class_name=class_name,
-            parameters=parameters,
-            extra_spark_conf=merged_spark_conf,
-            extra_spark_env_vars=extra_spark_env_vars,
-            spark_cluster_size_name=spark_cluster_size_name,
-            spark_cluster_desired_worker_cores=_int_or_none(spark_cluster_desired_worker_cores),
-            spark_cluster_desired_workers=_int_or_none(spark_cluster_desired_workers),
-            iam_role_name=setup_info.get("iam_role_name", "AWSGlueServiceRole"),
-            wherobots_role_arn=setup_info.get("wherobots_role_arn", ""),
-            task_id="execute_spark_job",
-            context=context,
-        )
-
-        # Cross-platform XCom payload that downstream tasks rely on.
-        agnostic_xcom = {
-            "spark_impl": setup_info["spark_impl_name"],
-            "spark_family": setup_info["spark_family_name"],
-            "spark_version": setup_info["spark_version"],
-            "sedona_version": setup_info["sedona_version"],
-        }
-        for key in ("job_url", "status"):
-            if key in execution_result:
-                agnostic_xcom[key] = execution_result[key]
-
-        operator = execution_result.get("platform_operator")
-        if operator and context:
-            operator.xcom_push(
-                context,
-                "spark_agnostic",
-                json.dumps(agnostic_xcom, default=_xcom_datetime_default),
-            )
-        return agnostic_xcom
-
     setup_result = setup_task(
         spark_impl_name=spark_impl_name,
         sedona_version=sedona_version,
@@ -454,7 +385,8 @@ def _spark_agnostic_task_group(
         iceberg_wherobots_s3tables_config=iceberg_config.wherobots_s3tables_spark_config,
     )
 
-    execute_job_task(
+    SparkAgnosticExecuteOperator(
+        task_id="execute_spark_job",
         setup_info=setup_result,
         package_info=package_result,
         jar_info=jar_result,
@@ -466,4 +398,5 @@ def _spark_agnostic_task_group(
         spark_cluster_size_name=spark_cluster_size_name,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        **execute_kwargs,
     )

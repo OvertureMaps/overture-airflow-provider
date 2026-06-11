@@ -150,13 +150,39 @@ upload_databricks_runner_to_workspace(
     databricks_token="dapi...",  # PAT or CI/CD secret
     # Must match DatabricksConfig.workspace_scripts_path_template (after
     # {s3_assets_root} substitution) + "/job_runner_databricks".
-    workspace_path="/Workspace/Shared/<s3_assets_root>/job_runner_databricks",
+    workspace_path="/Shared/<s3_assets_root>/job_runner_databricks",
 )
 ```
 
-If the notebook is missing, the task group runs a **fail-fast preflight** during
-job execution and raises an actionable error instead of failing opaquely
-mid-run.
+Both the runner notebook and the cluster init script must be present in the
+workspace before the run. If either is missing the Databricks run fails at
+cluster launch with Databricks' own authoritative error pointing at the
+missing asset.
+
+### Cluster init script
+
+A Databricks run requires **two** workspace assets in the
+`workspace_scripts_path_template` folder:
+
+1. the runner notebook (`job_runner_databricks`, above), and
+2. the **cluster init script** named by
+   `DatabricksConfig.cluster_init_script_name` (default
+   `agnostic_operator_cluster_init_databricks.sh`), wired into the cluster's
+   `init_scripts`.
+
+The init script is **not** bundled with the provider — its contents are
+platform/CI-owned — so deploy it to the same workspace folder via your CI/CD
+pipeline. A missing init script surfaces authoritatively as a Databricks
+cluster-launch error at run time.
+
+> **Note (upstream log noise):** while a Databricks job is deferred, the
+> Triggerer may log `aiohttp` "Unclosed client session / connector" *ERROR*
+> lines. These originate in the upstream
+> `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async
+> client is not explicitly closed on the event loop), not in this provider. The
+> task defers, polls, and resumes correctly regardless. This provider
+> deliberately reuses the installed provider's trigger, so it does not fork the
+> trigger to silence the message.
 
 ## Local rendering (testing without Airflow)
 

@@ -88,9 +88,13 @@ setup_spark_job ──┬─► download_python_packages ─┐
   wheels and CodeArtifact JARs share a content-addressed cache.
 - `setup_cluster` builds the platform-specific cluster spec and merges
   spark-conf in the order **platform defaults < iceberg config < extra**.
-- `execute_spark_job` instantiates the platform operator
-  (`GlueJobOperator`, `DatabricksSubmitRunOperator`,
-  `WherobotsRunOperator`) and runs it.
+- `execute_spark_job` is a deferrable `SparkAgnosticExecuteOperator`. It
+  instantiates the platform operator (`GlueJobOperator`,
+  `DatabricksSubmitRunOperator`, `WherobotsRunOperator`), submits the job
+  non-blocking, then defers on the upstream provider's trigger
+  (`GlueJobCompleteTrigger`, `DatabricksExecutionTrigger`) so the Triggerer —
+  not a Celery worker — polls until completion. It resumes in
+  `execute_complete`. Wherobots has no upstream trigger and runs synchronously.
 
 ## XCom contract
 

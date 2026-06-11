@@ -25,12 +25,12 @@ def get_provider_info() -> dict:
         "name": "Overture Maps Spark-agnostic Provider",
         "description": (
             "Airflow TaskGroup for submitting Spark jobs to "
-            "`AWS Glue <https://docs.aws.amazon.com/glue/>`_, "
-            "`Databricks <https://docs.databricks.com/>`_, or "
-            "`Wherobots Cloud <https://docs.wherobots.com/>`_ from a single, "
+            "`AWS Glue <https://docs.aws.amazon.com/glue/>`__, "
+            "`Databricks <https://docs.databricks.com/>`__, or "
+            "`Wherobots Cloud <https://docs.wherobots.com/>`__ from a single, "
             "platform-agnostic DAG entry point. See the "
             "`GitHub repository "
-            "<https://github.com/OvertureMaps/overture-airflow-provider>`_."
+            "<https://github.com/OvertureMaps/overture-airflow-provider>`__."
         ),
         "versions": [_package_version()],
         "operators": [

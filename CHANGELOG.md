@@ -7,7 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-06-10
+## [0.3.0] - 2026-06-10
+
+### Changed
+
+- **Spark job execution is now deferrable via a custom operator.** The
+  `execute_spark_job` task is now a real `BaseOperator`
+  (`SparkAgnosticExecuteOperator`) instead of a `@task`-decorated
+  `PythonOperator`. It submits the Glue/Databricks job non-blocking and defers
+  on the upstream provider's own trigger (`GlueJobCompleteTrigger`,
+  `DatabricksExecutionTrigger`), resuming via its own `execute_complete` when the
+  Triggerer reports completion. Instead of blocking a Celery worker for the full
+  job duration (up to 8 hours), the worker slot is released within seconds of
+  submission; the Triggerer polls asynchronously at negligible memory cost (~MB
+  for hundreds of tasks vs. ~200–500 MB per blocked worker). This eliminates the
+  OOM SIGKILL pressure on MWAA worker fleets running concurrent long-running
+  Spark jobs.
+
+  The earlier `deferrable=True` flag on the inner operators did **not** work:
+  because the provider called `operator.execute()` inside a `PythonOperator`, the
+  resulting `TaskDeferred` deferred the `PythonOperator`, whose missing
+  `execute_complete` crashed on resume. The custom operator owns
+  `execute_complete`, so Airflow resumes it correctly.
+
+  No DAG changes required — deferral is a platform-internal concern and is not
+  exposed as a parameter on `spark_agnostic_task_group`. Wherobots has no
+  upstream trigger and continues to run synchronously. Requires an Airflow
+  Triggerer (standard in MWAA 2.4+).
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45),
+  fixes [#46](https://github.com/OvertureMaps/overture-airflow-provider/issues/46))
+
+### Fixed
+
+- **Glue deferral resume crashed with `KeyError: 'run_id'`.** On resume,
+  `GluePlatformHandler.complete_job` read the run id from the trigger event under
+  `run_id`, but the upstream `GlueJobCompleteTrigger` follows the
+  `AwsBaseWaiterTrigger` contract and emits it under `value`. The handler now
+  reads `value` (with a `run_id` fallback), so a successful Glue job resumes and
+  finalizes correctly. Caught by a live smoke test.
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
+- **Databricks workspace paths now use the bare workspace path, not the
+  `/Workspace` FUSE prefix.** `DatabricksConfig.workspace_scripts_path_template`
+  defaulted to `/Workspace/Shared/{s3_assets_root}`, but the Workspace REST
+  (`2.0/workspace/get-status`) and Jobs (`notebook_path`, `init_scripts`) APIs
+  address objects by bare path (`/Shared/...`). The `/Workspace` prefix caused a
+  mismatch even when the assets were deployed at `/Shared/...`. The default is
+  now `/Shared/{s3_assets_root}`, and a leading `/Workspace` is stripped from the
+  resolved path so the notebook task and the init-script reference stay
+  consistent and API-addressable. Caught by a live smoke test.
+  ([#45](https://github.com/OvertureMaps/overture-airflow-provider/pull/45))
+
+### Known issues
+
+- **Upstream `aiohttp` log noise during Databricks deferral.** While a
+  Databricks job is deferred, the Triggerer may log `aiohttp` "Unclosed client
+  session / connector" *ERROR* lines. These originate in the upstream
+  `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async
+  client is not closed on the event loop), not in this provider. The task
+  defers, polls, and resumes correctly regardless. This provider deliberately
+  reuses the installed provider's trigger (to always match the installed
+  version), so it does not fork the trigger to silence the message.
 
 ### Changed
 
@@ -21,11 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Fail-fast preflight for the Databricks runner notebook.** Notebook jobs now
-  verify the bundled runner is deployed to the workspace before submitting and
-  raise an actionable error (pointing at
-  `upload_databricks_runner_to_workspace`) instead of failing opaquely mid-run.
-  Documented the one-time Databricks runner deploy step in the README.
+- **Documented the one-time Databricks runner deploy step in the README.** The
+  runner notebook and cluster init script must be staged to the workspace
+  out-of-band (CI/CD or `upload_databricks_runner_to_workspace`) before the
+  first run; a missing asset surfaces as Databricks' own authoritative
+  cluster-launch / run error.
   ([#13](https://github.com/OvertureMaps/overture-airflow-provider/issues/13))
 
 ## [0.1.5] - 2026-06-03

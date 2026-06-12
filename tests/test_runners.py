@@ -110,7 +110,7 @@ def test_glue_runner_sedona_path_does_not_inject_spark_kwarg():
     p = get_runner_path("glue")
     source = p.read_text(encoding="utf-8")
     # The SparkSedonaJob path must be an elif, not nested inside the spark-injection block.
-    assert "elif hasattr(instance, \"init_spark_for_platform\"):" in source
+    assert 'elif hasattr(instance, "init_spark_for_platform"):' in source
 
 
 def test_databricks_runner_dual_mode():

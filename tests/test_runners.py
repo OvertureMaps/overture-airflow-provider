@@ -97,6 +97,22 @@ def test_glue_runner_uses_getResolvedOptions():
     assert "getResolvedOptions" in source
 
 
+def test_glue_runner_calls_init_spark_for_platform_for_sedona_jobs():
+    """SparkSedonaJob-style dispatch: extra_spark_conf forwarded via init_spark_for_platform."""
+    p = get_runner_path("glue")
+    source = p.read_text(encoding="utf-8")
+    assert "init_spark_for_platform" in source
+    assert "extra_spark_conf=extra_spark_conf_raw" in source
+
+
+def test_glue_runner_sedona_path_does_not_inject_spark_kwarg():
+    """The elif branch must not pass spark= to run() for SparkSedonaJob-style jobs."""
+    p = get_runner_path("glue")
+    source = p.read_text(encoding="utf-8")
+    # The SparkSedonaJob path must be an elif, not nested inside the spark-injection block.
+    assert 'elif hasattr(instance, "init_spark_for_platform"):' in source
+
+
 def test_databricks_runner_dual_mode():
     p = get_runner_path("databricks")
     source = p.read_text(encoding="utf-8")

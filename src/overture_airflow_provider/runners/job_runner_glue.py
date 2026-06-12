@@ -9,8 +9,10 @@ Args (resolved via ``awsglue.utils.getResolvedOptions``):
     class_name: Class name to instantiate and call ``.run()``.
     params: JSON-encoded parameters forwarded verbatim to the job class.
     extra_spark_conf: JSON-encoded dict of additional SparkConf key/value pairs.
-        Applied to the current SparkSession when the job's ``run()`` accepts a
-        ``spark`` keyword argument.
+        Applied before ``run()`` in one of two ways: injected directly into the
+        active ``SparkSession`` when ``run()`` accepts a ``spark`` keyword
+        argument, or forwarded to ``init_spark_for_platform()`` for
+        ``SparkSedonaJob``-style classes that initialise Spark internally.
 """
 
 import inspect
@@ -45,7 +47,10 @@ job_cls = getattr(module, class_name)
 instance = job_cls()
 
 # Inject SparkSession only if the job's run() explicitly accepts it.
-# Legacy SparkSedonaJob classes call init_spark_for_platform() internally.
+# For SparkSedonaJob-style classes (no 'spark' param), pre-call
+# init_spark_for_platform() so extra_spark_conf reaches the Spark builder
+# before getOrCreate(). Without this, run() calls it internally with "{}"
+# and silently discards all DAG-level extra_spark_conf.
 run_kwargs: dict = {"params": params}
 sig = inspect.signature(instance.run)
 if "spark" in sig.parameters:
@@ -55,6 +60,8 @@ if "spark" in sig.parameters:
     for k, v in json.loads(extra_spark_conf_raw).items():
         spark.conf.set(k, v)
     run_kwargs["spark"] = spark
+elif hasattr(instance, "init_spark_for_platform"):
+    instance.init_spark_for_platform(extra_spark_conf=extra_spark_conf_raw)
 
 result = instance.run(**run_kwargs)
 

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-12
+
+### Fixed
+
+- **Glue runner now forwards `extra_spark_conf` to `SparkSedonaJob`-style jobs.**
+  Previously, jobs whose `run()` does not accept a `spark` argument (e.g.
+  `SparkSedonaJob` subclasses that initialise Spark internally) silently
+  discarded all DAG-level `extra_spark_conf` entries. The runner now detects
+  `init_spark_for_platform` on the instance and calls it with the extra conf
+  before `run()`, so builder-time settings (Iceberg catalog registrations, etc.)
+  are applied correctly.
+  ([#51](https://github.com/OvertureMaps/overture-airflow-provider/issues/51))
+
 ## [0.3.0] - 2026-06-10
 
 ### Changed
@@ -67,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   defers, polls, and resumes correctly regardless. This provider deliberately
   reuses the installed provider's trigger (to always match the installed
   version), so it does not fork the trigger to silence the message.
+## [0.2.0] - 2026-06-10
 
 ### Changed
 

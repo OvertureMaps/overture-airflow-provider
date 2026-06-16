@@ -17,7 +17,7 @@ value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed
 in via typed config dataclasses. No defaults are baked in for any one
 organization.
 
-> **0.3.1** — Beta. Tested against real Airflow 2.11 + 3.0 via Docker e2e.
+> Beta. Tested against real Airflow 2.11 + 3.0 via Docker e2e.
 
 ## Install
 

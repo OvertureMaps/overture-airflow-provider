@@ -4,6 +4,7 @@ import os
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
 from botocore.exceptions import ClientError
 
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
@@ -63,11 +64,9 @@ class TestParseWheelFilename:
         assert name == "overture-spark"
         assert ver == "1.0.0"
 
-    def test_invalid_returns_none(self):
-        assert SparkAgnosticHelper._parse_wheel_filename("invalid") == (None, None)
-
-    def test_empty_returns_none(self):
-        assert SparkAgnosticHelper._parse_wheel_filename("") == (None, None)
+    @pytest.mark.parametrize("filename", ["invalid", ""])
+    def test_bad_filename_returns_none(self, filename):
+        assert SparkAgnosticHelper._parse_wheel_filename(filename) == (None, None)
 
 
 class TestHasNativeDependencies:

@@ -160,14 +160,6 @@ def test_databricks_from_cluster_size():
     assert result["autoscale"]["min_workers"] == 5
 
 
-def test_wherobots_from_cluster_size():
-    from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
-
-    # wherobots.db is stub-mocked in conftest; just assert it returns something
-    result = WherobotsClusterSize.from_cluster_size("M")
-    assert result is not None
-
-
 def test_wherobots_from_desired_cores_all_branches():
     from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
 

@@ -131,18 +131,14 @@ def test_resolve_custom_without_version_raises(_client):
         _client.resolve_package_version("pkg", PackageVersionStrategy.CUSTOM)
 
 
-def test_resolve_latest_stable_skips_prerelease(_client):
-    versions = [Version("1.1.0a1"), Version("1.0.0"), Version("0.9.0")]
-    with patch.object(_client, "get_package_versions", return_value=versions):
+@pytest.mark.parametrize("non_stable", ["1.1.0a1", "2.0.0.dev1"])
+def test_resolve_latest_stable_skips_non_stable(_client, non_stable):
+    from packaging.version import Version
+
+    stable = Version("1.0.0")
+    with patch.object(_client, "get_package_versions", return_value=[Version(non_stable), stable]):
         result = _client.resolve_package_version("pkg", PackageVersionStrategy.LATEST_STABLE)
     assert result == "1.0.0"
-
-
-def test_resolve_latest_stable_skips_devrelease(_client):
-    versions = [Version("2.0.0.dev1"), Version("1.5.0")]
-    with patch.object(_client, "get_package_versions", return_value=versions):
-        result = _client.resolve_package_version("pkg", PackageVersionStrategy.LATEST_STABLE)
-    assert result == "1.5.0"
 
 
 def test_resolve_latest_in_branch_matches(_client):

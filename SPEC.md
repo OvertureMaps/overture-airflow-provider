@@ -29,7 +29,7 @@ Two entry points, both Airflow `@task_group`-decorated factories:
 - `spark_agnostic_mapped_task_group(...)` — dynamic task mapping over a list
   of per-invocation configs.
 
-Six typed config dataclasses:
+Seven typed config dataclasses:
 
 | Dataclass | Required for |
 |---|---|
@@ -39,8 +39,9 @@ Six typed config dataclasses:
 | `GlueConfig` | Glue jobs (IAM role) |
 | `DatabricksConfig` | Databricks jobs (conn id, DBFS layout) |
 | `WherobotsConfig` | Wherobots jobs (role ARN, external id) |
+| `ReportIssueConfig` | Optional; wires a "Report Issue" extra-link onto `execute_spark_job` |
 
-And three enums:
+And three enumerations (implemented as plain classes with class-level constants, not Python `enum.Enum`; do not call `.name` on instances):
 
 - `SparkImpl` — concrete engine version (e.g. `GLUE_v5`, `DATABRICKS_v15`).
 - `SparkFamily` — `GLUE` / `DATABRICKS` / `WHEROBOTS` / `SYNAPSE` (reserved).
@@ -62,11 +63,16 @@ SparkPlatformHandler ABC     ← dispatch (factory: get_platform_handler)
    ▼    ▼    ▼
  _glue _databricks _wherobots  ← per-platform submit logic (operator boundary)
         │
+        ├──► _failures          ← classify + format job failures (stdlib only)
+        │
         ▼
 SparkAgnosticHelper          ← shared S3 wheel/JAR cache
         │
         ▼
 python_package_utils         ← CodeArtifact pip/maven HTTP clients
+
+links.py                     ← SparkJobLink + ReportIssueLink (extra-links)
+_report_issue.py             ← pluggable issue tracker (IssueTracker ABC, GitHub built in)
 ```
 
 ## Task graph
@@ -126,6 +132,38 @@ The task group picks the variant at runtime based on `spark_family_name`.
 - When Iceberg is enabled (i.e. `spark.sql.defaultCatalog` is in the merged
   conf), the Wherobots handler also injects the Wherobots credential factory
   config so the Wherobots-managed pod can assume the customer's Glue role.
+
+## Failure enrichment
+
+When `execute_spark_job` raises, the handler's `describe_failure()` method
+produces a `FailureInfo` dataclass (platform, run id, state, reason, root-cause
+tail, console URL). `classify_failure()` assigns one of four categories based
+on signals the orchestration layer already holds:
+
+| Classification | When |
+|---|---|
+| `downstream-job` | run launched (run-id XCom present); failure is in the job |
+| `submit/config` | run never launched; likely a provider or config fault |
+| `trigger/polling` | deferral machinery failed; see Triggerer logs |
+| `platform/infra` | platform reported an internal error (e.g. Databricks `INTERNAL_ERROR`) |
+
+`apply_heuristics()` scans the combined reason + root-cause text for known
+patterns (IAM denials, auth errors, OOM, throttling, missing resources) and
+appends an actionable hint. `format_failure()` renders all fields into a
+uniform multi-line `AirflowException` message.
+
+`_failures.py` has no Airflow or platform SDK imports; it works purely from
+stdlib so it is testable and importable without any runtime dependencies.
+
+## Report Issue link
+
+`ReportIssueConfig(enabled=True, target="owner/repo")` wires a "Report Issue"
+button onto `execute_spark_job`. The config is written to XCom at task start
+(`_push_report_issue_config`) so the link renders even when the task later
+fails. The tracker is pluggable: subclass `IssueTracker`, implement
+`build_url()`, and call `register_tracker(provider_name, cls)`. GitHub ships
+built in. No changes to the link, operator, or config wiring are needed to add
+a new backend.
 
 ## Versioning
 

@@ -310,3 +310,51 @@ def test_execute_skips_report_issue_push_when_unconfigured():
 
     report_calls = [c for c in ti.xcom_push.call_args_list if c.kwargs.get("key") == "report_issue"]
     assert not report_calls
+
+
+# ─── Small branch coverage ───────────────────────────────────────────────────
+
+
+def test_xcom_datetime_default_raises_for_non_datetime():
+    from overture_airflow_provider._operator import _xcom_datetime_default
+
+    with pytest.raises(TypeError):
+        _xcom_datetime_default("not-a-datetime")
+
+
+def test_execute_reraises_taskdeferred_from_submit_job():
+    """TaskDeferred raised inside submit_job must propagate (not be swallowed)."""
+    op = _make_operator()
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch("overture_airflow_provider._operator.get_platform_handler") as mock_handler,
+    ):
+        mock_handler.return_value.submit_job.side_effect = TaskDeferred(
+            trigger=MagicMock(), method_name="execute_complete"
+        )
+        with pytest.raises(TaskDeferred):
+            op.execute({"ti": MagicMock()})
+
+
+def test_push_report_issue_config_skips_when_no_ti():
+    op = _make_operator()
+    op.report_issue_config = {"target": "owner/repo"}
+    op._push_report_issue_config({})  # no ti key — must not raise
+
+
+def test_push_report_issue_config_swallows_xcom_error():
+    op = _make_operator()
+    op.report_issue_config = {"target": "owner/repo"}
+    ti = MagicMock()
+    ti.xcom_push.side_effect = Exception("xcom failure")
+    op._push_report_issue_config({"ti": ti})  # must not raise
+
+
+def test_run_launched_returns_false_without_ti():
+    assert _make_operator()._run_launched({}) is False
+
+
+def test_run_launched_returns_false_on_xcom_error():
+    ti = MagicMock()
+    ti.xcom_pull.side_effect = Exception("db gone")
+    assert _make_operator()._run_launched({"ti": ti}) is False

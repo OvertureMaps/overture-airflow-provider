@@ -4,12 +4,21 @@ Installs sys.modules stubs for optional dependencies (databricks SDK,
 wherobots SDK, sh) so the suite runs without them installed. Stubs are
 only inserted when the real package cannot be imported, so test runs
 that have the extras installed keep the real implementations.
+
+The ``tests/e2e`` suite needs a real Airflow CLI and only runs inside the e2e
+container, which sets ``RUN_E2E=1``. Everywhere else (host dev, the unit CI
+legs) it is excluded from collection so it never fails for lack of Airflow.
 """
 
 import importlib
+import os
 import sys
 import types
 from unittest.mock import MagicMock
+
+# Skip the container-only e2e suite unless explicitly opted in (see tests/e2e).
+if not os.environ.get("RUN_E2E"):
+    collect_ignore = ["e2e"]
 
 _OPTIONAL_MODULES = (
     "sh",

@@ -55,6 +55,7 @@ from overture_airflow_provider.config import (
     GlueConfig,
     IcebergConfig,
     PackageRegistryConfig,
+    ReportIssueConfig,
     WherobotsConfig,
     coerce_config_dict,
 )
@@ -92,6 +93,7 @@ def spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    report_issue_config: ReportIssueConfig | None = None,
 ):
     """Create a TaskGroup that runs one Spark job on the platform selected at
     runtime by ``spark_impl_name``.
@@ -135,6 +137,11 @@ def spark_agnostic_task_group(
         wherobots_config: Wherobots execution settings (role ARN, external ID,
             AWS region). Required for Wherobots runs that use Iceberg.
 
+        report_issue_config: Opt-in "Report Issue" operator link. Off by
+            default; when enabled it adds a link on ``execute_spark_job`` that
+            opens a pre-filled "create issue" form on the configured tracker
+            (GitHub built in; pluggable). Requires a target (e.g. ``"owner/repo"``).
+
     Returns:
         TaskGroup containing five tasks: ``setup``, ``download_python_packages``,
         ``download_jars``, ``setup_cluster``, ``execute_spark_job``.
@@ -163,6 +170,7 @@ def spark_agnostic_task_group(
         glue_config=glue_config,
         databricks_config=databricks_config,
         wherobots_config=wherobots_config,
+        report_issue_config=report_issue_config,
     )
 
 
@@ -264,12 +272,19 @@ def _spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    report_issue_config: ReportIssueConfig | None = None,
 ):
     """Internal task-group implementation. See ``spark_agnostic_task_group``."""
 
     execute_kwargs = {"pool": pool, "retries": retries}
     if max_active_tis_per_dagrun is not None:
         execute_kwargs["max_active_tis_per_dagrun"] = max_active_tis_per_dagrun
+
+    report_issue_payload = (
+        report_issue_config.to_operator_payload()
+        if report_issue_config is not None and report_issue_config.active
+        else None
+    )
 
     @task(task_id="setup")
     def setup_task(
@@ -398,5 +413,6 @@ def _spark_agnostic_task_group(
         spark_cluster_size_name=spark_cluster_size_name,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        report_issue_config=report_issue_payload,
         **execute_kwargs,
     )

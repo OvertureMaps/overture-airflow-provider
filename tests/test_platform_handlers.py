@@ -289,7 +289,7 @@ class TestGlueExecuteJob:
 
         with (
             patch(
-                "overture_airflow_provider._glue.GlueJobOperator",
+                "airflow.providers.amazon.aws.operators.glue.GlueJobOperator",
                 return_value=mock_operator,
             ) as MockOperator,
             patch(
@@ -538,6 +538,30 @@ class TestCompleteGlueJob:
         with pytest.raises(AirflowException, match="did not succeed"):
             self._run("ERROR")
 
+    def test_failed_with_handler_emits_classified_message(self):
+        from overture_airflow_provider._glue import complete_glue_job
+
+        handler = GluePlatformHandler(_glue_setup_info())
+        context = {"ti": MagicMock(task_id="execute_spark_job")}
+        mock_glue = MagicMock()
+        mock_glue.get_job_run.return_value = {
+            "JobRun": {
+                "JobRunState": "FAILED",
+                "ErrorMessage": "S3 AccessDenied on DeleteObject",
+            }
+        }
+        with patch(
+            "overture_airflow_provider._glue.boto3.client",
+            return_value=mock_glue,
+        ):
+            with pytest.raises(AirflowException) as exc:
+                complete_glue_job(_glue_setup_info(), "jr_abc123", context, handler=handler)
+        msg = str(exc.value)
+        assert "Spark job FAILED on GLUE" in msg
+        assert "downstream job error" in msg
+        assert "AccessDenied" in msg
+        assert "hint:" in msg
+
 
 class TestGlueHandlerCompleteJobEventContract:
     """GlueJobCompleteTrigger emits the run id under "value" (AwsBaseWaiterTrigger
@@ -549,7 +573,7 @@ class TestGlueHandlerCompleteJobEventContract:
         handler = GluePlatformHandler(_glue_setup_info())
         captured = {}
 
-        def _fake_complete(setup_info, run_id, context):
+        def _fake_complete(setup_info, run_id, context, handler=None):
             captured["run_id"] = run_id
             return {"job_url": "https://example/run/x", "status": "SUCCEEDED"}
 
@@ -954,6 +978,41 @@ class TestCompleteDatabricksJob:
         with pytest.raises(AirflowException, match="failed"):
             self._run(successful=False)
 
+    def test_failure_with_handler_emits_classified_message(self):
+        from overture_airflow_provider._databricks import complete_databricks_job
+
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        event = {
+            "run_id": "12345",
+            "run_page_url": "https://dbc.example/runs/12345",
+            "run_state": (
+                '{"life_cycle_state": "INTERNAL_ERROR", "result_state": "FAILED",'
+                ' "state_message": "infra blip"}'
+            ),
+            "errors": [],
+        }
+        mock_run_state = MagicMock()
+        mock_run_state.is_successful = False
+        mock_run_state_cls = MagicMock()
+        mock_run_state_cls.from_json.return_value = mock_run_state
+
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.RunState",
+            mock_run_state_cls,
+        ):
+            with pytest.raises(AirflowException) as exc:
+                complete_databricks_job(
+                    _databricks_setup_info(),
+                    self._CLUSTER_INFO,
+                    event,
+                    {"ti": MagicMock()},
+                    handler=handler,
+                )
+        msg = str(exc.value)
+        assert "Spark job INTERNAL_ERROR on DATABRICKS" in msg
+        assert "platform/infra" in msg
+        assert "infra blip" in msg
+
 
 class TestWherobotsSetupCluster:
     def _run(self, extra_spark_conf=None, iceberg_spark_config=None):
@@ -1068,7 +1127,7 @@ class TestWherobotsExecuteJob:
                 return_value="us-east-1",
             ),
             patch(
-                "overture_airflow_provider._wherobots.BaseHook.get_connection",
+                "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
                 return_value=MagicMock(host="api.cloud.wherobots.com"),
             ),
         ):
@@ -1338,3 +1397,87 @@ class TestSparkJobLink:
             url = link.get_link(operator, ti_key=MagicMock())
 
         assert url == ""
+
+
+class TestReportIssueLink:
+    """Tests for ReportIssueLink.get_link."""
+
+    def _make_link(self):
+        from overture_airflow_provider.links import ReportIssueLink
+
+        return ReportIssueLink()
+
+    def _make_operator(self, dag_id="test_dag", task_id="grp.execute_spark_job"):
+        op = MagicMock()
+        op.dag_id = dag_id
+        op.task_id = task_id
+        return op
+
+    def _xcom(self, mapping):
+        def _get(key, ti_key=None, **kwargs):
+            return mapping.get(key)
+
+        return _get
+
+    def test_returns_empty_when_config_absent(self):
+        link = self._make_link()
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom({}),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url == ""
+
+    def test_builds_github_url_with_run_context(self):
+        link = self._make_link()
+        mapping = {
+            "report_issue": json.dumps(
+                {"provider": "github", "target": "owner/repo", "labels": ["bug"], "extra": {}}
+            ),
+            "spark_agnostic": json.dumps(
+                {"spark_impl": "GLUE_SEDONA", "job_url": "https://console/jr1"}
+            ),
+        }
+        ti_key = MagicMock()
+        ti_key.run_id = "run1"
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=ti_key)
+        assert url.startswith("https://github.com/owner/repo/issues/new?")
+        assert "GLUE_SEDONA" in url
+        assert "run1" in url
+        assert "labels=bug" in url
+
+    def test_unknown_provider_returns_empty(self):
+        link = self._make_link()
+        mapping = {"report_issue": json.dumps({"provider": "zzz", "target": "owner/repo"})}
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url == ""
+
+    def test_missing_target_returns_empty(self):
+        link = self._make_link()
+        mapping = {"report_issue": json.dumps({"provider": "github", "target": ""})}
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url == ""
+
+    def test_builds_url_without_spark_context(self):
+        link = self._make_link()
+        mapping = {
+            "report_issue": json.dumps({"provider": "github", "target": "owner/repo"}),
+        }
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url.startswith("https://github.com/owner/repo/issues/new?")

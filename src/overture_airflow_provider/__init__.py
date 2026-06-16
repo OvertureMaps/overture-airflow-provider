@@ -33,6 +33,7 @@ _LAZY_IMPORTS = {
     "IcebergConfig": ("config", "IcebergConfig"),
     "PackageRegistryConfig": ("config", "PackageRegistryConfig"),
     "RenderResult": ("render", "RenderResult"),
+    "ReportIssueConfig": ("config", "ReportIssueConfig"),
     "SparkJobLink": ("links", "SparkJobLink"),
     "SparkImpl": ("spark", "SparkImpl"),
     "SparkSedona": ("spark", "SparkSedona"),
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
         GlueConfig,
         IcebergConfig,
         PackageRegistryConfig,
+        ReportIssueConfig,
         WherobotsConfig,
     )
     from overture_airflow_provider.links import SparkJobLink  # noqa: F401

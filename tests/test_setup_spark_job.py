@@ -146,3 +146,19 @@ class TestRunIdentifier:
     def test_py_pi_client_present(self):
         result = _run()
         assert result["py_pi_client"] is not None
+
+
+# ─── spark_execution_logic lazy-facade ────────────────────────────────────────
+
+
+def test_execution_logic_resolves_known_symbol():
+    import overture_airflow_provider.spark_execution_logic as sel
+
+    assert sel.MAX_TIMEOUT_HOURS == 8  # re-exported from _glue
+
+
+def test_execution_logic_raises_for_unknown_symbol():
+    import overture_airflow_provider.spark_execution_logic as sel
+
+    with pytest.raises(AttributeError):
+        _ = sel.DOES_NOT_EXIST

@@ -83,6 +83,9 @@ ignore = ["E501"]  # line-length enforced by formatter
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --import-mode=importlib"
+markers = [
+    "e2e: real-Airflow container e2e tests (run via tests/e2e, skipped by default)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]

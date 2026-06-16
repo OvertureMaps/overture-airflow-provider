@@ -4,9 +4,7 @@ import json
 import shutil
 
 import boto3
-from airflow.providers.amazon.aws.operators.glue import GlueJobOperator
 
-from overture_airflow_provider._airflow_compat import AirflowException
 from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize
 from overture_airflow_provider.spark import SparkSedona
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
@@ -113,6 +111,8 @@ def download_jars_glue(
     spark_jar_paths: list[str],
 ) -> dict:
     """Download JARs from registry/Maven and cache in S3 for Glue."""
+    from overture_airflow_provider._airflow_compat import AirflowException
+
     helper = SparkAgnosticHelper(
         job_name=setup_info["job_name"],
         run_identifier=setup_info["run_identifier"],
@@ -201,6 +201,7 @@ def build_glue_operator_kwargs(
     task_id: str,
     dag_id: str = "",
     execution_class: str = "STANDARD",
+    verbose: bool = True,
 ) -> dict:
     """Pure-Python assembly of GlueJobOperator kwargs.
 
@@ -333,7 +334,7 @@ def build_glue_operator_kwargs(
         "update_config": True,
         "create_job_kwargs": create_job_kwargs,
         "run_job_kwargs": {"JobRunQueuingEnabled": True},
-        "verbose": True,
+        "verbose": verbose,
         "deferrable": True,
     }
 
@@ -367,6 +368,7 @@ def submit_glue_job(
     task_id: str,
     context: dict,
     execution_class: str = "STANDARD",
+    verbose: bool = True,
 ) -> dict:
     """Submit a Glue job (non-blocking) and return a trigger to defer on.
 
@@ -380,6 +382,8 @@ def submit_glue_job(
     ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works while the
     task is deferred.
     """
+    from airflow.providers.amazon.aws.operators.glue import GlueJobOperator
+
     from overture_airflow_provider._airflow_compat import TaskDeferred
 
     if not module_name:
@@ -419,6 +423,7 @@ def submit_glue_job(
         task_id=task_id,
         dag_id=context["dag"].dag_id if "dag" in context else "",
         execution_class=execution_class,
+        verbose=verbose,
     )
 
     platform_operator = GlueJobOperator(**built["operator_kwargs"])
@@ -461,12 +466,16 @@ def submit_glue_job(
     }
 
 
-def complete_glue_job(setup_info: dict, run_id: str, context: dict) -> dict:
+def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None) -> dict:
     """Resolve a completed Glue run into the final result dict.
 
     Called from the deferrable operator's ``execute_complete`` after the
-    ``GlueJobCompleteTrigger`` reports the run reached a terminal state.
+    ``GlueJobCompleteTrigger`` reports the run reached a terminal state. On a
+    non-success state, ``handler`` (when supplied) is used to raise a classified,
+    de-noised failure naming the Glue ``ErrorMessage`` as the root cause.
     """
+    from overture_airflow_provider._airflow_compat import AirflowException
+
     region = setup_info["aws_region"]
     job_name = setup_info["job_name"]
     glue_client = boto3.client("glue", region_name=region)
@@ -474,6 +483,16 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict) -> dict:
     job_status = glue_client.get_job_run(JobName=job_name, RunId=run_id)
     job_state = job_status["JobRun"]["JobRunState"]
     if job_state != "SUCCEEDED":
+        if handler is not None:
+            from overture_airflow_provider._failures import format_failure
+
+            failure = handler.describe_failure(
+                payload=job_status["JobRun"],
+                run_id=run_id,
+                run_launched=True,
+                console_url=_glue_console_url(region, job_name, run_id),
+            )
+            raise AirflowException(format_failure(failure)) from None
         msg = f"Glue job {job_name} (run {run_id}) did not succeed. Final state: {job_state}"
         print(f"ERROR: {msg}")
         raise AirflowException(msg)

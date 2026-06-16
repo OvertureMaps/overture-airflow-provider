@@ -237,6 +237,7 @@ def _build_render_setup_info(
         "databricks_spark_version": databricks_config.spark_version,
         "databricks_gpu": databricks_config.gpu,
         "glue_execution_class": glue_config.execution_class,
+        "glue_verbose": glue_config.verbose,
         "iam_role_name": glue_config.iam_role_name,
         "codeartifact_domain_owner": package_registry.domain_owner,
         "codeartifact_domain": package_registry.domain,
@@ -462,6 +463,7 @@ def render_spark_job(
             task_id=task_id,
             dag_id=dag_id,
             execution_class=glue_config.execution_class,
+            verbose=glue_config.verbose,
         )
         submit_payload = {
             "create_job_kwargs": built["create_job_kwargs"],

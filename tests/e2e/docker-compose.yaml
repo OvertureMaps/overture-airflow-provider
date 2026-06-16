@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# E2E stack for overture-airflow-provider — credential-free, local == CI.
+# ─────────────────────────────────────────────────────────────────────────────
+# Two services, one image:
+#
+#   e2e        one-shot: parses the example DAGs in a REAL Airflow and runs the
+#              tests/e2e suite. This is the parity entrypoint — CI runs the exact
+#              same `docker compose run --rm e2e`.
+#
+#   standalone long-running `airflow standalone` (webserver + scheduler +
+#              triggerer) for humans who want to click around the UI or trigger
+#              DAGs locally. Opt-in via the `manual` profile; never used by CI.
+#
+# Everything runs on sqlite under a throwaway AIRFLOW_HOME, so there is no
+# database service to manage and nothing to clean up.
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: overture-provider-e2e
+
+x-build: &build
+  context: ../..
+  dockerfile: tests/e2e/Dockerfile
+  args:
+    AIRFLOW_VERSION: ${AIRFLOW_VERSION:-2.11.0}
+    PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+
+x-airflow-env: &airflow-env
+  AIRFLOW_HOME: /home/airflow/airflow
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/overture/examples
+  # Provider DAGs use deferrable operators; nothing here executes them, but keep
+  # the parse environment explicit and deterministic.
+  AIRFLOW__CORE__DAG_IGNORE_FILE_SYNTAX: glob
+  PYTHONDONTWRITEBYTECODE: "1"
+
+services:
+  e2e:
+    build: *build
+    environment: *airflow-env
+    command: ["bash", "tests/e2e/run-e2e.sh"]
+
+  standalone:
+    build: *build
+    profiles: [manual]
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    ports:
+      - "8080:8080"
+    command: ["bash", "-c", "airflow db migrate && airflow standalone"]

@@ -18,7 +18,6 @@ This module owns:
   serialized dict.
 """
 
-from overture_airflow_provider.python_package_utils import CodeArtifactPyPiClient
 from overture_airflow_provider.spark import SparkFamily, SparkImpl
 
 # Every key returned by setup_spark_job that is safe to push to XCom.
@@ -56,6 +55,7 @@ SERIALIZABLE_KEYS = (
     "databricks_spark_version",
     "databricks_gpu",
     "glue_execution_class",
+    "glue_verbose",
     "iam_role_name",
     "codeartifact_domain_owner",
     "codeartifact_domain",
@@ -83,6 +83,8 @@ def rehydrate(serialized: dict) -> dict:
     Re-derives the non-serializable fields (``spark_impl``, ``spark_family``,
     ``py_pi_client``) from the serialized values.
     """
+    from overture_airflow_provider.python_package_utils import CodeArtifactPyPiClient
+
     full = dict(serialized)
     full["spark_impl"] = SparkImpl.from_str(serialized["spark_impl_name"])
     full["spark_family"] = SparkFamily[serialized["spark_family_name"]]

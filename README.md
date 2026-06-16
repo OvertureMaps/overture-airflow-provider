@@ -17,8 +17,7 @@ value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed
 in via typed config dataclasses. No defaults are baked in for any one
 organization.
 
-> Status: `0.2.0` — Beta. Unit + mock test coverage only; live-platform
-> E2E tests are tracked as a follow-up.
+> **0.3.1** — Beta. Tested against real Airflow 2.11 + 3.0 via Docker e2e.
 
 ## Install
 
@@ -128,6 +127,61 @@ See [`examples/example_dag.py`](examples/example_dag.py) for a runnable DAG
 that targets all three platforms.
 
 See [`SPEC.md`](SPEC.md) for the full architecture.
+
+## Operator links
+
+### Job console link (`SparkJobLink`)
+
+The `execute_spark_job` task automatically gains a **"Spark Job"** link in the
+Airflow UI that opens the platform's job-run console (Glue, Databricks, or
+Wherobots). No configuration needed — it's attached to the task automatically
+when the provider is installed.
+
+### Report Issue link (opt-in)
+
+Add a **"Report Issue"** button to the execute task that opens a pre-filled
+GitHub issue form whenever a job fails. The link is push-based — the config
+is written to XCom at task start — so the button renders even when the run
+fails mid-flight.
+
+```python
+from overture_airflow_provider import ReportIssueConfig, spark_agnostic_task_group
+
+spark_agnostic_task_group(
+    "my_glue_job",
+    spark_impl_name="GLUE_v5",
+    report_issue_config=ReportIssueConfig(
+        enabled=True,
+        target="my-org/my-repo",   # GitHub owner/repo
+        labels=["spark-failure"],  # optional labels pre-applied to the issue
+    ),
+    # ... rest of config unchanged
+)
+```
+
+The button is off by default (`enabled=False`). Only `"github"` ships built
+in; additional trackers are pluggable via `_report_issue.IssueTracker` +
+`register_tracker` without touching the link or operator code.
+
+## Failure messages
+
+When a Spark job fails, the provider emits a **classified** error instead of a
+raw platform exception. Every failure includes a category, summary, retry hint,
+and (where available) the platform exit code — so the Airflow task log is
+self-contained without requiring a separate visit to the platform console:
+
+```
+[spark/job] Glue job run jr_abc123 did not succeed (state: FAILED)
+  category : job/exit-code
+  exit_code: 1
+  summary  : Job exited with a non-zero exit code. Check the job log for the
+             root cause; this is usually an application error, not a platform error.
+  retry    : fix the application code; a bare retry is unlikely to help
+  job_url  : https://us-east-1.console.aws.amazon.com/glue/home#/job/run/jr_abc123
+```
+
+Categories: `job/exit-code`, `job/oom`, `job/timeout`, `job/cancelled`,
+`submit/config`, `trigger/polling`, and platform-specific variants.
 
 ## Databricks runner deployment
 

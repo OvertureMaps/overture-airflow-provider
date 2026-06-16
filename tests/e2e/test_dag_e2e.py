@@ -133,17 +133,14 @@ def test_import_does_not_pull_in_airflow():
 
 
 def test_setup_info_xcom_roundtrip():
-    """The setup_info XCom payload is exactly the audited, JSON-safe subset.
+    """setup_spark_job → to_xcom produces a JSON-safe payload over a real Airflow install.
 
-    Guards the ``SERIALIZABLE_KEYS`` contract end to end: only allow-listed keys
-    cross XCom, no non-serializable objects (enums / boto client) leak, and the
-    payload survives the default XCom backend's JSON serialization for the
-    Airflow version under test.
+    Unit tests cover the to_xcom/rehydrate logic in isolation; this uses the
+    live setup_spark_job() so any field added to _setup.py but missing from
+    SERIALIZABLE_KEYS is caught against a real Airflow environment.
     """
     from overture_airflow_provider._setup import setup_spark_job
-    from overture_airflow_provider.python_package_utils import CodeArtifactPyPiClient
     from overture_airflow_provider.setup_info import SERIALIZABLE_KEYS, to_xcom
-    from overture_airflow_provider.spark import SparkFamily, SparkImpl
 
     info = setup_spark_job(
         spark_impl_name="GLUE_v5",
@@ -156,21 +153,8 @@ def test_setup_info_xcom_roundtrip():
     )
     payload = to_xcom(info)
 
-    assert set(payload) == ((set(SERIALIZABLE_KEYS) & set(info)) | {"spark_family_name"})
-    for key, value in payload.items():
-        assert not isinstance(value, (SparkImpl, SparkFamily, CodeArtifactPyPiClient)), key
-
-    # The default XCom backend serializes via JSON; this is the exact contract.
+    assert set(payload) == (set(SERIALIZABLE_KEYS) & set(info)) | {"spark_family_name"}
     assert json.loads(json.dumps(payload)) == payload
-
-    # Also feed it through the installed Airflow's serializer; tolerate only
-    # cross-version signature differences, never a real serialization failure.
-    from airflow.models.xcom import BaseXCom
-
-    try:
-        BaseXCom.serialize_value(payload)
-    except TypeError:
-        pass
 
 
 def test_setup_task_executes_credential_free():

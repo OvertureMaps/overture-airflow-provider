@@ -1,0 +1,17 @@
+# Keep the Docker build context small: only the provider source, examples, and
+# tests are needed to install + e2e-test the package. Everything below is either
+# regenerated, host-only, or irrelevant inside the image.
+.git
+.github
+.venv
+.venv-lite
+**/__pycache__
+.pytest_cache
+.ruff_cache
+*.pyc
+*.egg-info
+dist
+build
+uv.lock
+CHANGELOG.md
+SPEC.md

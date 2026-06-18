@@ -55,6 +55,12 @@ import json
 import logging
 
 from overture_airflow_provider._airflow_compat import BaseOperatorLink, XCom
+from overture_airflow_provider._report_issue import (
+    REPORT_ISSUE_XCOM_KEY,
+    IssueContext,
+    get_tracker,
+    parse_report_issue_xcom,
+)
 
 log = logging.getLogger(__name__)
 
@@ -101,3 +107,74 @@ class SparkJobLink(BaseOperatorLink):
         except (json.JSONDecodeError, AttributeError, TypeError):
             log.debug("SparkJobLink: could not parse spark_agnostic XCom value")
             return ""
+
+
+def _read_xcom(key, operator, ti_key, dttm):
+    """Fetch a task XCom value across Airflow 2.3+ and 3.x lookup styles."""
+    if ti_key is not None:
+        return XCom.get_value(key=key, ti_key=ti_key)
+    assert dttm is not None
+    return XCom.get_one(
+        key=key,
+        dag_id=operator.dag_id,
+        task_id=operator.task_id,
+        execution_date=dttm,
+    )
+
+
+class ReportIssueLink(BaseOperatorLink):
+    """Opt-in link to file a pre-filled issue about a failed Spark job.
+
+    Only attached when the caller passes an *enabled* ``ReportIssueConfig`` with
+    a target; the operator pushes that config to the ``report_issue`` XCom at the
+    start of ``execute`` so the link works even when the run later fails. The
+    target tracker (GitHub built in; others pluggable via ``_report_issue``)
+    turns the run context into a "create issue" URL. Returns ``""`` — so the
+    button stays inert — when the config is absent or the tracker is unknown.
+    """
+
+    name = "Report Issue"
+
+    def get_link(
+        self,
+        operator,
+        *,
+        ti_key=None,
+        dttm=None,
+    ) -> str:
+        cfg = parse_report_issue_xcom(_read_xcom(REPORT_ISSUE_XCOM_KEY, operator, ti_key, dttm))
+        target = (cfg.get("target") or "").strip()
+        if not target:
+            return ""
+        tracker = get_tracker(cfg.get("provider") or "")
+        if tracker is None:
+            log.debug("ReportIssueLink: unknown provider %r", cfg.get("provider"))
+            return ""
+
+        platform, job_url = self._spark_context(operator, ti_key, dttm)
+        ctx = IssueContext(
+            dag_id=getattr(operator, "dag_id", "") or "",
+            task_id=getattr(operator, "task_id", "") or "",
+            run_id=getattr(ti_key, "run_id", "") or "",
+            platform=platform,
+            job_url=job_url,
+            labels=tuple(cfg.get("labels") or ()),
+            extra=cfg.get("extra") or {},
+        )
+        try:
+            return tracker.build_url(target, ctx)
+        except Exception:
+            log.debug("ReportIssueLink: tracker %r failed to build URL", tracker.name)
+            return ""
+
+    @staticmethod
+    def _spark_context(operator, ti_key, dttm) -> tuple[str, str]:
+        """Best-effort platform + job-console URL from the spark_agnostic XCom."""
+        try:
+            raw = _read_xcom(SPARK_AGNOSTIC_XCOM_KEY, operator, ti_key, dttm)
+            data = raw if isinstance(raw, dict) else (json.loads(raw) if raw else {})
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return "", ""
+        if not isinstance(data, dict):
+            return "", ""
+        return data.get("spark_impl") or "", data.get("job_url") or ""

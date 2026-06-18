@@ -104,3 +104,69 @@ class TestInstanceCalculatorValidation:
                 desired_cores=16,
                 instance_types={"BadSKU": "8"},
             )
+
+    def test_rejects_non_positive_desired_cores(self):
+        with pytest.raises(ValueError, match="positive"):
+            InstanceCalculator.calculate_instances(1, 0, {"G.1X": 4})
+
+    def test_rejects_empty_instance_types(self):
+        with pytest.raises(ValueError, match="empty"):
+            InstanceCalculator.calculate_instances(1, 16, {})
+
+    def test_desired_workers_path(self):
+        # desired_workers triggers the proximity branch (lines 206-218)
+        instance_type, count = InstanceCalculator.calculate_instances(
+            min_instance_count=2,
+            desired_cores=16,
+            instance_types={"G.1X": 4, "G.2X": 8},
+            desired_workers=4,
+        )
+        assert count >= 2
+        assert instance_type in {"G.1X", "G.2X"}
+
+
+# ─── ClusterSize.from_str ─────────────────────────────────────────────────────
+
+
+class TestClusterSizeFromStr:
+    def test_valid_lowercase(self):
+        from overture_airflow_provider.cluster_sizing import ClusterSize
+
+        assert ClusterSize.from_str("xs") == ClusterSize.XS
+        assert ClusterSize.from_str("xl") == ClusterSize.XL
+
+    def test_invalid_raises(self):
+        from overture_airflow_provider.cluster_sizing import ClusterSize
+
+        with pytest.raises(ValueError, match="not a valid ClusterSize"):
+            ClusterSize.from_str("HUGE")
+
+
+# ─── from_cluster_size shortcuts ─────────────────────────────────────────────
+
+
+def test_glue_from_cluster_size():
+    from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize, ClusterSize
+
+    result = AwsGlueClusterSize.from_cluster_size(ClusterSize.XS)
+    assert result == {"WorkerType": "G.1X", "NumberOfWorkers": 2}
+
+
+def test_databricks_from_cluster_size():
+    from overture_airflow_provider.cluster_sizing import ClusterSize, DatabricksClusterSize
+
+    result = DatabricksClusterSize.from_cluster_size(ClusterSize.S)
+    assert result["node_type_id"] == "Standard_E8a_v4"
+    assert result["autoscale"]["min_workers"] == 5
+
+
+def test_wherobots_from_desired_cores_all_branches():
+    from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
+
+    # Hit every range branch + the None fallback
+    assert WherobotsClusterSize.from_desired_cores(50) is not None  # S
+    assert WherobotsClusterSize.from_desired_cores(200) is not None  # M
+    assert WherobotsClusterSize.from_desired_cores(600) is not None  # L
+    assert WherobotsClusterSize.from_desired_cores(1500) is not None  # XL
+    assert WherobotsClusterSize.from_desired_cores(3000) is not None  # XXL
+    assert WherobotsClusterSize.from_desired_cores(-1) is None  # None path

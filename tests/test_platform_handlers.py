@@ -289,7 +289,7 @@ class TestGlueExecuteJob:
 
         with (
             patch(
-                "overture_airflow_provider._glue.GlueJobOperator",
+                "airflow.providers.amazon.aws.operators.glue.GlueJobOperator",
                 return_value=mock_operator,
             ) as MockOperator,
             patch(
@@ -522,21 +522,34 @@ class TestCompleteGlueJob:
         result = self._run("SUCCEEDED")
         assert result["job_url"].endswith("/run/jr_abc123")
 
-    def test_failed_raises(self):
+    @pytest.mark.parametrize("state", ["FAILED", "STOPPED", "TIMEOUT", "ERROR"])
+    def test_non_succeeded_state_raises(self, state):
         with pytest.raises(AirflowException, match="did not succeed"):
-            self._run("FAILED")
+            self._run(state)
 
-    def test_stopped_raises(self):
-        with pytest.raises(AirflowException, match="did not succeed"):
-            self._run("STOPPED")
+    def test_failed_with_handler_emits_classified_message(self):
+        from overture_airflow_provider._glue import complete_glue_job
 
-    def test_timeout_raises(self):
-        with pytest.raises(AirflowException, match="did not succeed"):
-            self._run("TIMEOUT")
-
-    def test_error_raises(self):
-        with pytest.raises(AirflowException, match="did not succeed"):
-            self._run("ERROR")
+        handler = GluePlatformHandler(_glue_setup_info())
+        context = {"ti": MagicMock(task_id="execute_spark_job")}
+        mock_glue = MagicMock()
+        mock_glue.get_job_run.return_value = {
+            "JobRun": {
+                "JobRunState": "FAILED",
+                "ErrorMessage": "S3 AccessDenied on DeleteObject",
+            }
+        }
+        with patch(
+            "overture_airflow_provider._glue.boto3.client",
+            return_value=mock_glue,
+        ):
+            with pytest.raises(AirflowException) as exc:
+                complete_glue_job(_glue_setup_info(), "jr_abc123", context, handler=handler)
+        msg = str(exc.value)
+        assert "Spark job FAILED on GLUE" in msg
+        assert "downstream job error" in msg
+        assert "AccessDenied" in msg
+        assert "hint:" in msg
 
 
 class TestGlueHandlerCompleteJobEventContract:
@@ -549,7 +562,7 @@ class TestGlueHandlerCompleteJobEventContract:
         handler = GluePlatformHandler(_glue_setup_info())
         captured = {}
 
-        def _fake_complete(setup_info, run_id, context):
+        def _fake_complete(setup_info, run_id, context, handler=None):
             captured["run_id"] = run_id
             return {"job_url": "https://example/run/x", "status": "SUCCEEDED"}
 
@@ -602,14 +615,21 @@ class TestDatabricksSetupCluster:
         extra_spark_conf=None,
         iceberg_spark_config=None,
         python_packages="overture-spark==1.0",
+        databricks_spark_conf=None,
+        databricks_spark_env_vars=None,
+        extra_spark_env_vars=None,
     ):
         handler = DatabricksPlatformHandler(_databricks_setup_info())
         handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        if databricks_spark_conf:
+            handler.setup_info["databricks_spark_conf"] = databricks_spark_conf
+        if databricks_spark_env_vars:
+            handler.setup_info["databricks_spark_env_vars"] = databricks_spark_env_vars
         return handler.setup_cluster(
             python_packages=python_packages,
             spark_jar_paths="",
             extra_spark_conf=extra_spark_conf or {},
-            extra_spark_env_vars="{}",
+            extra_spark_env_vars=extra_spark_env_vars or "{}",
             spark_cluster_desired_worker_cores="40",
             spark_cluster_desired_workers="",
             iceberg_spark_config=iceberg_spark_config or _mock_iceberg_rest(),
@@ -666,64 +686,26 @@ class TestDatabricksSetupCluster:
         )
 
     def test_databricks_spark_conf_merged_into_new_cluster(self):
-        handler = DatabricksPlatformHandler(_databricks_setup_info())
-        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
-        handler.setup_info["databricks_spark_conf"] = {"spark.custom.platform": "dbx-only"}
-        result = handler.setup_cluster(
-            python_packages="overture-spark==1.0",
-            spark_jar_paths="",
-            extra_spark_conf={},
-            extra_spark_env_vars="{}",
-            spark_cluster_desired_worker_cores="40",
-            spark_cluster_desired_workers="",
-            iceberg_spark_config=_mock_iceberg_rest(),
-        )
-        assert result["new_cluster"]["spark_conf"]["spark.custom.platform"] == "dbx-only"
+        conf = self._run(databricks_spark_conf={"spark.custom.platform": "dbx-only"})
+        assert conf["new_cluster"]["spark_conf"]["spark.custom.platform"] == "dbx-only"
 
     def test_extra_spark_conf_overrides_databricks_spark_conf(self):
-        handler = DatabricksPlatformHandler(_databricks_setup_info())
-        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
-        handler.setup_info["databricks_spark_conf"] = {"spark.custom.platform": "dbx-only"}
-        result = handler.setup_cluster(
-            python_packages="overture-spark==1.0",
-            spark_jar_paths="",
+        conf = self._run(
+            databricks_spark_conf={"spark.custom.platform": "dbx-only"},
             extra_spark_conf={"spark.custom.platform": "from-extra"},
-            extra_spark_env_vars="{}",
-            spark_cluster_desired_worker_cores="40",
-            spark_cluster_desired_workers="",
-            iceberg_spark_config=_mock_iceberg_rest(),
         )
-        assert result["new_cluster"]["spark_conf"]["spark.custom.platform"] == "from-extra"
+        assert conf["new_cluster"]["spark_conf"]["spark.custom.platform"] == "from-extra"
 
     def test_databricks_spark_env_vars_merged_into_new_cluster(self):
-        handler = DatabricksPlatformHandler(_databricks_setup_info())
-        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
-        handler.setup_info["databricks_spark_env_vars"] = {"PLATFORM_TOKEN": "dbx-only"}
-        result = handler.setup_cluster(
-            python_packages="overture-spark==1.0",
-            spark_jar_paths="",
-            extra_spark_conf={},
-            extra_spark_env_vars="{}",
-            spark_cluster_desired_worker_cores="40",
-            spark_cluster_desired_workers="",
-            iceberg_spark_config=_mock_iceberg_rest(),
-        )
-        assert result["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "dbx-only"
+        ev = self._run(databricks_spark_env_vars={"PLATFORM_TOKEN": "dbx-only"})
+        assert ev["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "dbx-only"
 
     def test_extra_spark_env_vars_override_databricks_spark_env_vars(self):
-        handler = DatabricksPlatformHandler(_databricks_setup_info())
-        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
-        handler.setup_info["databricks_spark_env_vars"] = {"PLATFORM_TOKEN": "dbx-only"}
-        result = handler.setup_cluster(
-            python_packages="overture-spark==1.0",
-            spark_jar_paths="",
-            extra_spark_conf={},
+        ev = self._run(
+            databricks_spark_env_vars={"PLATFORM_TOKEN": "dbx-only"},
             extra_spark_env_vars='{"PLATFORM_TOKEN": "from-extra"}',
-            spark_cluster_desired_worker_cores="40",
-            spark_cluster_desired_workers="",
-            iceberg_spark_config=_mock_iceberg_rest(),
         )
-        assert result["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "from-extra"
+        assert ev["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "from-extra"
 
     def test_gpu_overrides_applied_to_new_cluster(self):
         handler = DatabricksPlatformHandler(_databricks_setup_info())
@@ -954,6 +936,41 @@ class TestCompleteDatabricksJob:
         with pytest.raises(AirflowException, match="failed"):
             self._run(successful=False)
 
+    def test_failure_with_handler_emits_classified_message(self):
+        from overture_airflow_provider._databricks import complete_databricks_job
+
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        event = {
+            "run_id": "12345",
+            "run_page_url": "https://dbc.example/runs/12345",
+            "run_state": (
+                '{"life_cycle_state": "INTERNAL_ERROR", "result_state": "FAILED",'
+                ' "state_message": "infra blip"}'
+            ),
+            "errors": [],
+        }
+        mock_run_state = MagicMock()
+        mock_run_state.is_successful = False
+        mock_run_state_cls = MagicMock()
+        mock_run_state_cls.from_json.return_value = mock_run_state
+
+        with patch(
+            "airflow.providers.databricks.hooks.databricks.RunState",
+            mock_run_state_cls,
+        ):
+            with pytest.raises(AirflowException) as exc:
+                complete_databricks_job(
+                    _databricks_setup_info(),
+                    self._CLUSTER_INFO,
+                    event,
+                    {"ti": MagicMock()},
+                    handler=handler,
+                )
+        msg = str(exc.value)
+        assert "Spark job INTERNAL_ERROR on DATABRICKS" in msg
+        assert "platform/infra" in msg
+        assert "infra blip" in msg
+
 
 class TestWherobotsSetupCluster:
     def _run(self, extra_spark_conf=None, iceberg_spark_config=None):
@@ -1068,7 +1085,7 @@ class TestWherobotsExecuteJob:
                 return_value="us-east-1",
             ),
             patch(
-                "overture_airflow_provider._wherobots.BaseHook.get_connection",
+                "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
                 return_value=MagicMock(host="api.cloud.wherobots.com"),
             ),
         ):
@@ -1338,3 +1355,87 @@ class TestSparkJobLink:
             url = link.get_link(operator, ti_key=MagicMock())
 
         assert url == ""
+
+
+class TestReportIssueLink:
+    """Tests for ReportIssueLink.get_link."""
+
+    def _make_link(self):
+        from overture_airflow_provider.links import ReportIssueLink
+
+        return ReportIssueLink()
+
+    def _make_operator(self, dag_id="test_dag", task_id="grp.execute_spark_job"):
+        op = MagicMock()
+        op.dag_id = dag_id
+        op.task_id = task_id
+        return op
+
+    def _xcom(self, mapping):
+        def _get(key, ti_key=None, **kwargs):
+            return mapping.get(key)
+
+        return _get
+
+    def test_returns_empty_when_config_absent(self):
+        link = self._make_link()
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom({}),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url == ""
+
+    def test_builds_github_url_with_run_context(self):
+        link = self._make_link()
+        mapping = {
+            "report_issue": json.dumps(
+                {"provider": "github", "target": "owner/repo", "labels": ["bug"], "extra": {}}
+            ),
+            "spark_agnostic": json.dumps(
+                {"spark_impl": "GLUE_SEDONA", "job_url": "https://console/jr1"}
+            ),
+        }
+        ti_key = MagicMock()
+        ti_key.run_id = "run1"
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=ti_key)
+        assert url.startswith("https://github.com/owner/repo/issues/new?")
+        assert "GLUE_SEDONA" in url
+        assert "run1" in url
+        assert "labels=bug" in url
+
+    def test_unknown_provider_returns_empty(self):
+        link = self._make_link()
+        mapping = {"report_issue": json.dumps({"provider": "zzz", "target": "owner/repo"})}
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url == ""
+
+    def test_missing_target_returns_empty(self):
+        link = self._make_link()
+        mapping = {"report_issue": json.dumps({"provider": "github", "target": ""})}
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url == ""
+
+    def test_builds_url_without_spark_context(self):
+        link = self._make_link()
+        mapping = {
+            "report_issue": json.dumps({"provider": "github", "target": "owner/repo"}),
+        }
+        with patch(
+            "overture_airflow_provider.links.XCom.get_value",
+            side_effect=self._xcom(mapping),
+        ):
+            url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
+        assert url.startswith("https://github.com/owner/repo/issues/new?")

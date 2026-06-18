@@ -40,6 +40,7 @@ spark_agnostic_task_group(
     glue_config=GlueConfig(...),
     databricks_config=DatabricksConfig(...),
     wherobots_config=WherobotsConfig(...),
+    report_issue_config=ReportIssueConfig(...),
 )
 ```
 
@@ -61,6 +62,16 @@ Holds four JSON-string fields:
 S3 Tables keys must be namespaced under a distinct catalog alias (e.g.
 `spark.sql.catalog.s3tables_catalog.*`) to avoid conflicts with the primary
 catalog. Both primary and S3 Tables configs are merged together at runtime.
+
+### ReportIssueConfig
+
+Opt-in "Report Issue" operator extra-link (off by default; provider assumes
+nothing about issue trackers). `enabled=True` requires a non-empty `target`.
+Tracker is pluggable via `_report_issue.IssueTracker` + `register_tracker`;
+`provider="github"` ships built in (`target` is an `"owner/repo"` slug). Add a
+new backend (e.g. Jira) by subclassing `IssueTracker` and registering it — no
+changes to the link, operator, or config wiring. `extra` carries
+provider-specific knobs.
 
 ### DatabricksConfig
 
@@ -129,6 +140,22 @@ uv run ruff format .               # format
 
 Tests use MagicMock stubs for optional platform SDKs (`databricks`, `sh`,
 `wherobots`) so the suite runs without them installed. See `tests/conftest.py`.
+
+### Real-Airflow e2e (Docker)
+
+The unit suite mocks Airflow/SDKs; `tests/e2e/` proves the provider installs into
+a **real** Airflow and its example DAGs parse cleanly (credential-free).
+
+```bash
+cd tests/e2e
+docker compose run --rm --build e2e                 # default: Airflow 2.11
+AIRFLOW_VERSION=3.0.3 docker compose run --rm --build e2e
+./run.sh all   # bonus: run the whole tests/ suite under real Airflow
+```
+
+`tests/e2e` is excluded from the default `pytest` run unless `RUN_E2E=1` (set by
+the container). CI: `.github/workflows/e2e.yml` (matrix: Airflow 2.11 + 3.0).
+Details in `tests/e2e/README.md`.
 
 ---
 

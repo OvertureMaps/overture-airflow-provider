@@ -93,6 +93,22 @@ def test_render_glue_emits_create_job_and_script_args():
     assert json.loads(payload["script_args"]["--params"])["date"] == "2024-01-01"
 
 
+def test_render_glue_verbose_defaults_true():
+    result = render_spark_job(spark_impl_name="GLUE_v5", **_COMMON_KWARGS)
+    assert result.operator_kwargs["verbose"] is True
+
+
+def test_render_glue_verbose_toggle_off():
+    from overture_airflow_provider.config import GlueConfig
+
+    result = render_spark_job(
+        spark_impl_name="GLUE_v5",
+        glue_config=GlueConfig(verbose=False),
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["verbose"] is False
+
+
 def test_render_databricks_emits_submit_payload():
     result = render_spark_job(spark_impl_name="DATABRICKS_v15", **_COMMON_KWARGS)
 

@@ -39,22 +39,16 @@ def _wherobots_catalog_config():
 
 
 class TestSelectIcebergConfNone:
-    def test_returns_empty_when_config_is_none(self):
-        assert _select_iceberg_conf(None, "GLUE") == {}
-        assert _select_iceberg_conf(None, "DATABRICKS") == {}
-        assert _select_iceberg_conf(None, "WHEROBOTS") == {}
+    @pytest.mark.parametrize("platform", ["GLUE", "DATABRICKS", "WHEROBOTS"])
+    def test_returns_empty_when_config_is_none(self, platform):
+        assert _select_iceberg_conf(None, platform) == {}
 
 
 class TestSelectIcebergConfPrimaryOnly:
-    def test_glue_returns_spark_config(self):
+    @pytest.mark.parametrize("platform", ["GLUE", "DATABRICKS"])
+    def test_glue_databricks_returns_spark_config(self, platform):
         cfg = IcebergConfig(spark_config=json.dumps(_rest_catalog_config()))
-        result = _select_iceberg_conf(cfg, "GLUE")
-        assert result == _rest_catalog_config()
-
-    def test_databricks_returns_spark_config(self):
-        cfg = IcebergConfig(spark_config=json.dumps(_rest_catalog_config()))
-        result = _select_iceberg_conf(cfg, "DATABRICKS")
-        assert result == _rest_catalog_config()
+        assert _select_iceberg_conf(cfg, platform) == _rest_catalog_config()
 
     def test_wherobots_returns_wherobots_spark_config(self):
         cfg = IcebergConfig(wherobots_spark_config=json.dumps(_wherobots_catalog_config()))

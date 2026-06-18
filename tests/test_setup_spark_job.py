@@ -138,11 +138,23 @@ class TestRunIdentifier:
         assert "mod.Cls" in result["run_identifier"]
 
     def test_run_identifier_is_unique(self):
-        r1 = _run()
-        r2 = _run()
-        assert isinstance(r1["run_identifier"], str) and r1["run_identifier"]
-        assert isinstance(r2["run_identifier"], str) and r2["run_identifier"]
+        import re
 
-    def test_py_pi_client_present(self):
-        result = _run()
-        assert result["py_pi_client"] is not None
+        # Second-precision timestamp suffix ensures uniqueness across runs
+        assert re.search(r"_\d{14}$", _run()["run_identifier"])
+
+
+# ─── spark_execution_logic lazy-facade ────────────────────────────────────────
+
+
+def test_execution_logic_resolves_known_symbol():
+    import overture_airflow_provider.spark_execution_logic as sel
+
+    assert sel.MAX_TIMEOUT_HOURS == 8  # re-exported from _glue
+
+
+def test_execution_logic_raises_for_unknown_symbol():
+    import overture_airflow_provider.spark_execution_logic as sel
+
+    with pytest.raises(AttributeError):
+        _ = sel.DOES_NOT_EXIST

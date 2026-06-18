@@ -4,11 +4,14 @@ token out of process arguments and log/exception output (issue #36)."""
 import logging
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from packaging.version import Version
 
 from overture_airflow_provider.python_package_utils import (
+    CodeArtifactPyPiClient,
+    PackageVersionStrategy,
     PyPiDownloader,
     mask_url_credentials,
 )
@@ -103,3 +106,68 @@ def test_download_packages_noop_when_empty(tmp_path, monkeypatch):
 
     _make_downloader(tmp_path).download_packages([], "3.11")
     assert called["pip"] is False
+
+
+# ─── CodeArtifactPyPiClient version resolution ────────────────────────────────
+
+
+@pytest.fixture
+def _client():
+    """CodeArtifactPyPiClient — no boto3 calls at construction time."""
+    return CodeArtifactPyPiClient(
+        domain_owner="123", domain="dom", repository="repo", region_name="us-east-1"
+    )
+
+
+def test_resolve_custom_returns_version_as_is(_client):
+    result = _client.resolve_package_version(
+        "pkg", PackageVersionStrategy.CUSTOM, custom_version="1.2.3"
+    )
+    assert result == "1.2.3"
+
+
+def test_resolve_custom_without_version_raises(_client):
+    with pytest.raises(ValueError, match="custom_version must be specified"):
+        _client.resolve_package_version("pkg", PackageVersionStrategy.CUSTOM)
+
+
+@pytest.mark.parametrize("non_stable", ["1.1.0a1", "2.0.0.dev1"])
+def test_resolve_latest_stable_skips_non_stable(_client, non_stable):
+    from packaging.version import Version
+
+    stable = Version("1.0.0")
+    with patch.object(_client, "get_package_versions", return_value=[Version(non_stable), stable]):
+        result = _client.resolve_package_version("pkg", PackageVersionStrategy.LATEST_STABLE)
+    assert result == "1.0.0"
+
+
+def test_resolve_latest_in_branch_matches(_client):
+    versions = [
+        Version("0.0.1.dev0+mybranch.1"),
+        Version("0.0.1.dev0+otherbranch.1"),
+        Version("1.0.0"),
+    ]
+    with patch.object(_client, "get_package_versions", return_value=versions):
+        result = _client.resolve_package_version(
+            "pkg", PackageVersionStrategy.LATEST_IN_BRANCH, branch="mybranch"
+        )
+    assert result == "0.0.1.dev0+mybranch.1"
+
+
+def test_resolve_latest_in_branch_hyphen_normalised(_client):
+    """Branch names with hyphens are normalised to remove them for local-version matching."""
+    versions = [Version("0.0.1.dev0+mybranch.1")]
+    with patch.object(_client, "get_package_versions", return_value=versions):
+        result = _client.resolve_package_version(
+            "pkg", PackageVersionStrategy.LATEST_IN_BRANCH, branch="my-branch"
+        )
+    assert result == "0.0.1.dev0+mybranch.1"
+
+
+def test_resolve_latest_in_branch_no_match_returns_none_str(_client):
+    versions = [Version("1.0.0")]
+    with patch.object(_client, "get_package_versions", return_value=versions):
+        result = _client.resolve_package_version(
+            "pkg", PackageVersionStrategy.LATEST_IN_BRANCH, branch="missing"
+        )
+    assert result == "None"

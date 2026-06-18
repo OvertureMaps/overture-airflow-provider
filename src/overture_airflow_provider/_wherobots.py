@@ -3,9 +3,7 @@
 import json
 import re
 import shutil
-from typing import Any
 
-from overture_airflow_provider._airflow_compat import AirflowException, BaseHook
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
@@ -39,8 +37,10 @@ def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     )
 
 
-def _build_wherobots_run_url(platform_operator: Any, run_id: str) -> str | None:
-    conn = BaseHook.get_connection(platform_operator.wherobots_conn_id)
+def _build_wherobots_run_url(conn_id: str, run_id: str) -> str | None:
+    from overture_airflow_provider._airflow_compat import BaseHook
+
+    conn = BaseHook.get_connection(conn_id)
     host = (conn.host or "").strip()
     if not host:
         return None
@@ -56,6 +56,8 @@ def _resolve_wherobots_region(aws_region: str):
     Falls back to the first member whose name ends with the upper-cased
     underscore-form of the region. Raises ``AirflowException`` on miss.
     """
+    from overture_airflow_provider._airflow_compat import AirflowException
+
     target = aws_region.upper().replace("-", "_")
     for member in Region:
         if member.name.endswith(target):
@@ -422,7 +424,7 @@ def execute_wherobots_job(
                 kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
             )
             if key == "run_id" and value and not early_xcom_pushed:
-                job_url = _build_wherobots_run_url(platform_operator, str(value))
+                job_url = _build_wherobots_run_url(platform_operator.wherobots_conn_id, str(value))
                 if job_url:
                     original_xcom_push(
                         key="spark_agnostic",

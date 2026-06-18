@@ -18,23 +18,12 @@ from overture_airflow_provider.runners import SCALA_RUNNER_SOURCE
 # ---------------------------------------------------------------------------
 
 
-def test_get_runner_path_glue():
-    p = get_runner_path("glue")
-    assert p.exists(), f"Glue runner not found at {p}"
+@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots"])
+def test_get_runner_path(platform):
+    p = get_runner_path(platform)
+    assert p.exists(), f"Runner not found at {p}"
+    assert f"job_runner_{platform}" in p.name
     assert p.suffix == ".py"
-    assert "job_runner_glue" in p.name
-
-
-def test_get_runner_path_databricks():
-    p = get_runner_path("databricks")
-    assert p.exists()
-    assert "job_runner_databricks" in p.name
-
-
-def test_get_runner_path_wherobots():
-    p = get_runner_path("wherobots")
-    assert p.exists()
-    assert "job_runner_wherobots" in p.name
 
 
 def test_get_runner_path_glue_scala():
@@ -132,7 +121,6 @@ def test_wherobots_runner_argv_parsing():
 
 
 def test_scala_runner_source_is_str():
-    assert isinstance(SCALA_RUNNER_SOURCE, str)
     assert len(SCALA_RUNNER_SOURCE) > 0
 
 

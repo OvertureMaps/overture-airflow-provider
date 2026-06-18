@@ -496,11 +496,14 @@ def complete_databricks_job(
     cluster_info: dict,
     event: dict,
     context,
+    handler=None,
 ) -> dict:
     """Resolve a completed Databricks run into the final result dict.
 
     Called from the deferrable operator's ``execute_complete`` after the
-    ``DatabricksExecutionTrigger`` reports the run reached a terminal state.
+    ``DatabricksExecutionTrigger`` reports the run reached a terminal state. On a
+    non-success run state, ``handler`` (when supplied) is used to raise a
+    classified, de-noised failure naming the ``state_message``/errors as cause.
     """
     from airflow.providers.databricks.hooks.databricks import DatabricksHook, RunState
 
@@ -510,6 +513,16 @@ def complete_databricks_job(
     run_page_url = event.get("run_page_url")
     run_state = RunState.from_json(event["run_state"])
     if not run_state.is_successful:
+        if handler is not None:
+            from overture_airflow_provider._failures import format_failure
+
+            failure = handler.describe_failure(
+                payload=event,
+                run_id=run_id,
+                run_launched=True,
+                console_url=run_page_url,
+            )
+            raise AirflowException(format_failure(failure)) from None
         raise AirflowException(
             f"Databricks run {run_id} failed with state {run_state}; errors: {event.get('errors')}"
         )

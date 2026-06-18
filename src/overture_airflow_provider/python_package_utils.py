@@ -51,8 +51,6 @@ class CodeArtifactPyPiClient:
         self.region_name = region_name
         self.auth_token = None
         self.auth_token_expiration = None
-        self.session = boto3.session.Session(region_name=self.region_name)
-        self.codeartifact = self.session.client("codeartifact")
 
     def resolve_package_version(
         self,
@@ -152,9 +150,9 @@ class CodeArtifactPyPiClient:
             or (self.auth_token_expiration.replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds()
             < 3600
         ):
-            response = self.codeartifact.get_authorization_token(
-                domain=self.domain, domainOwner=self.domain_owner
-            )
+            response = boto3.client(
+                "codeartifact", region_name=self.region_name
+            ).get_authorization_token(domain=self.domain, domainOwner=self.domain_owner)
             self.auth_token = response["authorizationToken"]
             self.auth_token_expiration = response["expiration"]
 

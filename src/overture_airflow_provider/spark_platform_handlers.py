@@ -13,7 +13,76 @@ platform-specific branching lives in the orchestration layer.
 
 from abc import ABC, abstractmethod
 
+from overture_airflow_provider._failures import (
+    CANCELLED,
+    FAILED,
+    INTERNAL_ERROR,
+    PLATFORM_DATABRICKS,
+    PLATFORM_GLUE,
+    PLATFORM_WHEROBOTS,
+    TIMEOUT,
+    FailureInfo,
+    apply_heuristics,
+    bounded_tail,
+    classify_failure,
+)
 from overture_airflow_provider.spark import SparkFamily
+
+# Platform-native terminal state -> canonical state (see _failures). Unknown
+# non-success states fall back to FAILED.
+_GLUE_STATE_MAP = {
+    "FAILED": FAILED,
+    "ERROR": FAILED,
+    "TIMEOUT": TIMEOUT,
+    "STOPPED": CANCELLED,
+}
+_DATABRICKS_RESULT_MAP = {
+    "FAILED": FAILED,
+    "TIMEDOUT": TIMEOUT,
+    "CANCELED": CANCELLED,
+    "MAXIMUM_CONCURRENT_RUNS_REACHED": FAILED,
+}
+_WHEROBOTS_STATE_MAP = {
+    "FAILED": FAILED,
+    "ERROR": FAILED,
+    "CANCELLED": CANCELLED,
+    "CANCELED": CANCELLED,
+}
+
+
+def _normalize_state(raw: str | None, mapping: dict[str, str]) -> str:
+    """Map a platform-native terminal state onto a canonical one (default FAILED)."""
+    return mapping.get((raw or "").upper(), FAILED)
+
+
+def _parse_databricks_run_state(run_state):
+    """Return ``(life_cycle_state, result_state, state_message)`` from any shape.
+
+    Databricks hands the run state through XCom/events as a ``RunState`` object,
+    a JSON string, or a plain dict depending on the path. Parse all three
+    defensively without importing the databricks provider.
+    """
+    import json
+
+    if run_state is None:
+        return None, None, None
+    if isinstance(run_state, str):
+        try:
+            run_state = json.loads(run_state)
+        except (ValueError, TypeError):
+            return None, None, run_state
+    if isinstance(run_state, dict):
+        return (
+            run_state.get("life_cycle_state"),
+            run_state.get("result_state"),
+            run_state.get("state_message"),
+        )
+    return (
+        getattr(run_state, "life_cycle_state", None),
+        getattr(run_state, "result_state", None),
+        getattr(run_state, "state_message", None),
+    )
+
 
 # Spark settings shared by Glue and Databricks. Wherobots strips most of these
 # at the platform level, so it carries its own minimal defaults.
@@ -61,9 +130,36 @@ def _merge_spark_conf(
 class SparkPlatformHandler(ABC):
     """Abstract base class for Spark platform handlers."""
 
+    #: Canonical platform name (matches ``FailureInfo.platform``).
+    platform_name: str = ""
+
     def __init__(self, setup_info: dict):
         self.setup_info = setup_info
         self.spark_family = setup_info["spark_family"]
+
+    @property
+    def _job_ref(self) -> str:
+        return self.setup_info.get("job_name") or "<unknown>"
+
+    @abstractmethod
+    def describe_failure(
+        self,
+        *,
+        error: BaseException | None = None,
+        payload: dict | None = None,
+        run_id: str | None = None,
+        run_launched: bool = True,
+        is_trigger_failure: bool = False,
+        console_url: str | None = None,
+    ) -> FailureInfo:
+        """Build a :class:`FailureInfo` from platform-native failure data.
+
+        ``payload`` is the platform's terminal-state data the caller already has
+        (Glue ``JobRun`` dict, Databricks trigger event, Wherobots run status);
+        ``error`` is the caught exception. Implementations extract the reason and
+        root cause, normalise the state, classify, and attach a heuristic hint.
+        Pure: never makes network calls.
+        """
 
     @abstractmethod
     def download_python_packages(self, python_packages: str) -> dict | None:
@@ -141,6 +237,36 @@ class SparkPlatformHandler(ABC):
 class GluePlatformHandler(SparkPlatformHandler):
     """Handler for AWS Glue."""
 
+    platform_name = PLATFORM_GLUE
+
+    def describe_failure(
+        self,
+        *,
+        error: BaseException | None = None,
+        payload: dict | None = None,
+        run_id: str | None = None,
+        run_launched: bool = True,
+        is_trigger_failure: bool = False,
+        console_url: str | None = None,
+    ) -> FailureInfo:
+        job_run = payload or {}
+        state = _normalize_state(job_run.get("JobRunState"), _GLUE_STATE_MAP)
+        reason = job_run.get("ErrorMessage") or (str(error) if error else None)
+        root_cause = bounded_tail(job_run.get("LogTail"))
+        return FailureInfo(
+            platform=self.platform_name,
+            job_ref=self._job_ref,
+            run_id=run_id,
+            state=state,
+            console_url=console_url,
+            reason=reason,
+            root_cause=root_cause,
+            classification=classify_failure(
+                run_launched=run_launched, is_trigger_failure=is_trigger_failure
+            ),
+            hint=apply_heuristics(reason, root_cause, platform=self.platform_name),
+        )
+
     def download_python_packages(self, python_packages: str) -> dict:
         from overture_airflow_provider._glue import download_python_packages_glue
 
@@ -199,6 +325,7 @@ class GluePlatformHandler(SparkPlatformHandler):
             task_id=task_id,
             context=context,
             execution_class=self.setup_info.get("glue_execution_class", "STANDARD"),
+            verbose=self.setup_info.get("glue_verbose", True),
         )
         return {"trigger": submitted["trigger"], "run_id": submitted["run_id"]}
 
@@ -216,11 +343,54 @@ class GluePlatformHandler(SparkPlatformHandler):
         run_id = None
         if event:
             run_id = event.get("run_id") or event.get("value")
-        return complete_glue_job(self.setup_info, run_id, context)
+        return complete_glue_job(self.setup_info, run_id, context, handler=self)
 
 
 class DatabricksPlatformHandler(SparkPlatformHandler):
     """Handler for Databricks."""
+
+    platform_name = PLATFORM_DATABRICKS
+
+    def describe_failure(
+        self,
+        *,
+        error: BaseException | None = None,
+        payload: dict | None = None,
+        run_id: str | None = None,
+        run_launched: bool = True,
+        is_trigger_failure: bool = False,
+        console_url: str | None = None,
+    ) -> FailureInfo:
+        import json
+
+        event = payload or {}
+        life_cycle, result_state, message = _parse_databricks_run_state(event.get("run_state"))
+        is_internal = life_cycle == INTERNAL_ERROR
+        state = (
+            INTERNAL_ERROR
+            if is_internal
+            else _normalize_state(result_state, _DATABRICKS_RESULT_MAP)
+        )
+        reason = message or (str(error) if error else None)
+        errors = event.get("errors")
+        if errors and not isinstance(errors, str):
+            errors = json.dumps(errors)
+        root_cause = bounded_tail(errors)
+        return FailureInfo(
+            platform=self.platform_name,
+            job_ref=self._job_ref,
+            run_id=run_id or event.get("run_id"),
+            state=state,
+            console_url=console_url or event.get("run_page_url"),
+            reason=reason,
+            root_cause=root_cause,
+            classification=classify_failure(
+                run_launched=run_launched,
+                is_trigger_failure=is_trigger_failure,
+                is_platform_internal_error=is_internal,
+            ),
+            hint=apply_heuristics(reason, root_cause, platform=self.platform_name),
+        )
 
     def download_python_packages(self, python_packages: str) -> None:
         # Databricks installs packages on the cluster via the libraries spec
@@ -300,11 +470,41 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
     ) -> dict:
         from overture_airflow_provider._databricks import complete_databricks_job
 
-        return complete_databricks_job(self.setup_info, cluster_info, event, context)
+        return complete_databricks_job(self.setup_info, cluster_info, event, context, handler=self)
 
 
 class WherobotsPlatformHandler(SparkPlatformHandler):
     """Handler for Wherobots."""
+
+    platform_name = PLATFORM_WHEROBOTS
+
+    def describe_failure(
+        self,
+        *,
+        error: BaseException | None = None,
+        payload: dict | None = None,
+        run_id: str | None = None,
+        run_launched: bool = True,
+        is_trigger_failure: bool = False,
+        console_url: str | None = None,
+    ) -> FailureInfo:
+        run = payload or {}
+        state = _normalize_state(run.get("status"), _WHEROBOTS_STATE_MAP)
+        reason = run.get("error") or (str(error) if error else None)
+        root_cause = bounded_tail(run.get("log_tail"))
+        return FailureInfo(
+            platform=self.platform_name,
+            job_ref=self._job_ref,
+            run_id=run_id or run.get("run_id"),
+            state=state,
+            console_url=console_url or run.get("run_url"),
+            reason=reason,
+            root_cause=root_cause,
+            classification=classify_failure(
+                run_launched=run_launched, is_trigger_failure=is_trigger_failure
+            ),
+            hint=apply_heuristics(reason, root_cause, platform=self.platform_name),
+        )
 
     def download_python_packages(self, python_packages: str) -> dict:
         from overture_airflow_provider._wherobots import (

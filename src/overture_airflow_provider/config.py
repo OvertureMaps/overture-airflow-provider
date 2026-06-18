@@ -39,6 +39,12 @@ import json
 from dataclasses import InitVar, dataclass, field
 from typing import Any
 
+from overture_airflow_provider._report_issue import (
+    DEFAULT_PROVIDER,
+    available_providers,
+    get_tracker,
+)
+
 
 def _require_non_empty(cls_name: str, **fields: str) -> None:
     """Raise ``ValueError`` for any required string field that is empty/blank.
@@ -269,10 +275,16 @@ class GlueConfig:
             Defaults to ``"AWSGlueServiceRole"``.
         execution_class: Glue execution class. ``"STANDARD"`` (default) uses
             standard workers; ``"FLEX"`` uses spot-backed workers at lower cost.
+        verbose: When ``True`` (default) the underlying ``GlueJobOperator``
+            streams the job's CloudWatch driver/executor logs into the Airflow
+            task log. Set ``False`` to silence that stream (e.g. for very chatty
+            jobs) and rely on the Glue console / classified failure message
+            instead.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
     execution_class: str = "STANDARD"
+    verbose: bool = True
 
 
 @dataclass
@@ -375,3 +387,65 @@ class WherobotsConfig:
     role_arn: str = ""
     external_id: str = ""
     aws_region: str = "us-east-1"
+
+
+@dataclass
+class ReportIssueConfig:
+    """Opt-in "Report Issue" operator link pointing at an issue tracker.
+
+    Disabled by default and entirely platform-neutral: the provider makes no
+    assumption that callers use any particular tracker. When ``enabled`` is
+    ``True`` the ``execute_spark_job`` task gains a "Report Issue" extra link
+    that opens a pre-filled "create issue" form for the configured ``provider``
+    (DAG, task, run id, and — when available — the platform and job-console URL).
+    A non-empty ``target`` is mandatory when enabled so the link always has
+    somewhere to go.
+
+    The tracker is pluggable (see ``_report_issue``): ``"github"`` ships built
+    in, and additional providers (e.g. Jira) register without changing this
+    config or the link wiring. ``extra`` carries provider-specific knobs.
+
+    Args:
+        enabled: Turn the link on. Defaults to ``False`` (no link rendered).
+        provider: Registered tracker name. Defaults to ``"github"``.
+        target: Tracker target. For GitHub, an ``"owner/repo"`` slug. Required
+            when ``enabled`` is ``True``.
+        labels: Optional issue labels applied via the create-issue URL.
+        extra: Provider-specific options forwarded to the tracker.
+
+    Raises:
+        ValueError: When ``enabled`` is ``True`` and ``provider`` is unknown or
+            ``target`` is missing/malformed for that provider.
+    """
+
+    enabled: bool = False
+    provider: str = DEFAULT_PROVIDER
+    target: str = ""
+    labels: list[str] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
+    _validate: InitVar[bool] = True
+
+    def __post_init__(self, _validate: bool) -> None:
+        if not _validate or not self.enabled:
+            return
+        tracker = get_tracker(self.provider)
+        if tracker is None:
+            raise ValueError(
+                f"ReportIssueConfig.provider {self.provider!r} is not registered; "
+                f"available: {', '.join(available_providers()) or '<none>'}"
+            )
+        tracker.validate_target(self.target)
+
+    @property
+    def active(self) -> bool:
+        """True when the link should be attached (enabled with a target)."""
+        return bool(self.enabled and self.target.strip())
+
+    def to_operator_payload(self) -> dict:
+        """Serializable subset handed to the operator (and pushed to XCom)."""
+        return {
+            "provider": self.provider,
+            "target": self.target.strip(),
+            "labels": list(self.labels),
+            "extra": dict(self.extra),
+        }

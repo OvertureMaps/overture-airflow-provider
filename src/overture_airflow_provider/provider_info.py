@@ -38,6 +38,7 @@ def get_provider_info() -> dict:
         ],
         "extra-links": [
             "overture_airflow_provider.links.SparkJobLink",
+            "overture_airflow_provider.links.ReportIssueLink",
         ],
         "integrations": [
             {

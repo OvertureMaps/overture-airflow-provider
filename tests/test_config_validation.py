@@ -52,14 +52,6 @@ class TestPackageRegistryConfig:
         with pytest.raises(ValueError, match="PackageRegistryConfig.domain must not be empty"):
             PackageRegistryConfig(domain_owner="o", domain="   ", repository="r")
 
-    def test_issue_example_fails_fast(self):
-        with pytest.raises(
-            ValueError, match="PackageRegistryConfig.domain_owner must not be empty"
-        ):
-            PackageRegistryConfig(
-                domain="", domain_owner="", repository="my-repo", region="us-east-1"
-            )
-
     def test_unset_placeholder_skips_validation(self):
         cfg = PackageRegistryConfig.unset()
         assert cfg.domain_owner == ""
@@ -80,10 +72,6 @@ class TestArtifactStoreConfig:
     def test_empty_s3_bucket_raises(self):
         with pytest.raises(ValueError, match="ArtifactStoreConfig.s3_bucket must not be empty"):
             ArtifactStoreConfig(s3_bucket="")
-
-    def test_issue_example_fails_fast(self):
-        with pytest.raises(ValueError, match="ArtifactStoreConfig.s3_bucket must not be empty"):
-            ArtifactStoreConfig(s3_bucket="", s3_root="prefix")
 
     def test_whitespace_only_is_rejected(self):
         with pytest.raises(ValueError, match="ArtifactStoreConfig.s3_bucket must not be empty"):

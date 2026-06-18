@@ -3,6 +3,8 @@
 import os
 import types
 
+import pytest
+
 from overture_airflow_provider.hooks import DatabricksSdkHook, _truthy
 
 
@@ -23,15 +25,21 @@ def _hook(monkeypatch, **conn_fields):
 
 
 class TestTruthy:
-    def test_string_and_bool_variants(self):
-        assert _truthy(True) is True
-        assert _truthy("true") is True
-        assert _truthy("True") is True
-        assert _truthy("1") is True
-        assert _truthy(False) is False
-        assert _truthy("false") is False
-        assert _truthy("") is False
-        assert _truthy(None) is False
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (True, True),
+            ("true", True),
+            ("True", True),
+            ("1", True),
+            (False, False),
+            ("false", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_truthy(self, value, expected):
+        assert _truthy(value) is expected
 
 
 class TestAuthEnv:
@@ -57,8 +65,6 @@ class TestAuthEnv:
         assert "DATABRICKS_TOKEN" not in env
 
     def test_oauth_missing_secret_raises(self, monkeypatch):
-        import pytest
-
         with pytest.raises(ValueError, match="service_principal_oauth"):
             _hook(
                 monkeypatch,
@@ -92,8 +98,6 @@ class TestAuthEnv:
         assert "DATABRICKS_CLIENT_ID" not in env
 
     def test_azure_missing_secret_raises(self, monkeypatch):
-        import pytest
-
         with pytest.raises(ValueError, match="azure_tenant_id"):
             _hook(
                 monkeypatch,

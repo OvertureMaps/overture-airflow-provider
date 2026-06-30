@@ -84,7 +84,7 @@ def spark_agnostic_task_group(
     extra_spark_env_vars: str = "{}",
     parameters: str = "{}",
     pool: str = "default_pool",
-    retries: int = 1,
+    retries: int = 0,
     iceberg_config: IcebergConfig | None = None,
     python_download_pool: str | None = None,
     scala_download_pool: str | None = None,
@@ -117,7 +117,9 @@ def spark_agnostic_task_group(
         extra_spark_env_vars: JSON string of extra env vars for driver/executor.
         parameters: Job parameters as a JSON string passed to the entry point.
         pool: Airflow pool for the ``execute_spark_job`` task.
-        retries: Retry count for the ``execute_spark_job`` task.
+        retries: Retry count for the ``execute_spark_job`` task (default 0).
+            The setup tasks (``setup``, ``download_python_packages``,
+            ``download_jars``, ``setup_cluster``) always retry twice.
         iceberg_config: Iceberg Spark config for both Glue/Databricks and
             Wherobots; the right variant is selected at runtime. Pass ``None``
             for jobs that don't use Iceberg.
@@ -262,7 +264,7 @@ def _spark_agnostic_task_group(
     extra_spark_env_vars: str = "{}",
     parameters: str = "{}",
     pool: str = "default_pool",
-    retries: int = 1,
+    retries: int = 0,
     max_active_tis_per_dagrun: int | None = None,
     iceberg_config: IcebergConfig | None = None,
     python_download_pool: str | None = None,
@@ -286,7 +288,7 @@ def _spark_agnostic_task_group(
         else None
     )
 
-    @task(task_id="setup")
+    @task(task_id="setup", retries=2)
     def setup_task(
         spark_impl_name: str,
         sedona_version: str,
@@ -319,19 +321,19 @@ def _spark_agnostic_task_group(
         print(f"Spark / Sedona: {setup_info['spark_version']} / {setup_info['sedona_version']}")
         return to_xcom(setup_info)
 
-    @task(task_id="download_python_packages", pool=python_download_pool)
+    @task(task_id="download_python_packages", pool=python_download_pool, retries=2)
     def download_packages_task(setup_info: dict, python_packages: str = ""):
         full = rehydrate(setup_info)
         return get_platform_handler(full["spark_family"], full).download_python_packages(
             python_packages or ""
         )
 
-    @task(task_id="download_jars", pool=scala_download_pool)
+    @task(task_id="download_jars", pool=scala_download_pool, retries=2)
     def download_jars_task(setup_info: dict):
         full = rehydrate(setup_info)
         return get_platform_handler(full["spark_family"], full).download_jars()
 
-    @task(task_id="setup_cluster")
+    @task(task_id="setup_cluster", retries=2)
     def setup_cluster_task(
         setup_info: dict,
         extra_spark_conf: str = "{}",

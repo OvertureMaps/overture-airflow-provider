@@ -13,6 +13,7 @@ from overture_airflow_provider.spark_platform_handlers import (
     GluePlatformHandler,
     WherobotsPlatformHandler,
     get_platform_handler,
+    registered_catalog_names,
 )
 
 _ICEBERG_WHEROBOTS_KEY = "spark.sql.catalog.iceberg_catalog.catalog-impl"
@@ -170,6 +171,46 @@ def _mock_iceberg_wherobots(warehouse_path):
         "spark.sql.catalog.iceberg_catalog.glue.account-id": "123456789012",
         "spark.sql.catalog.iceberg_catalog.http-client.apache.max-connections": 3000,
     }
+
+
+class TestRegisteredCatalogNames:
+    def test_no_catalogs_returns_empty_set(self):
+        assert registered_catalog_names({"spark.sql.extensions": "..."}) == set()
+
+    def test_single_registered_catalog(self):
+        conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.iceberg_catalog.warehouse": "s3://bucket/warehouse",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
+
+    def test_registration_key_and_default_catalog_are_deduped(self):
+        conf = {
+            "spark.sql.defaultCatalog": "iceberg_catalog",
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
+
+    def test_default_catalog_without_registration_key_still_counted(self):
+        conf = {"spark.sql.defaultCatalog": "iceberg_catalog"}
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
+
+    def test_multiple_catalogs_including_s3tables(self):
+        conf = {
+            "spark.sql.defaultCatalog": "iceberg_catalog",
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.s3tables_catalog.warehouse": "arn:aws:s3tables:...",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog", "s3tables_catalog"}
+
+    def test_dotted_sub_keys_are_not_mistaken_for_registrations(self):
+        conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.iceberg_catalog.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog",
+            "spark.sql.catalog.iceberg_catalog.warehouse.nested.path": "s3://bucket/warehouse",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
 
 
 class TestGetPlatformHandler:
@@ -1196,6 +1237,50 @@ class TestWherobotsExecuteJob:
         _, kwargs = self._run(extra_spark_conf={})
         spark_configs = kwargs["environment"]["sparkConfigs"]
         assert not any("client.factory" in k for k in spark_configs)
+
+    def test_s3tables_catalog_injected_without_default_catalog(self):
+        """Regression: an S3-Tables-only job (no primary catalog, so no
+        ``spark.sql.defaultCatalog``) must still get Wherobots credential
+        delegation for its catalog. Previously the injection only fired when
+        ``spark.sql.defaultCatalog`` was present, so an S3-Tables-only
+        Wherobots job silently reached the platform with an unauthenticated
+        catalog client.
+        """
+        _, kwargs = self._run(
+            extra_spark_conf={
+                "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+                "spark.sql.catalog.s3tables_catalog.catalog-impl": (
+                    "software.amazon.s3tables.iceberg.S3TablesCatalog"
+                ),
+            }
+        )
+        spark_configs = kwargs["environment"]["sparkConfigs"]
+        assert spark_configs["spark.sql.catalog.s3tables_catalog.client.factory"] == (
+            "com.wherobots.iceberg.aws.WherobotsStIntCredentialsFactory"
+        )
+        assert (
+            spark_configs["spark.sql.catalog.s3tables_catalog.client.assume-role.arn"]
+            == "arn:aws:iam::123456789012:role/wherobots-access"
+        )
+
+    def test_s3tables_and_default_catalog_both_get_credentials(self):
+        """Regression: when a primary catalog and an S3 Tables catalog
+        coexist, both must get their own Wherobots credential delegation, not
+        just the catalog named by ``spark.sql.defaultCatalog``.
+        """
+        _, kwargs = self._run(
+            extra_spark_conf={
+                "spark.sql.defaultCatalog": "iceberg_catalog",
+                "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+                "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+                "spark.sql.catalog.s3tables_catalog.catalog-impl": (
+                    "software.amazon.s3tables.iceberg.S3TablesCatalog"
+                ),
+            }
+        )
+        spark_configs = kwargs["environment"]["sparkConfigs"]
+        assert "spark.sql.catalog.iceberg_catalog.client.factory" in spark_configs
+        assert "spark.sql.catalog.s3tables_catalog.client.factory" in spark_configs
 
     def test_python_job_args_contain_module_and_class(self):
         _, kwargs = self._run(module_name="my_module", class_name="MyClass")

@@ -59,6 +59,7 @@ from overture_airflow_provider.config import (
     WherobotsConfig,
     coerce_config_dict,
 )
+from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
 
@@ -212,41 +213,6 @@ def spark_agnostic_mapped_task_group(
 # =============================================================================
 
 
-def _select_iceberg_conf(iceberg_config: IcebergConfig | None, spark_family_name: str) -> dict:
-    """Pick the right Iceberg config variants for the resolved platform family.
-
-    Merges the primary catalog config with the S3 Tables catalog config (when
-    present) into a single dict. S3 Tables keys are namespaced under a separate
-    catalog alias so they coexist without conflicts.
-    """
-    if iceberg_config is None:
-        return {}
-
-    if spark_family_name == "WHEROBOTS":
-        primary = coerce_config_dict(
-            iceberg_config.wherobots_spark_config,
-            field_name="IcebergConfig.wherobots_spark_config",
-        )
-        s3tables = coerce_config_dict(
-            iceberg_config.wherobots_s3tables_spark_config,
-            field_name="IcebergConfig.wherobots_s3tables_spark_config",
-        )
-    else:
-        primary = coerce_config_dict(
-            iceberg_config.spark_config, field_name="IcebergConfig.spark_config"
-        )
-        s3tables = coerce_config_dict(
-            iceberg_config.s3tables_spark_config,
-            field_name="IcebergConfig.s3tables_spark_config",
-        )
-
-    if s3tables:
-        merged = dict(primary)
-        merged.update(s3tables)
-        return merged
-    return primary
-
-
 @task_group
 def _spark_agnostic_task_group(
     *,
@@ -368,7 +334,7 @@ def _spark_agnostic_task_group(
             extra_spark_env_vars=extra_spark_env_vars,
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
-            iceberg_spark_config=_select_iceberg_conf(
+            iceberg_spark_config=resolve_iceberg_spark_config(
                 iceberg_config, setup_info["spark_family_name"]
             ),
         )

@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from overture_airflow_provider.config import IcebergConfig
+from overture_airflow_provider.config import IcebergConfig, WherobotsConfig
 from overture_airflow_provider.render import (
     RenderResult,
     _jsonify,
@@ -126,8 +126,11 @@ def test_render_wherobots_skips_region_resolution():
     assert isinstance(region, str)
 
 
+_WHEROBOTS_CONFIG_WITH_ROLE = WherobotsConfig(role_arn="arn:aws:iam::123456789012:role/wb-access")
+
+
 @pytest.mark.parametrize(
-    "spark_impl_name, iceberg_config, expected_primary, expected_s3tables",
+    "spark_impl_name, iceberg_config, expected_primary, expected_s3tables, wherobots_config",
     [
         (
             "GLUE_v5",
@@ -137,6 +140,7 @@ def test_render_wherobots_skips_region_resolution():
             ),
             _rest_catalog_config(),
             _s3tables_catalog_config(),
+            None,
         ),
         (
             "DATABRICKS_v15",
@@ -146,6 +150,7 @@ def test_render_wherobots_skips_region_resolution():
             ),
             _rest_catalog_config(),
             _s3tables_catalog_config(),
+            None,
         ),
         (
             "WHEROBOTS_v1_5_0",
@@ -155,15 +160,20 @@ def test_render_wherobots_skips_region_resolution():
             ),
             _wherobots_catalog_config(),
             _wherobots_s3tables_catalog_config(),
+            # Both catalogs require Wherobots credential delegation, which
+            # requires a role_arn (see test_platform_handlers.py for the
+            # dedicated coverage of that injection).
+            _WHEROBOTS_CONFIG_WITH_ROLE,
         ),
     ],
 )
 def test_render_merges_primary_and_s3tables_iceberg_configs(
-    spark_impl_name, iceberg_config, expected_primary, expected_s3tables
+    spark_impl_name, iceberg_config, expected_primary, expected_s3tables, wherobots_config
 ):
     result = render_spark_job(
         spark_impl_name=spark_impl_name,
         iceberg_config=iceberg_config,
+        wherobots_config=wherobots_config,
         **_COMMON_KWARGS,
     )
 
@@ -172,17 +182,19 @@ def test_render_merges_primary_and_s3tables_iceberg_configs(
 
 
 @pytest.mark.parametrize(
-    "spark_impl_name, iceberg_config, expected_s3tables",
+    "spark_impl_name, iceberg_config, expected_s3tables, wherobots_config",
     [
         (
             "GLUE_v5",
             IcebergConfig(s3tables_spark_config=json.dumps(_s3tables_catalog_config())),
             _s3tables_catalog_config(),
+            None,
         ),
         (
             "DATABRICKS_v15",
             IcebergConfig(s3tables_spark_config=json.dumps(_s3tables_catalog_config())),
             _s3tables_catalog_config(),
+            None,
         ),
         (
             "WHEROBOTS_v1_5_0",
@@ -190,15 +202,20 @@ def test_render_merges_primary_and_s3tables_iceberg_configs(
                 wherobots_s3tables_spark_config=json.dumps(_wherobots_s3tables_catalog_config())
             ),
             _wherobots_s3tables_catalog_config(),
+            # S3-Tables-only (no primary catalog / no spark.sql.defaultCatalog)
+            # still requires a role_arn: the S3 Tables catalog now gets
+            # Wherobots credential delegation even without a default catalog.
+            _WHEROBOTS_CONFIG_WITH_ROLE,
         ),
     ],
 )
 def test_render_preserves_s3tables_only_iceberg_configs(
-    spark_impl_name, iceberg_config, expected_s3tables
+    spark_impl_name, iceberg_config, expected_s3tables, wherobots_config
 ):
     result = render_spark_job(
         spark_impl_name=spark_impl_name,
         iceberg_config=iceberg_config,
+        wherobots_config=wherobots_config,
         **_COMMON_KWARGS,
     )
 

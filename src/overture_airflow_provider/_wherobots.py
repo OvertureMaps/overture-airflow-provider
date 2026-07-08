@@ -6,6 +6,7 @@ import shutil
 
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
+from overture_airflow_provider.spark_platform_handlers import registered_catalog_names
 
 # Optional dependency: Wherobots SDK isn't installed in every environment.
 try:
@@ -189,6 +190,78 @@ def download_jars_wherobots(
     }
 
 
+_UNSUPPORTED_WHEROBOTS_KEYS = (
+    "spark.driver.extraJavaOptions",
+    "spark.executor.extraJavaOptions",
+    "sedona.join.numpartition",
+    "spark.kryoserializer.buffer",
+    "spark.driver.maxResultSize",
+    "spark.sql.sources.partitionOverwriteMode",
+)
+
+
+def _strip_unsupported_wherobots_keys(spark_configs: dict) -> dict:
+    """Drop Spark keys the Wherobots-managed runtime doesn't support.
+
+    Wherobots controls these settings itself (JVM options, Sedona partitioning,
+    serializer buffers, etc.), so passing them through would either be ignored
+    or conflict with the managed runtime. Returns a new dict; input is not
+    mutated.
+    """
+    return {k: v for k, v in spark_configs.items() if k not in _UNSUPPORTED_WHEROBOTS_KEYS}
+
+
+def _inject_wherobots_catalog_credentials(
+    spark_configs: dict,
+    wherobots_role_arn: str,
+    setup_info: dict,
+) -> dict:
+    """Add Wherobots credential delegation for every registered Iceberg catalog.
+
+    Every registered Iceberg catalog (the primary/default catalog *and* any
+    coexisting S3 Tables catalog) needs Wherobots credential delegation so the
+    Wherobots-managed pod can assume the customer's role for that catalog.
+    Scanning for all registered catalogs - rather than only
+    ``spark.sql.defaultCatalog`` - ensures a second catalog (e.g.
+    ``s3tables_catalog`` from ``wherobots_s3tables_spark_config``) gets the
+    same delegation as the default catalog, including when it is the only
+    catalog configured (no ``spark.sql.defaultCatalog`` set at all).
+
+    Raises ``ValueError`` if any catalog is registered but ``wherobots_role_arn``
+    is unset. Returns a new dict; input is not mutated.
+    """
+    catalog_names = registered_catalog_names(spark_configs)
+    if not catalog_names:
+        return dict(spark_configs)
+
+    if not wherobots_role_arn:
+        raise ValueError(
+            "WherobotsConfig.role_arn is required when using Iceberg with Wherobots. "
+            'Set it via: WherobotsConfig(role_arn="arn:aws:iam::<account>:role/<role-name>", ...)'
+        )
+
+    spark_configs = dict(spark_configs)
+    for catalog_name in catalog_names:
+        spark_configs.update(
+            {
+                f"spark.sql.catalog.{catalog_name}.client.factory": "com.wherobots.iceberg.aws.WherobotsStIntCredentialsFactory",
+                f"spark.sql.catalog.{catalog_name}.client.assume-role.arn": wherobots_role_arn,
+                f"spark.sql.catalog.{catalog_name}.client.assume-role.region": setup_info[
+                    "aws_region"
+                ],
+                f"spark.sql.catalog.{catalog_name}.client.credentials-provider": WHEROBOTS_PROVIDER,
+                f"spark.sql.catalog.{catalog_name}.client.credentials-provider.role-arn": wherobots_role_arn,
+                f"spark.sql.catalog.{catalog_name}.client.credentials-provider.external-id": setup_info[
+                    "wherobots_external_id"
+                ],
+                f"spark.sql.catalog.{catalog_name}.client.assume-role.external-id": setup_info[
+                    "wherobots_external_id"
+                ],
+            }
+        )
+    return spark_configs
+
+
 def build_wherobots_operator_kwargs(
     setup_info: dict,
     package_info: dict,
@@ -249,40 +322,10 @@ def build_wherobots_operator_kwargs(
 
     spark_configs = {k: str(v) for k, v in spark_configs.items()}
 
-    for cfg in (
-        "spark.driver.extraJavaOptions",
-        "spark.executor.extraJavaOptions",
-        "sedona.join.numpartition",
-        "spark.kryoserializer.buffer",
-        "spark.driver.maxResultSize",
-        "spark.sql.sources.partitionOverwriteMode",
-    ):
-        spark_configs.pop(cfg, None)
-
-    if "spark.sql.defaultCatalog" in spark_configs:
-        if not wherobots_role_arn:
-            raise ValueError(
-                "WherobotsConfig.role_arn is required when using Iceberg with Wherobots. "
-                'Set it via: WherobotsConfig(role_arn="arn:aws:iam::<account>:role/<role-name>", ...)'
-            )
-        catalog_name = spark_configs["spark.sql.defaultCatalog"]
-        spark_configs.update(
-            {
-                f"spark.sql.catalog.{catalog_name}.client.factory": "com.wherobots.iceberg.aws.WherobotsStIntCredentialsFactory",
-                f"spark.sql.catalog.{catalog_name}.client.assume-role.arn": wherobots_role_arn,
-                f"spark.sql.catalog.{catalog_name}.client.assume-role.region": setup_info[
-                    "aws_region"
-                ],
-                f"spark.sql.catalog.{catalog_name}.client.credentials-provider": WHEROBOTS_PROVIDER,
-                f"spark.sql.catalog.{catalog_name}.client.credentials-provider.role-arn": wherobots_role_arn,
-                f"spark.sql.catalog.{catalog_name}.client.credentials-provider.external-id": setup_info[
-                    "wherobots_external_id"
-                ],
-                f"spark.sql.catalog.{catalog_name}.client.assume-role.external-id": setup_info[
-                    "wherobots_external_id"
-                ],
-            }
-        )
+    spark_configs = _strip_unsupported_wherobots_keys(spark_configs)
+    spark_configs = _inject_wherobots_catalog_credentials(
+        spark_configs, wherobots_role_arn, setup_info
+    )
 
     runtime_name = ""
     if spark_cluster_size:

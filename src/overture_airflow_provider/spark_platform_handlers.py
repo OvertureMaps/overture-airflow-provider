@@ -11,6 +11,7 @@ The task group calls handlers polymorphically via ``get_platform_handler``; no
 platform-specific branching lives in the orchestration layer.
 """
 
+import re
 from abc import ABC, abstractmethod
 
 from overture_airflow_provider._failures import (
@@ -125,6 +126,31 @@ def _merge_spark_conf(
     if extra_spark_conf:
         merged.update(extra_spark_conf)
     return merged
+
+
+_CATALOG_REGISTRATION_KEY = re.compile(r"spark\.sql\.catalog\.([^.]+)")
+
+
+def registered_catalog_names(spark_conf: dict) -> set[str]:
+    """Return the names of all Iceberg catalogs registered in ``spark_conf``.
+
+    A catalog is "registered" by its top-level ``spark.sql.catalog.<name>`` key
+    (the SparkCatalog class), distinct from that catalog's dotted sub-keys
+    (``...catalog-impl``, ``...warehouse``, etc.). Also includes the value of
+    ``spark.sql.defaultCatalog`` when present, in case it names a catalog that
+    for some reason lacks its own registration key.
+
+    A merged config can carry more than one registered catalog at once — e.g.
+    a primary catalog plus a coexisting S3 Tables catalog under a distinct
+    alias — so callers that need catalog-aware behavior (such as injecting
+    per-catalog credentials) must handle all of them, not just the default.
+    """
+    catalog_names = {
+        match.group(1) for key in spark_conf if (match := _CATALOG_REGISTRATION_KEY.fullmatch(key))
+    }
+    if "spark.sql.defaultCatalog" in spark_conf:
+        catalog_names.add(spark_conf["spark.sql.defaultCatalog"])
+    return catalog_names
 
 
 class SparkPlatformHandler(ABC):

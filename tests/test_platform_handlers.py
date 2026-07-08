@@ -13,6 +13,7 @@ from overture_airflow_provider.spark_platform_handlers import (
     GluePlatformHandler,
     WherobotsPlatformHandler,
     get_platform_handler,
+    registered_catalog_names,
 )
 
 _ICEBERG_WHEROBOTS_KEY = "spark.sql.catalog.iceberg_catalog.catalog-impl"
@@ -170,6 +171,46 @@ def _mock_iceberg_wherobots(warehouse_path):
         "spark.sql.catalog.iceberg_catalog.glue.account-id": "123456789012",
         "spark.sql.catalog.iceberg_catalog.http-client.apache.max-connections": 3000,
     }
+
+
+class TestRegisteredCatalogNames:
+    def test_no_catalogs_returns_empty_set(self):
+        assert registered_catalog_names({"spark.sql.extensions": "..."}) == set()
+
+    def test_single_registered_catalog(self):
+        conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.iceberg_catalog.warehouse": "s3://bucket/warehouse",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
+
+    def test_registration_key_and_default_catalog_are_deduped(self):
+        conf = {
+            "spark.sql.defaultCatalog": "iceberg_catalog",
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
+
+    def test_default_catalog_without_registration_key_still_counted(self):
+        conf = {"spark.sql.defaultCatalog": "iceberg_catalog"}
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
+
+    def test_multiple_catalogs_including_s3tables(self):
+        conf = {
+            "spark.sql.defaultCatalog": "iceberg_catalog",
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.s3tables_catalog.warehouse": "arn:aws:s3tables:...",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog", "s3tables_catalog"}
+
+    def test_dotted_sub_keys_are_not_mistaken_for_registrations(self):
+        conf = {
+            "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+            "spark.sql.catalog.iceberg_catalog.catalog-impl": "org.apache.iceberg.aws.glue.GlueCatalog",
+            "spark.sql.catalog.iceberg_catalog.warehouse.nested.path": "s3://bucket/warehouse",
+        }
+        assert registered_catalog_names(conf) == {"iceberg_catalog"}
 
 
 class TestGetPlatformHandler:

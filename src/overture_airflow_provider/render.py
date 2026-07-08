@@ -41,8 +41,8 @@ from overture_airflow_provider.config import (
     IcebergConfig,
     PackageRegistryConfig,
     WherobotsConfig,
-    coerce_config_dict,
 )
+from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 from overture_airflow_provider.runner_assets import _RUNNER_FILES, _file_sha256, get_runner_path
 from overture_airflow_provider.spark import SparkFamily, SparkImpl, SparkSedona
 from overture_airflow_provider.spark_platform_handlers import (
@@ -125,32 +125,6 @@ def _jsonify(obj: Any) -> Any:
     if hasattr(obj, "name") and hasattr(obj, "value"):
         return obj.name
     return obj
-
-
-def _select_iceberg_spark_config(
-    iceberg_config: IcebergConfig | None, family: SparkFamily
-) -> dict[str, Any]:
-    """Resolve and merge the Iceberg config variants for the selected Spark family."""
-    if iceberg_config is None:
-        return {}
-
-    if family == SparkFamily.WHEROBOTS:
-        primary = coerce_config_dict(
-            iceberg_config.wherobots_spark_config,
-            "IcebergConfig.wherobots_spark_config",
-        )
-        s3tables = coerce_config_dict(
-            iceberg_config.wherobots_s3tables_spark_config,
-            "IcebergConfig.wherobots_s3tables_spark_config",
-        )
-    else:
-        primary = coerce_config_dict(iceberg_config.spark_config, "IcebergConfig.spark_config")
-        s3tables = coerce_config_dict(
-            iceberg_config.s3tables_spark_config,
-            "IcebergConfig.s3tables_spark_config",
-        )
-
-    return {**primary, **s3tables}
 
 
 def _build_render_setup_info(
@@ -432,7 +406,7 @@ def render_spark_job(
     family: SparkFamily = setup_info["spark_family"]
 
     # Resolve which Iceberg config variant applies for this family.
-    iceberg_spark_config = _select_iceberg_spark_config(iceberg_config, family) or None
+    iceberg_spark_config = resolve_iceberg_spark_config(iceberg_config, family) or None
 
     if family == SparkFamily.GLUE:
         package_info = _stub_package_info_glue(setup_info, pre_resolved_package_info)

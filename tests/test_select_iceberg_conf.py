@@ -1,11 +1,11 @@
-"""Tests for _select_iceberg_conf with S3 Tables catalog coexistence."""
+"""Tests for resolve_iceberg_spark_config with S3 Tables catalog coexistence."""
 
 import json
 
 import pytest
 
 from overture_airflow_provider.config import IcebergConfig
-from overture_airflow_provider.spark_agnostic_taskgroup import _select_iceberg_conf
+from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 
 
 def _rest_catalog_config():
@@ -41,25 +41,25 @@ def _wherobots_catalog_config():
 class TestSelectIcebergConfNone:
     @pytest.mark.parametrize("platform", ["GLUE", "DATABRICKS", "WHEROBOTS"])
     def test_returns_empty_when_config_is_none(self, platform):
-        assert _select_iceberg_conf(None, platform) == {}
+        assert resolve_iceberg_spark_config(None, platform) == {}
 
 
 class TestSelectIcebergConfPrimaryOnly:
     @pytest.mark.parametrize("platform", ["GLUE", "DATABRICKS"])
     def test_glue_databricks_returns_spark_config(self, platform):
         cfg = IcebergConfig(spark_config=json.dumps(_rest_catalog_config()))
-        assert _select_iceberg_conf(cfg, platform) == _rest_catalog_config()
+        assert resolve_iceberg_spark_config(cfg, platform) == _rest_catalog_config()
 
     def test_wherobots_returns_wherobots_spark_config(self):
         cfg = IcebergConfig(wherobots_spark_config=json.dumps(_wherobots_catalog_config()))
-        result = _select_iceberg_conf(cfg, "WHEROBOTS")
+        result = resolve_iceberg_spark_config(cfg, "WHEROBOTS")
         assert result == _wherobots_catalog_config()
 
     def test_invalid_json_identifies_field_name(self):
         cfg = IcebergConfig(spark_config="{not-json")
 
         with pytest.raises(ValueError, match=r"IcebergConfig\.spark_config"):
-            _select_iceberg_conf(cfg, "GLUE")
+            resolve_iceberg_spark_config(cfg, "GLUE")
 
     def test_non_object_json_identifies_field_name(self):
         cfg = IcebergConfig(wherobots_s3tables_spark_config='["not", "a", "dict"]')
@@ -68,30 +68,30 @@ class TestSelectIcebergConfPrimaryOnly:
             ValueError,
             match=r"IcebergConfig\.wherobots_s3tables_spark_config must decode to a JSON object",
         ):
-            _select_iceberg_conf(cfg, "WHEROBOTS")
+            resolve_iceberg_spark_config(cfg, "WHEROBOTS")
 
 
 class TestSelectIcebergConfDictInput:
     """On DAGs with render_template_as_native_obj=True, Airflow's native renderer
     literal_evals a rendered JSON-object op_kwarg back into a dict, so the
-    IcebergConfig fields arrive already parsed. _select_iceberg_conf must accept
+    IcebergConfig fields arrive already parsed. resolve_iceberg_spark_config must accept
     dicts as well as JSON strings (regression for the json.loads(dict) TypeError).
     """
 
     def test_glue_accepts_dict_spark_config(self):
         cfg = IcebergConfig(spark_config=_rest_catalog_config())
-        assert _select_iceberg_conf(cfg, "GLUE") == _rest_catalog_config()
+        assert resolve_iceberg_spark_config(cfg, "GLUE") == _rest_catalog_config()
 
     def test_wherobots_accepts_dict_spark_config(self):
         cfg = IcebergConfig(wherobots_spark_config=_wherobots_catalog_config())
-        assert _select_iceberg_conf(cfg, "WHEROBOTS") == _wherobots_catalog_config()
+        assert resolve_iceberg_spark_config(cfg, "WHEROBOTS") == _wherobots_catalog_config()
 
     def test_glue_merges_dict_primary_and_dict_s3tables(self):
         cfg = IcebergConfig(
             spark_config=_rest_catalog_config(),
             s3tables_spark_config=_s3tables_catalog_config(),
         )
-        result = _select_iceberg_conf(cfg, "GLUE")
+        result = resolve_iceberg_spark_config(cfg, "GLUE")
         assert "spark.sql.catalog.iceberg_catalog" in result
         assert "spark.sql.catalog.s3tables_catalog" in result
 
@@ -103,7 +103,7 @@ class TestSelectIcebergConfDictInput:
                 "spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections": 3000
             }
         )
-        result = _select_iceberg_conf(cfg, "GLUE")
+        result = resolve_iceberg_spark_config(cfg, "GLUE")
         assert (
             result["spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections"] == 3000
         )
@@ -115,7 +115,7 @@ class TestSelectIcebergConfS3Tables:
             spark_config=json.dumps(_rest_catalog_config()),
             s3tables_spark_config=json.dumps(_s3tables_catalog_config()),
         )
-        result = _select_iceberg_conf(cfg, "GLUE")
+        result = resolve_iceberg_spark_config(cfg, "GLUE")
         # Both catalog configs present
         assert "spark.sql.catalog.iceberg_catalog" in result
         assert "spark.sql.catalog.s3tables_catalog" in result
@@ -126,7 +126,7 @@ class TestSelectIcebergConfS3Tables:
             spark_config=json.dumps(_rest_catalog_config()),
             s3tables_spark_config=json.dumps(_s3tables_catalog_config()),
         )
-        result = _select_iceberg_conf(cfg, "DATABRICKS")
+        result = resolve_iceberg_spark_config(cfg, "DATABRICKS")
         assert "spark.sql.catalog.iceberg_catalog" in result
         assert "spark.sql.catalog.s3tables_catalog" in result
 
@@ -139,7 +139,7 @@ class TestSelectIcebergConfS3Tables:
             wherobots_spark_config=json.dumps(_wherobots_catalog_config()),
             wherobots_s3tables_spark_config=json.dumps(wherobots_s3t),
         )
-        result = _select_iceberg_conf(cfg, "WHEROBOTS")
+        result = resolve_iceberg_spark_config(cfg, "WHEROBOTS")
         assert "spark.sql.catalog.iceberg_catalog" in result
         assert "spark.sql.catalog.s3tables_catalog" in result
 
@@ -147,7 +147,7 @@ class TestSelectIcebergConfS3Tables:
         cfg = IcebergConfig(
             s3tables_spark_config=json.dumps(_s3tables_catalog_config()),
         )
-        result = _select_iceberg_conf(cfg, "GLUE")
+        result = resolve_iceberg_spark_config(cfg, "GLUE")
         assert "spark.sql.catalog.s3tables_catalog" in result
         assert "spark.sql.catalog.iceberg_catalog" not in result
 
@@ -156,7 +156,7 @@ class TestSelectIcebergConfS3Tables:
             spark_config=json.dumps(_rest_catalog_config()),
             s3tables_spark_config="{}",
         )
-        result = _select_iceberg_conf(cfg, "GLUE")
+        result = resolve_iceberg_spark_config(cfg, "GLUE")
         assert result == _rest_catalog_config()
 
     def test_extra_spark_conf_still_wins_downstream(self):
@@ -166,6 +166,6 @@ class TestSelectIcebergConfS3Tables:
             spark_config=json.dumps(_rest_catalog_config()),
             s3tables_spark_config=json.dumps(_s3tables_catalog_config()),
         )
-        result = _select_iceberg_conf(cfg, "GLUE")
+        result = resolve_iceberg_spark_config(cfg, "GLUE")
         # S3 Tables values are present as-is before extra_spark_conf is applied
         assert result["spark.sql.catalog.s3tables_catalog.rest.signing-region"] == "us-west-2"

@@ -122,20 +122,55 @@ side.
   (`...catalog-impl = GlueCatalog`, plus account-id), since the Wherobots
   runtime does not support the REST catalog client.
 
-The task group picks the variant at runtime based on `spark_family_name`.
+Each variant also has an S3 Tables counterpart (`s3tables_spark_config`,
+`wherobots_s3tables_spark_config`) for an optional, coexisting S3 Tables
+catalog under a distinct alias.
+
+`iceberg.resolve_iceberg_spark_config(iceberg_config, spark_family)` is the
+single place that picks the right variant pair for the resolved platform
+family and merges primary + S3 Tables into one dict (S3 Tables wins on key
+collision). Both the live DAG path (`spark_agnostic_taskgroup.py`) and the
+Airflow-free render path (`render.py`) call this one function — it used to be
+duplicated between them, which is how the Wherobots S3 Tables credential bug
+below went unnoticed for a release.
+
+## Spark config merge layers
+
+Three platforms, three merge points, one shared primitive
+(`spark_platform_handlers._merge_spark_conf(defaults, middle, extra)` — later
+args win):
+
+- **Glue**: `_GLUE_DATABRICKS_DEFAULTS` → Iceberg → `extra_spark_conf`, done
+  once in `GluePlatformHandler.setup_cluster`.
+- **Databricks**: two merges. `DatabricksPlatformHandler.setup_cluster` does
+  `_GLUE_DATABRICKS_DEFAULTS` → Iceberg → `extra_spark_conf` (same as Glue),
+  then `setup_databricks_cluster` (`_databricks.py`) does a second merge —
+  Databricks-specific Spark defaults (Sedona serde, Iceberg extensions,
+  commit protocol) → `DatabricksConfig.cluster_conf`'s `databricks_spark_conf`
+  → the already-merged conf from the first pass — via the same
+  `_merge_spark_conf` helper, so both Databricks layers and the Glue/Wherobots
+  layer share one precedence rule instead of a bespoke dict splat.
+- **Wherobots**: `_WHEROBOTS_DEFAULTS` → Iceberg → `extra_spark_conf` in
+  `WherobotsPlatformHandler.setup_cluster`, followed by a Wherobots-only
+  post-merge mutation pass in `_wherobots.build_wherobots_operator_kwargs`
+  (see below) that runs *after* the shared merge and is invisible from the
+  taskgroup/render call sites.
 
 ## Wherobots specifics
 
-- Wherobots strips a fixed list of unsupported spark-conf keys at execute
-  time (`extraJavaOptions`, `sedona.join.numpartition`, `kryoserializer.buffer`,
-  `maxResultSize`, `partitionOverwriteMode`).
-- When Iceberg is enabled, the Wherobots handler injects the Wherobots
-  credential factory config for **every** registered catalog (every
-  `spark.sql.catalog.<name>` key in the merged conf) so the Wherobots-managed
-  pod can assume the customer's role for each one — not just the catalog
-  named by `spark.sql.defaultCatalog`. This is what lets the S3 Tables
-  catalog (`wherobots_s3tables_spark_config`) authenticate correctly whether
-  it coexists with a primary catalog or is the only catalog configured.
+- `_wherobots._strip_unsupported_wherobots_keys` drops a fixed list of
+  unsupported spark-conf keys at execute time (`extraJavaOptions`,
+  `sedona.join.numpartition`, `kryoserializer.buffer`, `maxResultSize`,
+  `partitionOverwriteMode`).
+- `_wherobots._inject_wherobots_catalog_credentials` — when Iceberg is
+  enabled, injects the Wherobots credential factory config for **every**
+  registered catalog (via `spark_platform_handlers.registered_catalog_names`,
+  which scans `spark.sql.catalog.<name>` keys plus `spark.sql.defaultCatalog`)
+  so the Wherobots-managed pod can assume the customer's role for each one —
+  not just the catalog named by `spark.sql.defaultCatalog`. This is what lets
+  the S3 Tables catalog (`wherobots_s3tables_spark_config`) authenticate
+  correctly whether it coexists with a primary catalog or is the only catalog
+  configured.
 
 ## Failure enrichment
 

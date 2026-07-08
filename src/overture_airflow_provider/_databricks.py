@@ -3,9 +3,31 @@
 import json
 
 from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
+from overture_airflow_provider.spark_platform_handlers import _merge_spark_conf
 
 # Default DBFS prefix used when callers pass bare jar filenames (no scheme).
 _DEFAULT_DBFS_JAR_PREFIX = "dbfs:/FileStore/deploy/"
+
+# Databricks-specific Spark defaults (Sedona serde, Iceberg extensions, commit
+# protocol). Merged with `_merge_spark_conf` so precedence — these defaults,
+# then the caller's `DatabricksConfig.cluster_conf["spark_conf"]`, then
+# `extra_spark_conf` (which already carries the shared Glue/Databricks
+# defaults + Iceberg config merged in by `DatabricksPlatformHandler.setup_cluster`)
+# — matches the same later-wins rule used by Glue and Wherobots.
+_DATABRICKS_SPARK_CONF_DEFAULTS = {
+    "parquet.enable.summary-metadata": "false",
+    "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+    "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
+    "mapreduce.fileoutputcommitter.marksuccessfuljobs": "false",
+    "spark.sql.sources.commitProtocolClass": (
+        "org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol"
+    ),
+    "spark.sql.extensions": (
+        "org.apache.sedona.viz.sql.SedonaVizExtensions,org.apache.sedona.sql.SedonaSqlExtensions"
+    ),
+    "spark.databricks.io.directoryCommit.createSuccessFile": "false",
+}
+
 
 # See https://iceberg.apache.org/releases
 _SPARK_TO_ICEBERG_VERSION_MAP = {
@@ -277,22 +299,9 @@ def setup_databricks_cluster(
             driver_node_type=node_config["driver_node_type"],
         ),
         "spark_version": (node_config["spark_version"] or spark_impl.get_native_version()),
-        "spark_conf": {
-            "parquet.enable.summary-metadata": "false",
-            "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
-            "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
-            "mapreduce.fileoutputcommitter.marksuccessfuljobs": "false",
-            "spark.sql.sources.commitProtocolClass": (
-                "org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol"
-            ),
-            "spark.sql.extensions": (
-                "org.apache.sedona.viz.sql.SedonaVizExtensions,"
-                "org.apache.sedona.sql.SedonaSqlExtensions"
-            ),
-            "spark.databricks.io.directoryCommit.createSuccessFile": "false",
-            **databricks_spark_conf,
-            **extra_spark_conf,
-        },
+        "spark_conf": _merge_spark_conf(
+            _DATABRICKS_SPARK_CONF_DEFAULTS, databricks_spark_conf, extra_spark_conf
+        ),
         "azure_attributes": {
             "first_on_demand": 1,
             "availability": "ON_DEMAND_AZURE",

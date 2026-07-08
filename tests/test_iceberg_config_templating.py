@@ -13,10 +13,8 @@ from unittest import mock
 
 from overture_airflow_provider._airflow_compat import DAG
 from overture_airflow_provider.config import IcebergConfig
-from overture_airflow_provider.spark_agnostic_taskgroup import (
-    _select_iceberg_conf,
-    spark_agnostic_task_group,
-)
+from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
+from overture_airflow_provider.spark_agnostic_taskgroup import spark_agnostic_task_group
 
 _WAREHOUSE_TEMPLATE = (
     "arn:aws:s3tables:us-west-2:123456789012:bucket/{{ var.value.managed_bucket_iceberg }}"
@@ -105,7 +103,7 @@ def test_no_iceberg_config_defaults_to_empty():
 def test_native_render_turns_op_kwarg_into_dict():
     """On render_template_as_native_obj=True DAGs, Airflow's NativeEnvironment
     literal_evals a rendered JSON-object op_kwarg into a dict. setup_cluster_task
-    reassembles IcebergConfig from these values, so _select_iceberg_conf must
+    reassembles IcebergConfig from these values, so resolve_iceberg_spark_config must
     tolerate dicts. Regression for: json.loads(dict) -> TypeError.
     """
     s3tables = {
@@ -138,7 +136,7 @@ def test_native_render_turns_op_kwarg_into_dict():
 
     # The reassembled IcebergConfig must resolve without raising.
     cfg = IcebergConfig(spark_config=rendered)
-    result = _select_iceberg_conf(cfg, "GLUE")
+    result = resolve_iceberg_spark_config(cfg, "GLUE")
     assert result["spark.sql.catalog.s3tables_catalog.warehouse"].endswith(
         ":bucket/overture-managed-iceberg"
     )

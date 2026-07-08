@@ -259,30 +259,49 @@ def build_wherobots_operator_kwargs(
     ):
         spark_configs.pop(cfg, None)
 
+    # Every registered Iceberg catalog (the primary/default catalog *and* any
+    # coexisting S3 Tables catalog) needs Wherobots credential delegation so
+    # the Wherobots-managed pod can assume the customer's role for that
+    # catalog. A catalog is "registered" by its top-level
+    # ``spark.sql.catalog.<name>`` key (the SparkCatalog class), distinct from
+    # that catalog's dotted sub-keys (``...catalog-impl``, ``...warehouse``,
+    # etc.). Scanning for all such keys - rather than only
+    # ``spark.sql.defaultCatalog`` - ensures a second catalog (e.g.
+    # ``s3tables_catalog`` from ``wherobots_s3tables_spark_config``) gets the
+    # same delegation as the default catalog, including when it is the only
+    # catalog configured (no ``spark.sql.defaultCatalog`` set at all).
+    catalog_names = {
+        match.group(1)
+        for key in spark_configs
+        if (match := re.fullmatch(r"spark\.sql\.catalog\.([^.]+)", key))
+    }
     if "spark.sql.defaultCatalog" in spark_configs:
+        catalog_names.add(spark_configs["spark.sql.defaultCatalog"])
+
+    if catalog_names:
         if not wherobots_role_arn:
             raise ValueError(
                 "WherobotsConfig.role_arn is required when using Iceberg with Wherobots. "
                 'Set it via: WherobotsConfig(role_arn="arn:aws:iam::<account>:role/<role-name>", ...)'
             )
-        catalog_name = spark_configs["spark.sql.defaultCatalog"]
-        spark_configs.update(
-            {
-                f"spark.sql.catalog.{catalog_name}.client.factory": "com.wherobots.iceberg.aws.WherobotsStIntCredentialsFactory",
-                f"spark.sql.catalog.{catalog_name}.client.assume-role.arn": wherobots_role_arn,
-                f"spark.sql.catalog.{catalog_name}.client.assume-role.region": setup_info[
-                    "aws_region"
-                ],
-                f"spark.sql.catalog.{catalog_name}.client.credentials-provider": WHEROBOTS_PROVIDER,
-                f"spark.sql.catalog.{catalog_name}.client.credentials-provider.role-arn": wherobots_role_arn,
-                f"spark.sql.catalog.{catalog_name}.client.credentials-provider.external-id": setup_info[
-                    "wherobots_external_id"
-                ],
-                f"spark.sql.catalog.{catalog_name}.client.assume-role.external-id": setup_info[
-                    "wherobots_external_id"
-                ],
-            }
-        )
+        for catalog_name in catalog_names:
+            spark_configs.update(
+                {
+                    f"spark.sql.catalog.{catalog_name}.client.factory": "com.wherobots.iceberg.aws.WherobotsStIntCredentialsFactory",
+                    f"spark.sql.catalog.{catalog_name}.client.assume-role.arn": wherobots_role_arn,
+                    f"spark.sql.catalog.{catalog_name}.client.assume-role.region": setup_info[
+                        "aws_region"
+                    ],
+                    f"spark.sql.catalog.{catalog_name}.client.credentials-provider": WHEROBOTS_PROVIDER,
+                    f"spark.sql.catalog.{catalog_name}.client.credentials-provider.role-arn": wherobots_role_arn,
+                    f"spark.sql.catalog.{catalog_name}.client.credentials-provider.external-id": setup_info[
+                        "wherobots_external_id"
+                    ],
+                    f"spark.sql.catalog.{catalog_name}.client.assume-role.external-id": setup_info[
+                        "wherobots_external_id"
+                    ],
+                }
+            )
 
     runtime_name = ""
     if spark_cluster_size:

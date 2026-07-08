@@ -1197,6 +1197,50 @@ class TestWherobotsExecuteJob:
         spark_configs = kwargs["environment"]["sparkConfigs"]
         assert not any("client.factory" in k for k in spark_configs)
 
+    def test_s3tables_catalog_injected_without_default_catalog(self):
+        """Regression: an S3-Tables-only job (no primary catalog, so no
+        ``spark.sql.defaultCatalog``) must still get Wherobots credential
+        delegation for its catalog. Previously the injection only fired when
+        ``spark.sql.defaultCatalog`` was present, so an S3-Tables-only
+        Wherobots job silently reached the platform with an unauthenticated
+        catalog client.
+        """
+        _, kwargs = self._run(
+            extra_spark_conf={
+                "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+                "spark.sql.catalog.s3tables_catalog.catalog-impl": (
+                    "software.amazon.s3tables.iceberg.S3TablesCatalog"
+                ),
+            }
+        )
+        spark_configs = kwargs["environment"]["sparkConfigs"]
+        assert spark_configs["spark.sql.catalog.s3tables_catalog.client.factory"] == (
+            "com.wherobots.iceberg.aws.WherobotsStIntCredentialsFactory"
+        )
+        assert (
+            spark_configs["spark.sql.catalog.s3tables_catalog.client.assume-role.arn"]
+            == "arn:aws:iam::123456789012:role/wherobots-access"
+        )
+
+    def test_s3tables_and_default_catalog_both_get_credentials(self):
+        """Regression: when a primary catalog and an S3 Tables catalog
+        coexist, both must get their own Wherobots credential delegation, not
+        just the catalog named by ``spark.sql.defaultCatalog``.
+        """
+        _, kwargs = self._run(
+            extra_spark_conf={
+                "spark.sql.defaultCatalog": "iceberg_catalog",
+                "spark.sql.catalog.iceberg_catalog": "org.apache.iceberg.spark.SparkCatalog",
+                "spark.sql.catalog.s3tables_catalog": "org.apache.iceberg.spark.SparkCatalog",
+                "spark.sql.catalog.s3tables_catalog.catalog-impl": (
+                    "software.amazon.s3tables.iceberg.S3TablesCatalog"
+                ),
+            }
+        )
+        spark_configs = kwargs["environment"]["sparkConfigs"]
+        assert "spark.sql.catalog.iceberg_catalog.client.factory" in spark_configs
+        assert "spark.sql.catalog.s3tables_catalog.client.factory" in spark_configs
+
     def test_python_job_args_contain_module_and_class(self):
         _, kwargs = self._run(module_name="my_module", class_name="MyClass")
         args = kwargs["run_python"]["args"]

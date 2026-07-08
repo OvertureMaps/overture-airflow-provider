@@ -129,9 +129,13 @@ The task group picks the variant at runtime based on `spark_family_name`.
 - Wherobots strips a fixed list of unsupported spark-conf keys at execute
   time (`extraJavaOptions`, `sedona.join.numpartition`, `kryoserializer.buffer`,
   `maxResultSize`, `partitionOverwriteMode`).
-- When Iceberg is enabled (i.e. `spark.sql.defaultCatalog` is in the merged
-  conf), the Wherobots handler also injects the Wherobots credential factory
-  config so the Wherobots-managed pod can assume the customer's Glue role.
+- When Iceberg is enabled, the Wherobots handler injects the Wherobots
+  credential factory config for **every** registered catalog (every
+  `spark.sql.catalog.<name>` key in the merged conf) so the Wherobots-managed
+  pod can assume the customer's role for each one — not just the catalog
+  named by `spark.sql.defaultCatalog`. This is what lets the S3 Tables
+  catalog (`wherobots_s3tables_spark_config`) authenticate correctly whether
+  it coexists with a primary catalog or is the only catalog configured.
 
 ## Failure enrichment
 

@@ -112,7 +112,7 @@ spark_agnostic_task_group(
     spark_impl_name="GLUE_v5",
     report_issue_config=ReportIssueConfig(
         enabled=True,
-        target="my-org/my-repo",   # GitHub owner/repo
+        target="my-org/my-repo",  # GitHub owner/repo
         labels=["spark-failure"],  # optional labels pre-applied to the issue
     ),
     # ... rest of config unchanged
@@ -199,9 +199,9 @@ result = render_spark_job(
     class_name="MyJob",
     parameters={"date": "2024-01-01"},
 )
-print(result.submit_payload)        # equivalent to `databricks jobs submit --json`
-print(result.operator_kwargs)       # what the Airflow operator would receive
-result.write_to("./out/")           # dump JSON payloads + cli.sh
+print(result.submit_payload)  # equivalent to `databricks jobs submit --json`
+print(result.operator_kwargs)  # what the Airflow operator would receive
+result.write_to("./out/")  # dump JSON payloads + cli.sh
 ```
 
 Pass `pre_resolved_package_info=` or `pre_resolved_jar_info=` with real S3 URIs from a previous `download_python_packages_*` or `download_jars_*` run to skip the `s3://.../REPLACE-ME.whl` placeholders.

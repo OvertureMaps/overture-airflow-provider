@@ -18,6 +18,7 @@ The provider is intentionally unopinionated: every environment-specific value (S
 - [Quick start](#quick-start)
 - [Operator links](#operator-links)
 - [Failure messages](#failure-messages)
+  - [Retries](#retries)
 - [Databricks runner deployment](#databricks-runner-deployment)
 - [Local rendering](#local-rendering)
 - [Reference](#reference)
@@ -137,6 +138,15 @@ Spark job FAILED on GLUE (downstream job error, not a provider/submit fault).
 Classifications: `downstream-job`, `submit/config`, `trigger/polling`, `platform/infra`.
 
 The hint layer scans the reason and root-cause text for known patterns (IAM denials, auth errors, OOM, throttling, missing resources) and appends an actionable message automatically.
+
+### Retries
+
+`execute_spark_job` defaults to `retries=0`: a job that fails costs real compute to re-run, so this provider doesn't retry by default. Raising `retries` is safe, though, because the exception type follows whether the job actually reached the platform:
+
+- `downstream-job` and `trigger/polling` failures (the run launched, then failed, or a Triggerer crash happened mid-poll) raise `AirflowFailException`, which Airflow never retries regardless of the task's `retries=`.
+- `submit/config` failures (the run never reached the platform, e.g. a worker recycling mid-submit) raise the retryable `AirflowException`.
+
+Set `retries=1` (or higher) on `execute_spark_job` to recover automatically from transient submission-time infra faults without risking a silent, full-cost retry of a job that actually ran and failed.
 
 ## Databricks runner deployment
 

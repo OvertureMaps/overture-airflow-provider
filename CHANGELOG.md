@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-05
+
+### Changed
+
+- **`execute_spark_job` failures now raise `AirflowFailException` when the job
+  actually launched, instead of a plain `AirflowException` in every case.**
+  `describe_failure` already classifies failures by whether the run reached
+  the platform (`run_launched`); this now drives the exception type too:
+  `submit/config` failures (never launched) stay retryable, while
+  `downstream-job` and `trigger/polling` failures (launched, then failed, or a
+  Triggerer crash after launch) raise the non-retryable
+  `AirflowFailException`. Callers can set `retries=1` (or higher) on
+  `execute_spark_job` and get automatic recovery from transient
+  submission-time infra faults, without risking a silent retry of a job that
+  actually ran and failed.
+  ([#65](https://github.com/OvertureMaps/overture-airflow-provider/issues/65))
+
 ## [0.3.1] - 2026-06-12
 
 ### Fixed

@@ -12,7 +12,8 @@ Symbol                Airflow 2.x                                    Airflow 3.x
 ``BaseHook``          ``airflow.hooks.base.BaseHook``                ``airflow.sdk.bases.hook.BaseHook``
 ``BaseOperatorLink``  ``airflow.models.baseoperatorlink``            ``airflow.sdk.bases.operator.BaseOperatorLink``
 ``XCom``              ``airflow.models.xcom.XCom``                   ``airflow.sdk.execution_time.xcom.XCom``
-``AirflowException``  ``airflow.exceptions.AirflowException``        (both)
+``AirflowException``      ``airflow.exceptions.AirflowException``        (same)
+``AirflowFailException``  ``airflow.exceptions.AirflowFailException``    ``airflow.sdk.exceptions.AirflowFailException``
 ====================  =============================================  =============================================
 
 Callers should always import from this module, never directly from
@@ -26,14 +27,14 @@ try:  # Airflow 3.x
     from airflow.sdk import DAG, BaseOperator, task, task_group
     from airflow.sdk.bases.hook import BaseHook
     from airflow.sdk.bases.operatorlink import BaseOperatorLink
-    from airflow.sdk.exceptions import TaskDeferred
+    from airflow.sdk.exceptions import AirflowFailException, TaskDeferred
     from airflow.sdk.execution_time.xcom import XCom
 
     AIRFLOW_MAJOR = 3
 except ImportError:  # Airflow 2.x
     from airflow import DAG
     from airflow.decorators import task, task_group
-    from airflow.exceptions import TaskDeferred
+    from airflow.exceptions import AirflowFailException, TaskDeferred
     from airflow.hooks.base import BaseHook
     from airflow.models.baseoperator import BaseOperator
     from airflow.models.baseoperatorlink import BaseOperatorLink
@@ -45,6 +46,7 @@ __all__ = [
     "AIRFLOW_MAJOR",
     "DAG",
     "AirflowException",
+    "AirflowFailException",
     "BaseHook",
     "BaseOperator",
     "BaseOperatorLink",

@@ -25,6 +25,7 @@ import json
 
 from overture_airflow_provider._airflow_compat import (
     AirflowException,
+    AirflowFailException,
     BaseOperator,
     TaskDeferred,
 )
@@ -147,11 +148,17 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             # A failure on the submit/synchronous path. Whether the job actually
             # launched (early run-id XCom present) decides downstream-job vs
             # submit/config; describe_failure + the classifier handle the rest.
+            run_launched = self._run_launched(context)
             info = handler.describe_failure(
                 error=exc,
-                run_launched=self._run_launched(context),
+                run_launched=run_launched,
             )
-            raise AirflowException(format_failure(info)) from None
+            # Launched-and-failed is a real job/data bug -- retrying just burns
+            # another full run at cost, so it's never retryable. Never-launched
+            # is a submit/config fault (e.g. a worker recycle mid-submit) that a
+            # caller-configured retry can safely resolve.
+            exc_cls = AirflowFailException if run_launched else AirflowException
+            raise exc_cls(format_failure(info)) from None
 
         trigger = submitted.get("trigger")
         if trigger is None:
@@ -182,8 +189,12 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         and 3) and route the error through the same per-platform
         ``describe_failure`` seam used by the submit and complete paths, tagged
         ``is_trigger_failure`` so the classifier buckets it as ``trigger/polling``.
-        Every other resume (a normal trigger event) is delegated untouched to the
-        base implementation, which dispatches to ``execute_complete``.
+        A trigger only exists once a job has launched, so this path is always
+        ``run_launched=True`` and raises the non-retryable
+        ``AirflowFailException`` -- a Triggerer crash mid-poll doesn't mean the
+        job is safe to resubmit. Every other resume (a normal trigger event) is
+        delegated untouched to the base implementation, which dispatches to
+        ``execute_complete``.
         """
         if next_method == "__fail__":
             next_kwargs = next_kwargs or {}
@@ -198,7 +209,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                 run_launched=True,
                 is_trigger_failure=True,
             )
-            raise AirflowException(format_failure(info)) from None
+            raise AirflowFailException(format_failure(info)) from None
         return super().resume_execution(next_method, next_kwargs, context)
 
     def _push_report_issue_config(self, context) -> None:

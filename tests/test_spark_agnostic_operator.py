@@ -112,10 +112,13 @@ def test_execute_wraps_submit_failure_with_classified_message():
     assert "submit/config failure" in msg
     assert "hint:" in msg
     assert handler.describe_failure.call_args.kwargs["run_launched"] is False
+    # Never-launched failures are retryable: exactly AirflowException, not the
+    # non-retryable AirflowFailException subclass.
+    assert type(exc.value) is AirflowException
 
 
 def test_execute_submit_failure_marks_downstream_when_launched():
-    from overture_airflow_provider._airflow_compat import AirflowException
+    from overture_airflow_provider._airflow_compat import AirflowFailException
     from overture_airflow_provider._failures import DOWNSTREAM_JOB, FailureInfo
 
     op = _make_operator()
@@ -138,14 +141,16 @@ def test_execute_submit_failure_marks_downstream_when_launched():
             return_value=handler,
         ),
     ):
-        with pytest.raises(AirflowException):
+        # Launched-and-failed is never retryable, regardless of the caller's
+        # `retries=` setting.
+        with pytest.raises(AirflowFailException):
             op.execute(context)
 
     assert handler.describe_failure.call_args.kwargs["run_launched"] is True
 
 
 def test_resume_execution_enriches_trigger_failure():
-    from overture_airflow_provider._airflow_compat import AirflowException
+    from overture_airflow_provider._airflow_compat import AirflowFailException
     from overture_airflow_provider._failures import TRIGGER_POLLING, FailureInfo
 
     op = _make_operator()
@@ -165,7 +170,9 @@ def test_resume_execution_enriches_trigger_failure():
             return_value=handler,
         ),
     ):
-        with pytest.raises(AirflowException) as exc:
+        # A trigger crash mid-poll means the job did launch, so this is never
+        # retryable regardless of the caller's `retries=` setting.
+        with pytest.raises(AirflowFailException) as exc:
             op.resume_execution(
                 "__fail__",
                 {"error": "Triggerer lost connection", "traceback": ["line1", "line2"]},

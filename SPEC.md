@@ -189,7 +189,17 @@ on signals the orchestration layer already holds:
 `apply_heuristics()` scans the combined reason + root-cause text for known
 patterns (IAM denials, auth errors, OOM, throttling, missing resources) and
 appends an actionable hint. `format_failure()` renders all fields into a
-uniform multi-line `AirflowException` message.
+uniform multi-line message.
+
+`_operator.py` picks the raised exception type from the same `run_launched`
+signal that drives classification above: `downstream-job` and `trigger/polling`
+(the run reached the platform, or a Triggerer crash happened mid-poll after
+launch) raise `AirflowFailException`, which Airflow never retries regardless of
+the task's `retries=`. `submit/config` (the run never reached the platform)
+raises the retryable `AirflowException`. This lets a caller set
+`retries=1` on `execute_spark_job` to recover from transient submission-time
+infra faults (e.g. a worker recycling mid-submit) without risking a silent
+retry of a job that actually ran and failed.
 
 `_failures.py` has no Airflow or platform SDK imports; it works purely from
 stdlib so it is testable and importable without any runtime dependencies.

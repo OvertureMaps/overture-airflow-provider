@@ -119,8 +119,12 @@ def spark_agnostic_task_group(
         parameters: Job parameters as a JSON string passed to the entry point.
         pool: Airflow pool for the ``execute_spark_job`` task.
         retries: Retry count for the ``execute_spark_job`` task (default 0).
-            The setup tasks (``setup``, ``download_python_packages``,
-            ``download_jars``, ``setup_cluster``) always retry twice.
+            Safe to raise: a failure that never reached the platform (submit
+            or config fault) raises a retryable ``AirflowException``, while a
+            failure after the job launched raises ``AirflowFailException``,
+            which Airflow never retries regardless of this setting. The setup
+            tasks (``setup``, ``download_python_packages``, ``download_jars``,
+            ``setup_cluster``) always retry twice.
         iceberg_config: Iceberg Spark config for both Glue/Databricks and
             Wherobots; the right variant is selected at runtime. Pass ``None``
             for jobs that don't use Iceberg.

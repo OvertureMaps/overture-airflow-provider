@@ -19,6 +19,8 @@ The provider is intentionally unopinionated: every environment-specific value (S
 - [Operator links](#operator-links)
 - [Failure messages](#failure-messages)
   - [Retries](#retries)
+    - [What's retryable](#whats-retryable)
+    - [What isn't](#what-isnt)
 - [Databricks runner deployment](#databricks-runner-deployment)
 - [Local rendering](#local-rendering)
 - [Reference](#reference)
@@ -141,10 +143,17 @@ The hint layer scans the reason and root-cause text for known patterns (IAM deni
 
 ### Retries
 
-`execute_spark_job` defaults to `retries=0`: a job that fails costs real compute to re-run, so this provider doesn't retry by default. Raising `retries` is safe, though, because the exception type follows whether the job actually reached the platform:
+`execute_spark_job` defaults to `retries=0`: a job that fails costs real compute to re-run, so this provider doesn't retry by default.
 
-- `downstream-job` and `trigger/polling` failures (the run launched, then failed, or a Triggerer crash happened mid-poll) raise `AirflowFailException`, which Airflow never retries regardless of the task's `retries=`.
-- `submit/config` failures (the run never reached the platform, e.g. a worker recycling mid-submit) raise the retryable `AirflowException`.
+Every failure classification above already carries a `run_launched` signal, whether the job reached the platform before it failed. Raising `retries` is a small, safe adjustment on top of that existing signal: the exception type just follows it.
+
+#### What's retryable
+
+`submit/config` failures raise the retryable `AirflowException`. The run never reached the platform (a worker recycling mid-submit, a bad cluster policy), so nothing ran and nothing costs money to redo.
+
+#### What isn't
+
+`downstream-job` and `trigger/polling` failures raise `AirflowFailException`, which Airflow never retries regardless of the task's `retries=`. The run launched, then failed, or a Triggerer crash happened mid-poll after launch, so re-running it blindly burns another full job at cost instead of fixing anything.
 
 Set `retries=1` (or higher) on `execute_spark_job` to recover automatically from transient submission-time infra faults without risking a silent, full-cost retry of a job that actually ran and failed.
 

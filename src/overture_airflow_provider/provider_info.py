@@ -40,6 +40,12 @@ def get_provider_info() -> dict:
             "overture_airflow_provider.links.SparkJobLink",
             "overture_airflow_provider.links.ReportIssueLink",
         ],
+        "plugins": [
+            {
+                "name": "bundle_inspector",
+                "plugin-class": "overture_airflow_provider.plugins.bundle_inspector.BundleInspectorPlugin",
+            }
+        ],
         "integrations": [
             {
                 "integration-name": "AWS Glue",

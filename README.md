@@ -23,6 +23,7 @@ The provider is intentionally unopinionated: every environment-specific value (S
     - [What isn't](#what-isnt)
 - [Databricks runner deployment](#databricks-runner-deployment)
 - [Local rendering](#local-rendering)
+- [Bundle Inspector plugin](#bundle-inspector-plugin)
 - [Reference](#reference)
   - [Supported versions](#supported-versions)
   - [Spark platform matrix](#spark-platform-matrix)
@@ -224,6 +225,21 @@ result.write_to("./out/")  # dump JSON payloads + cli.sh
 ```
 
 Pass `pre_resolved_package_info=` or `pre_resolved_jar_info=` with real S3 URIs from a previous `download_python_packages_*` or `download_jars_*` run to skip the `s3://.../REPLACE-ME.whl` placeholders.
+
+## Bundle Inspector plugin
+
+Installing this package registers `bundle_inspector`, an Airflow plugin (not related to `spark_agnostic_task_group`) for browsing Overture bundles in S3 by pipeline stage, theme, schema version, and run ID. It works on both Airflow 2 (Flask blueprints) and Airflow 3 (FastAPI apps); the right one loads automatically. No plugins-folder drop-in needed, no separate install step: it ships in this package and shows up under **Browse -> Bundle Inspector** once the provider is installed.
+
+Configure it with these Airflow Variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `bundle_inspector_s3_bucket` | yes | S3 bucket containing bundle data |
+| `bundle_inspector_environment` | no (default `dev`) | Environment name (`dev`, `staging`, `prod`) |
+| `bundle_inspector_athena_output_bucket` | no | S3 bucket for Athena query results; falls back to `overture-bundle-inspector-athena-output-<environment>` |
+| `bundle_inspector_user` | no | Namespace prefix under the bucket, read only when `bundle_inspector_environment` is `dev` |
+
+GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shapely`: `pip install "airflow-provider-overture[bundle-inspector]"`. Without them those two endpoints return a 500 with the import error; the rest of the UI (tree browsing, PMTiles, CSV, Athena queries) works without either.
 
 ## Reference
 

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bundle Inspector - Airflow</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" integrity="sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V" crossorigin="anonymous">
+    <link rel="stylesheet" href="/bundle-inspector/static/bundle_inspector/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css" integrity="sha384-rCCjoCPCsizaAAYVoz1Q0CmCTvnctK0JkfCSjx7IIxexTBg+uCKtFYycedUjMyA2" crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js" integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj" crossorigin="anonymous"></script>
+    <script type="importmap">{"imports":{"fflate":"https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm"}}</script>
+    <script>const STATIC_BASE = "/bundle-inspector/static/";</script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js" integrity="sha384-ZM8fDxYm+GXOWeJcxDetoRImNnEAS7XwVFH5kv0pT6RXNy92Nemw/Sj7NfciXpqg" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-sql.min.js" integrity="sha384-/MKWdycCDliku23mP5sYXbZNuXrzgmQO/jsVxwPFn99dVOaXRyKsqDjarqpueGAp" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js" integrity="sha384-H+hy9ULve6xfxRkWIh/YOtvDdpXgV2fmAGQkIDTxIgZwNoaoBal14Di2YTMR6MzR" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="plugin-header">
+        <a href="/">&#8592; Back to Airflow Home</a>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>Bundle Inspector</h1>
+                <div class="user-selector" id="userSelector">
+                    <label for="userSelect">Namespace</label>
+                    <select id="userSelect" onchange="onUserChange()"></select>
+                </div>
+                <div class="sidebar-controls">
+                    <button class="btn btn-secondary" id="btnRefresh" onclick="refresh()">Refresh</button>
+                </div>
+                <div class="sidebar-info" id="sidebarInfo"></div>
+            </div>
+            <div class="tree-container" id="treeRoot"></div>
+        </div>
+
+        <div class="detail-panel" id="detailPanel">
+            <div class="detail-empty">Select a node to inspect.</div>
+        </div>
+    </div>
+
+    <!-- Load order: core -> shared utils -> registry -> components -> tree -> detail -> app -->
+    <script src="/bundle-inspector/static/bundle_inspector/core.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/csv-utils.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/map-utils.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/wkb.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/registry.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/bbox-map.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/pmtiles-viewer.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/parquet-stats.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/athena-preview.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/csv-viewer.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/markdown-viewer.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/components/folder-tree.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/tree.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/detail.js"></script>
+    <script src="/bundle-inspector/static/bundle_inspector/app.js"></script>
+</body>
+</html>

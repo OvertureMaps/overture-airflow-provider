@@ -46,6 +46,55 @@ def get_provider_info() -> dict:
                 "plugin-class": "overture_airflow_provider.plugins.bundle_inspector.BundleInspectorPlugin",
             }
         ],
+        "config": {
+            "bundle_inspector": {
+                "description": (
+                    "Settings for the bundle_inspector plugin (an S3 bundle browser UI, "
+                    "see plugins/bundle_inspector). Every option is also settable via its "
+                    "AIRFLOW__BUNDLE_INSPECTOR__<OPTION> environment variable."
+                ),
+                "options": {
+                    "s3_bucket": {
+                        "description": "S3 bucket containing the bundle data to browse.",
+                        "version_added": "0.7.0",
+                        "type": "string",
+                        "example": "my-overture-bundles",
+                        "default": None,
+                    },
+                    "environment": {
+                        "description": (
+                            "Environment name shown in the UI. In `dev`, the `user` option "
+                            "selects a namespace prefix under the bucket; any other value "
+                            "browses the bucket root with no namespace prefix."
+                        ),
+                        "version_added": "0.7.0",
+                        "type": "string",
+                        "example": "prod",
+                        "default": "dev",
+                    },
+                    "athena_output_bucket": {
+                        "description": (
+                            "S3 bucket for Athena query results. Falls back to "
+                            "`overture-bundle-inspector-athena-output-<environment>` if unset."
+                        ),
+                        "version_added": "0.7.0",
+                        "type": "string",
+                        "example": "my-athena-output-bucket",
+                        "default": None,
+                    },
+                    "user": {
+                        "description": (
+                            "Namespace prefix under the bucket, read only when `environment` "
+                            "is `dev`."
+                        ),
+                        "version_added": "0.7.0",
+                        "type": "string",
+                        "example": "alice",
+                        "default": None,
+                    },
+                },
+            }
+        },
         "integrations": [
             {
                 "integration-name": "AWS Glue",

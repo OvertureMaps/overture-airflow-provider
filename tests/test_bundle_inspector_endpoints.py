@@ -1,9 +1,9 @@
 """Tests for the bundle inspector's framework-agnostic endpoint logic.
 
 Airflow-free at the seams that matter: monkeypatches
-``overture_airflow_provider._airflow_compat.Variable`` (imported into
-``_endpoints`` by name) rather than reading real Airflow Variables, and stubs
-out the boto3 S3 client, so it runs under the lightweight test venv.
+``airflow.configuration.conf`` (imported into ``_endpoints`` by name) rather
+than reading real ``airflow.cfg``, and stubs out the boto3 S3 client, so it
+runs under the lightweight test venv.
 """
 
 from datetime import UTC, datetime
@@ -13,14 +13,18 @@ import pytest
 from overture_airflow_provider.plugins.bundle_inspector import _endpoints as ep
 
 
-class _FakeVariable:
-    """Stand-in for ``overture_airflow_provider._airflow_compat.Variable``."""
+class _FakeConf:
+    """Stand-in for ``airflow.configuration.conf``, keyed by ``(section, key)``."""
 
     def __init__(self, values: dict):
         self._values = values
 
-    def get(self, key, default_var=None):
-        return self._values.get(key, default_var)
+    def get(self, section, key, fallback=None):
+        return self._values.get((section, key), fallback)
+
+
+def _conf(**bundle_inspector_options):
+    return _FakeConf({("bundle_inspector", k): v for k, v in bundle_inspector_options.items()})
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +37,7 @@ def _clear_s3_client_cache():
 
 class TestGetConfig:
     def test_defaults_to_dev_with_no_namespace(self, monkeypatch):
-        monkeypatch.setattr(ep, "Variable", _FakeVariable({"bundle_inspector_s3_bucket": "b"}))
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b"))
         cfg = ep.get_config()
         assert cfg == {
             "bucket": "b",
@@ -43,37 +47,25 @@ class TestGetConfig:
             "namespace_prefix": "",
         }
 
-    def test_dev_reads_namespace_from_variable(self, monkeypatch):
-        monkeypatch.setattr(
-            ep,
-            "Variable",
-            _FakeVariable({"bundle_inspector_s3_bucket": "b", "bundle_inspector_user": "alice"}),
-        )
+    def test_missing_bucket_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(ep, "conf", _conf())
+        with pytest.raises(ep.ApiError) as exc_info:
+            ep.get_config()
+        assert exc_info.value.status == 500
+
+    def test_dev_reads_namespace_from_conf(self, monkeypatch):
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b", user="alice"))
         cfg = ep.get_config()
         assert cfg["namespace"] == "alice"
         assert cfg["namespace_prefix"] == "alice/"
 
-    def test_user_override_wins_over_variable(self, monkeypatch):
-        monkeypatch.setattr(
-            ep,
-            "Variable",
-            _FakeVariable({"bundle_inspector_s3_bucket": "b", "bundle_inspector_user": "alice"}),
-        )
+    def test_user_override_wins_over_conf(self, monkeypatch):
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b", user="alice"))
         cfg = ep.get_config(user_override="bob")
         assert cfg["namespace"] == "bob"
 
     def test_non_dev_ignores_namespace(self, monkeypatch):
-        monkeypatch.setattr(
-            ep,
-            "Variable",
-            _FakeVariable(
-                {
-                    "bundle_inspector_s3_bucket": "b",
-                    "bundle_inspector_environment": "prod",
-                    "bundle_inspector_user": "alice",
-                }
-            ),
-        )
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b", environment="prod", user="alice"))
         cfg = ep.get_config(user_override="bob")
         assert cfg["namespace"] == ""
         assert cfg["namespace_prefix"] == ""
@@ -81,7 +73,7 @@ class TestGetConfig:
 
 class TestListChildren:
     def test_root_returns_known_stages_without_s3_call(self, monkeypatch):
-        monkeypatch.setattr(ep, "Variable", _FakeVariable({"bundle_inspector_s3_bucket": "b"}))
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b"))
         monkeypatch.setattr(
             ep,
             "_s3_client",
@@ -96,7 +88,7 @@ class TestListChildren:
         }
 
     def test_non_root_lists_and_filters_via_s3(self, monkeypatch):
-        monkeypatch.setattr(ep, "Variable", _FakeVariable({"bundle_inspector_s3_bucket": "b"}))
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b"))
 
         class _FakeClient:
             def get_paginator(self, name):
@@ -145,7 +137,7 @@ class TestS3Proxy:
         assert exc_info.value.status == 400
 
     def test_allowed_suffix_reaches_s3(self, monkeypatch):
-        monkeypatch.setattr(ep, "Variable", _FakeVariable({"bundle_inspector_s3_bucket": "b"}))
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b"))
 
         class _FakeClient:
             def head_object(self, **kwargs):
@@ -164,16 +156,7 @@ class TestAthenaQuery:
         assert exc_info.value.status == 400
 
     def test_uses_configured_output_bucket(self, monkeypatch):
-        monkeypatch.setattr(
-            ep,
-            "Variable",
-            _FakeVariable(
-                {
-                    "bundle_inspector_s3_bucket": "b",
-                    "bundle_inspector_athena_output_bucket": "athena-out",
-                }
-            ),
-        )
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b", athena_output_bucket="athena-out"))
         captured = {}
 
         def fake_athena_start(output_bucket, sql):
@@ -186,7 +169,7 @@ class TestAthenaQuery:
         assert captured["output_bucket"] == "athena-out"
 
     def test_falls_back_to_default_output_bucket(self, monkeypatch):
-        monkeypatch.setattr(ep, "Variable", _FakeVariable({"bundle_inspector_s3_bucket": "b"}))
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b"))
         captured = {}
 
         def fake_athena_start(output_bucket, sql):
@@ -198,7 +181,7 @@ class TestAthenaQuery:
         assert captured["output_bucket"] == "overture-bundle-inspector-athena-output-dev"
 
     def test_error_result_raises_api_error(self, monkeypatch):
-        monkeypatch.setattr(ep, "Variable", _FakeVariable({"bundle_inspector_s3_bucket": "b"}))
+        monkeypatch.setattr(ep, "conf", _conf(s3_bucket="b"))
         monkeypatch.setattr(ep.s3, "athena_start", lambda output_bucket, sql: {"error": "boom"})
         with pytest.raises(ep.ApiError) as exc_info:
             ep.athena_query(sql="select 1", user=None)

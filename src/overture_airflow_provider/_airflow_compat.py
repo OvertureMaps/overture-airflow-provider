@@ -12,7 +12,6 @@ Symbol                Airflow 2.x                                    Airflow 3.x
 ``BaseHook``          ``airflow.hooks.base.BaseHook``                ``airflow.sdk.bases.hook.BaseHook``
 ``BaseOperatorLink``  ``airflow.models.baseoperatorlink``            ``airflow.sdk.bases.operator.BaseOperatorLink``
 ``XCom``              ``airflow.models.xcom.XCom``                   ``airflow.sdk.execution_time.xcom.XCom``
-``Variable``          ``airflow.models.Variable``                    ``airflow.sdk.Variable``
 ``AirflowException``      ``airflow.exceptions.AirflowException``        (same)
 ``AirflowFailException``  ``airflow.exceptions.AirflowFailException``    ``airflow.sdk.exceptions.AirflowFailException``
 ====================  =============================================  =============================================
@@ -25,7 +24,7 @@ module to the ``airflow.sdk`` branch (or just inline the imports).
 from airflow.exceptions import AirflowException
 
 try:  # Airflow 3.x
-    from airflow.sdk import DAG, BaseOperator, Variable, task, task_group
+    from airflow.sdk import DAG, BaseOperator, task, task_group
     from airflow.sdk.bases.hook import BaseHook
     from airflow.sdk.bases.operatorlink import BaseOperatorLink
     from airflow.sdk.exceptions import AirflowFailException, TaskDeferred
@@ -39,7 +38,6 @@ except ImportError:  # Airflow 2.x
     from airflow.hooks.base import BaseHook
     from airflow.models.baseoperator import BaseOperator
     from airflow.models.baseoperatorlink import BaseOperatorLink
-    from airflow.models.variable import Variable
     from airflow.models.xcom import XCom
 
     AIRFLOW_MAJOR = 2
@@ -53,7 +51,6 @@ __all__ = [
     "BaseOperator",
     "BaseOperatorLink",
     "TaskDeferred",
-    "Variable",
     "XCom",
     "task",
     "task_group",

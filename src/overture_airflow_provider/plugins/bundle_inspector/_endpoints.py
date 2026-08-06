@@ -12,16 +12,17 @@ import os
 import re
 from functools import lru_cache
 
-from overture_airflow_provider._airflow_compat import Variable
+from airflow.configuration import conf
 
 from . import s3
 
-# Airflow Variable names. Override any of them per-deployment; none are
-# baked into the plugin beyond these key names.
-S3_BUCKET_VARIABLE = "bundle_inspector_s3_bucket"
-ATHENA_OUTPUT_BUCKET_VARIABLE = "bundle_inspector_athena_output_bucket"
-ENVIRONMENT_VARIABLE = "bundle_inspector_environment"
-USER_VARIABLE = "bundle_inspector_user"
+# ``airflow.cfg`` section for this plugin's settings (see provider_info.py's
+# "config" entry for the full option list). Airflow merges this section's
+# defaults/descriptions from that entry, so `conf.get` works even before an
+# operator has set anything explicitly, and every option is overridable via
+# the standard `AIRFLOW__BUNDLE_INSPECTOR__<OPTION>` env var without any
+# extra wiring here.
+CONFIG_SECTION = "bundle_inspector"
 
 QUERY_ID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -58,25 +59,30 @@ def _s3_client():
 
 
 def get_config(user_override: str | None = None) -> dict:
-    """Read bucket and namespace config from Airflow Variables.
+    """Read bucket and namespace config from ``airflow.cfg``'s ``bundle_inspector`` section.
 
-    Called inside request handlers, never at import time, to avoid hitting
-    the metadata DB during plugin loading.
+    Called inside request handlers, never at import time, so a config change
+    (or its `AIRFLOW__BUNDLE_INSPECTOR__*` env var override) takes effect
+    without restarting the plugin.
 
-    The environment is read from the ``bundle_inspector_environment``
-    Airflow Variable so the namespace decision uses the same source of
-    truth. In ``dev``, the namespace is taken from the
-    ``bundle_inspector_user`` Airflow Variable (or overridden by
-    ``user_override``).
+    The environment is read from the ``environment`` option so the namespace
+    decision uses the same source of truth. In ``dev``, the namespace is
+    taken from the ``user`` option (or overridden by ``user_override``).
     """
-    bucket = Variable.get(S3_BUCKET_VARIABLE)
-    athena_output_bucket = Variable.get(ATHENA_OUTPUT_BUCKET_VARIABLE, default_var=None)
-    environment = Variable.get(ENVIRONMENT_VARIABLE, default_var="dev")
+    bucket = conf.get(CONFIG_SECTION, "s3_bucket", fallback=None)
+    if not bucket:
+        raise ApiError(
+            500,
+            f"[{CONFIG_SECTION}] s3_bucket is not set in airflow.cfg "
+            f"(or AIRFLOW__{CONFIG_SECTION.upper()}__S3_BUCKET)",
+        )
+    athena_output_bucket = conf.get(CONFIG_SECTION, "athena_output_bucket", fallback=None)
+    environment = conf.get(CONFIG_SECTION, "environment", fallback="dev")
     if environment == "dev":
         namespace = (
             user_override
             if user_override is not None
-            else Variable.get(USER_VARIABLE, default_var="")
+            else conf.get(CONFIG_SECTION, "user", fallback="")
         )
     else:
         namespace = ""

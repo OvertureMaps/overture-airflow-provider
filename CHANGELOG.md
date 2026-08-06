@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-06
+
+### Added
+
+- **`bundle_inspector` plugin, ported from `tf-data-platform`.** Adds a
+  Browse -> Bundle Inspector UI for walking pipeline stages, themes, schema
+  versions, and run IDs in S3, plus GeoParquet/PMTiles preview and ad hoc
+  Athena queries against the same bundle. Loads on both Airflow 2 (Flask
+  blueprints) and Airflow 3 (FastAPI apps), selected automatically at import
+  time. Configure it via the `[bundle_inspector]` section in `airflow.cfg`
+  (`s3_bucket`, `environment`, `athena_output_bucket`, `user`), each also
+  settable through its `AIRFLOW__BUNDLE_INSPECTOR__<OPTION>` environment
+  variable. GeoParquet preview needs the new `bundle-inspector` extra
+  (`pyarrow`, `shapely`). The original's `/register-table` endpoint isn't
+  ported: it depended on `tf-data-platform`-internal DAG naming with no
+  equivalent here.
+  ([#68](https://github.com/OvertureMaps/overture-airflow-provider/issues/68))
+
 ## [0.6.0] - 2026-08-05
 
 ### Changed

@@ -230,14 +230,16 @@ Pass `pre_resolved_package_info=` or `pre_resolved_jar_info=` with real S3 URIs 
 
 Installing this package registers `bundle_inspector`, an Airflow plugin (not related to `spark_agnostic_task_group`) for browsing Overture bundles in S3 by pipeline stage, theme, schema version, and run ID. It works on both Airflow 2 (Flask blueprints) and Airflow 3 (FastAPI apps); the right one loads automatically. No plugins-folder drop-in needed, no separate install step: it ships in this package and shows up under **Browse -> Bundle Inspector** once the provider is installed.
 
-Configure it with these Airflow Variables:
+Configure it via the `[bundle_inspector]` section in `airflow.cfg`:
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `bundle_inspector_s3_bucket` | yes | S3 bucket containing bundle data |
-| `bundle_inspector_environment` | no (default `dev`) | Environment name (`dev`, `staging`, `prod`) |
-| `bundle_inspector_athena_output_bucket` | no | S3 bucket for Athena query results; falls back to `overture-bundle-inspector-athena-output-<environment>` |
-| `bundle_inspector_user` | no | Namespace prefix under the bucket, read only when `bundle_inspector_environment` is `dev` |
+| Option | Required | Description |
+|--------|----------|-------------|
+| `s3_bucket` | yes | S3 bucket containing bundle data |
+| `environment` | no (default `dev`) | Environment name (`dev`, `staging`, `prod`) |
+| `athena_output_bucket` | no | S3 bucket for Athena query results; falls back to `overture-bundle-inspector-athena-output-<environment>` |
+| `user` | no | Namespace prefix under the bucket, read only when `environment` is `dev` |
+
+Each option is also settable via its `AIRFLOW__BUNDLE_INSPECTOR__<OPTION>` environment variable (e.g. `AIRFLOW__BUNDLE_INSPECTOR__S3_BUCKET`), Airflow's standard override convention for provider config, so no metadata DB round-trip or Variable setup is needed to get the plugin running.
 
 GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shapely`: `pip install "airflow-provider-overture[bundle-inspector]"`. Without them those two endpoints return a 500 with the import error; the rest of the UI (tree browsing, PMTiles, CSV, Athena queries) works without either.
 

@@ -42,9 +42,7 @@ services:
   standalone:
     build: *build
     profiles: [manual]
-    environment:
-      <<: *airflow-env
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    environment: *airflow-env
     ports:
       - "8080:8080"
     command: ["bash", "-c", "airflow db migrate && airflow standalone"]

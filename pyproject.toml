@@ -54,6 +54,13 @@ Issues = "https://github.com/OvertureMaps/overture-airflow-provider/issues"
 [project.entry-points."apache_airflow_provider"]
 airflow-provider-overture = "overture_airflow_provider.provider_info:get_provider_info"
 
+# `provider_info.py`'s "plugins" key alone only loads the plugin when
+# `core.lazy_discover_providers=False`, which isn't the default. A classic
+# `airflow.plugins` entry point (how apache-airflow-providers-openlineage
+# does it) loads unconditionally.
+[project.entry-points."airflow.plugins"]
+bundle_inspector = "overture_airflow_provider.plugins.bundle_inspector:BundleInspectorPlugin"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

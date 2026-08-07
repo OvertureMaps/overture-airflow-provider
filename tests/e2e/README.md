@@ -55,6 +55,27 @@ docker compose --profile manual up --build standalone
 # http://localhost:8080  (airflow standalone prints the admin password)
 ```
 
+Always pass `--build` here, not just on first run: this service shares the same
+image as `e2e`, and a stale cached image silently skips out on source changes
+(entry points, plugin registration) between runs.
+
+To browse real data in the Bundle Inspector plugin (Browse -> Bundle
+Inspector), set its `s3_bucket` before bringing the container up, e.g.:
+
+```bash
+AIRFLOW__BUNDLE_INSPECTOR__S3_BUCKET=overturemaps-us-west-2 \
+  docker compose --profile manual up --build standalone
+```
+
+> [!NOTE]
+> The plugin's S3 client (`boto3.client("s3")`) signs every request, so it
+> needs real AWS credentials in the container even for a public bucket like
+> `overturemaps-us-west-2`: mount `~/.aws` (`-v ~/.aws:/home/airflow/.aws:ro`)
+> or pass `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`. Without credentials,
+> `/bundle-inspector/` still loads and `/api/bundle-inspector/config` still
+> resolves the bucket name; listing objects fails with
+> `botocore.exceptions.NoCredentialsError`.
+
 ## Collection gating
 
 `tests/e2e` is excluded from the default `pytest` run (the root `conftest.py`

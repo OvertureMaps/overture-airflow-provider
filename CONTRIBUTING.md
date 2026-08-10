@@ -17,6 +17,7 @@ uv run pytest -v                 # run the test suite
 uv run ruff check .              # lint (includes Airflow AIR* rules)
 uv run ruff format --check .     # format check
 uv run ruff format .             # apply formatting
+node --test                      # run bundle_inspector's static JS tests (no deps, Node's built-in runner)
 ```
 
 ## PR title format

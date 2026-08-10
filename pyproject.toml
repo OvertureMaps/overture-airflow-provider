@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "airflow-provider-overture"
-version = "0.6.0"
+version = "0.7.0"
 description = "Spark-agnostic Airflow task group for running jobs on AWS Glue, Databricks, or Wherobots from a single DAG entry point."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -36,10 +36,13 @@ dependencies = [
 [project.optional-dependencies]
 databricks = ["apache-airflow-providers-databricks", "databricks-sdk"]
 wherobots = ["airflow-providers-wherobots"]
+bundle-inspector = ["pyarrow", "shapely"]
 all = [
     "apache-airflow-providers-databricks",
     "databricks-sdk",
     "airflow-providers-wherobots",
+    "pyarrow",
+    "shapely",
 ]
 
 [project.urls]
@@ -50,6 +53,13 @@ Issues = "https://github.com/OvertureMaps/overture-airflow-provider/issues"
 
 [project.entry-points."apache_airflow_provider"]
 airflow-provider-overture = "overture_airflow_provider.provider_info:get_provider_info"
+
+# `provider_info.py`'s "plugins" key alone only loads the plugin when
+# `core.lazy_discover_providers=False`, which isn't the default. A classic
+# `airflow.plugins` entry point (how apache-airflow-providers-openlineage
+# does it) loads unconditionally.
+[project.entry-points."airflow.plugins"]
+bundle_inspector = "overture_airflow_provider.plugins.bundle_inspector:BundleInspectorPlugin"
 
 [dependency-groups]
 dev = [

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-10
+
+### Fixed
+
+- **`bundle_inspector`: Athena query polling hangs on error responses instead
+  of surfacing them.** `fetchAthenaQuery`'s poll loop only exited on
+  `status.state` of `SUCCEEDED`, `FAILED`, or `CANCELLED`. When
+  `athena-status` returned a non-2xx error (e.g. `TABLE_NOT_FOUND` for a
+  query against an unregistered table), the body has no `state`, so the loop
+  polled every second for the full 5-minute timeout showing `undefined...`
+  instead of the real error.
+  ([#70](https://github.com/OvertureMaps/overture-airflow-provider/issues/70))
+
 ## [0.7.0] - 2026-08-06
 
 ### Added

@@ -153,6 +153,7 @@ async function fetchAthenaQuery(sql, onStatus) {
 
     while (Date.now() < deadline) {
         const status = await fetchAthenaStatus(queryId);
+        if (status.error) return status;
         if (onStatus) onStatus(status.state);
         if (status.state === 'SUCCEEDED') return status;
         if (status.state === 'FAILED' || status.state === 'CANCELLED') return status;

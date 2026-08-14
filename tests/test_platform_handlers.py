@@ -592,6 +592,79 @@ class TestCompleteGlueJob:
         assert "AccessDenied" in msg
         assert "hint:" in msg
 
+    def _run_with_logs_client(self, job_run: dict, log_events: list[dict] | None):
+        """Run complete_glue_job with distinct mocks per boto3 client service.
+
+        The other tests in this class patch boto3.client to a single mock
+        for every service, which is fine when nothing calls "logs". These
+        tests exercise the CloudWatch fallback, so glue and logs need their
+        own mocks with their own return values.
+        """
+        from overture_airflow_provider._glue import complete_glue_job
+
+        handler = GluePlatformHandler(_glue_setup_info())
+        context = {"ti": MagicMock(task_id="execute_spark_job")}
+
+        mock_glue = MagicMock()
+        mock_glue.get_job_run.return_value = {"JobRun": job_run}
+        mock_logs = MagicMock()
+        if log_events is None:
+            mock_logs.get_log_events.side_effect = RuntimeError("stream not found")
+        else:
+            mock_logs.get_log_events.return_value = {"events": log_events}
+
+        def _client(service_name, **kwargs):
+            return {"glue": mock_glue, "logs": mock_logs}[service_name]
+
+        with patch("overture_airflow_provider._glue.boto3.client", side_effect=_client):
+            with pytest.raises(AirflowException) as exc:
+                complete_glue_job(_glue_setup_info(), "jr_abc123", context, handler=handler)
+        return str(exc.value), mock_logs
+
+    def test_fetches_output_log_tail_when_log_tail_empty(self):
+        """When Glue's own LogTail is empty, the run's CloudWatch output log
+        supplies the root cause, e.g. a validation job's full error report."""
+        msg, mock_logs = self._run_with_logs_client(
+            job_run={
+                "JobRunState": "FAILED",
+                "ErrorMessage": "ValueError: Schema mismatch for buildings/building_part:",
+            },
+            log_events=[
+                {"message": "Schema mismatch for buildings/building_part:"},
+                {"message": "  sources[].provider: expected StringType, got missing"},
+            ],
+        )
+        assert "sources[].provider: expected StringType, got missing" in msg
+        mock_logs.get_log_events.assert_called_once()
+        call_kwargs = mock_logs.get_log_events.call_args.kwargs
+        assert call_kwargs["logGroupName"] == "/aws-glue/jobs/output"
+        assert call_kwargs["logStreamName"] == "jr_abc123"
+
+    def test_output_log_fetch_failure_still_renders_message(self):
+        """A CloudWatch fetch failure (missing stream, throttling, permissions)
+        never breaks failure reporting; the message just has no cause line."""
+        msg, _ = self._run_with_logs_client(
+            job_run={"JobRunState": "FAILED", "ErrorMessage": "boom"},
+            log_events=None,
+        )
+        assert "Spark job FAILED on GLUE" in msg
+        assert "cause:" not in msg
+
+    def test_prefers_glue_log_tail_when_present(self):
+        """Glue's own LogTail, on the rare run where it is populated, is used
+        as-is; the CloudWatch output log is never queried."""
+        msg, mock_logs = self._run_with_logs_client(
+            job_run={
+                "JobRunState": "FAILED",
+                "ErrorMessage": "boom",
+                "LogTail": "some stderr tail from Glue itself",
+            },
+            log_events=[{"message": "should not appear"}],
+        )
+        assert "some stderr tail from Glue itself" in msg
+        assert "should not appear" not in msg
+        mock_logs.get_log_events.assert_not_called()
+
 
 class TestGlueHandlerCompleteJobEventContract:
     """GlueJobCompleteTrigger emits the run id under "value" (AwsBaseWaiterTrigger

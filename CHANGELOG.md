@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Deferred Glue job failures surfaced as a generic "trigger/polling failure"
-  instead of the real error.** The AWS Glue trigger raises on a terminal
-  FAILED/STOPPED/TIMEOUT state rather than emitting a completion event, so a
-  finished-but-failed run reaches `resume_execution` as a `__fail__` and was
+  where the real error belonged.** The AWS Glue trigger raises on a terminal
+  FAILED/STOPPED/TIMEOUT state, and a raising trigger reaches
+  `resume_execution` as a `__fail__`, so a finished-but-failed run was
   classified as a Triggerer crash: the task log showed
   `Spark job FAILED on GLUE (trigger/polling failure ...) run: <unknown>`
   while the actual Glue `ErrorMessage` stayed only in CloudWatch.
@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the task log names the real platform error with the run id. Genuine
   Triggerer crashes (no resolvable run) keep the trigger-failure
   classification.
+
+- **Glue failure messages carried only a one-line `ErrorMessage`, even though
+  the job's own diagnostics (e.g. a validation job's full multi-line error
+  report) were sitting in CloudWatch the whole time.** Glue's `JobRun.LogTail`
+  field, meant to carry a stderr tail, is empty for GlueVersion 5.0 Spark
+  jobs, so `describe_failure`'s root-cause line was always blank for Glue.
+  `complete_glue_job` now falls back to the run's own CloudWatch output log
+  stream (deterministically named after the run id) when `LogTail` is empty,
+  so the full report reaches the task log's `cause:` line. A fetch failure
+  (missing stream, permissions, throttling) is swallowed and simply omits the
+  cause line rather than breaking failure reporting.
 
 ## [0.7.1] - 2026-08-10
 

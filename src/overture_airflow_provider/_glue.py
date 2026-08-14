@@ -466,13 +466,45 @@ def submit_glue_job(
     }
 
 
+_GLUE_OUTPUT_LOG_GROUP = "/aws-glue/jobs/output"
+
+
+def _fetch_glue_output_log_tail(
+    region: str, run_id: str | None, max_events: int = 1000
+) -> str | None:
+    """Best-effort fetch of the tail of a Glue job run's driver stdout.
+
+    Glue's own ``JobRun.LogTail`` field is not populated for GlueVersion 5.0
+    Spark jobs (confirmed against real runs). A job's own diagnostics, e.g. a
+    validation job's full multi-line error report printed via plain
+    ``print()``, live only in the run's CloudWatch output log stream, named
+    after the run id under ``/aws-glue/jobs/output``. Returns ``None`` on any
+    failure (stream not yet created, permissions, throttling), so an
+    enrichment failure here can never break failure reporting itself.
+    """
+    if not run_id:
+        return None
+    try:
+        logs_client = boto3.client("logs", region_name=region)
+        response = logs_client.get_log_events(
+            logGroupName=_GLUE_OUTPUT_LOG_GROUP,
+            logStreamName=run_id,
+            startFromHead=False,
+            limit=max_events,
+        )
+        return "\n".join(e["message"] for e in response.get("events", [])) or None
+    except Exception:
+        return None
+
+
 def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None) -> dict:
     """Resolve a completed Glue run into the final result dict.
 
     Called from the deferrable operator's ``execute_complete`` after the
     ``GlueJobCompleteTrigger`` reports the run reached a terminal state. On a
     non-success state, ``handler`` (when supplied) is used to raise a classified,
-    de-noised failure naming the Glue ``ErrorMessage`` as the root cause.
+    de-noised failure naming the Glue ``ErrorMessage`` as the root cause, with the
+    run's own stdout tail attached when Glue's ``LogTail`` field is empty.
     """
     from overture_airflow_provider._airflow_compat import AirflowException
 
@@ -481,13 +513,19 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
     glue_client = boto3.client("glue", region_name=region)
 
     job_status = glue_client.get_job_run(JobName=job_name, RunId=run_id)
-    job_state = job_status["JobRun"]["JobRunState"]
+    job_run = job_status["JobRun"]
+    job_state = job_run["JobRunState"]
     if job_state != "SUCCEEDED":
         if handler is not None:
             from overture_airflow_provider._failures import format_failure
 
+            if not job_run.get("LogTail"):
+                output_tail = _fetch_glue_output_log_tail(region, run_id)
+                if output_tail:
+                    job_run = {**job_run, "LogTail": output_tail}
+
             failure = handler.describe_failure(
-                payload=job_status["JobRun"],
+                payload=job_run,
                 run_id=run_id,
                 run_launched=True,
                 console_url=_glue_console_url(region, job_name, run_id),

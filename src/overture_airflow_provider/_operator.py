@@ -43,15 +43,12 @@ _GLUE_RUN_ID_RE = re.compile(r"\bjr_[0-9a-f]{16,}\b")
 
 
 def _terminal_run_id(error_text: str) -> str | None:
-    """Recover a Glue run id from a trigger error that reports a terminal state.
+    """Recover a Glue run id from a trigger error reporting a terminal state.
 
-    The AWS Glue trigger raises ``... Job jr_<hex> Run State: FAILED`` (or
-    STOPPED/TIMEOUT) on a terminal state, so a finished-but-failed run reaches
-    ``resume_execution`` through the ``__fail__`` sentinel. A message that both
-    names a run and reports a run state is a resolvable terminal failure; a
-    genuine Triggerer crash (a connection drop mid-poll) carries neither, so it
-    returns ``None`` and the caller keeps the generic trigger-failure
-    classification.
+    The Glue trigger raises ``... Job jr_<hex> Run State: FAILED`` (or
+    STOPPED/TIMEOUT) on a terminal state. A message with both a run id and a
+    run state is resolvable; a genuine Triggerer crash carries neither, so
+    this returns ``None`` and the caller keeps the generic classification.
     """
     if "Run State" not in error_text:
         return None
@@ -198,31 +195,23 @@ class SparkAgnosticExecuteOperator(BaseOperator):
     def resume_execution(self, next_method, next_kwargs, context):
         """Enrich deferral/trigger (Triggerer) failures before they surface.
 
-        Airflow resumes a deferred task with the ``__fail__`` sentinel for
-        ``next_method`` in two distinct situations, and this method separates
-        them:
+        Airflow resumes a deferred task with the ``__fail__`` sentinel in two
+        cases:
 
         1. A finished job that reached a terminal non-success state. Some
-           provider triggers (notably AWS Glue) *raise* on a terminal FAILED /
-           STOPPED / TIMEOUT state, and a raising trigger reaches ``__fail__``.
-           That is a real, finished job failure, so recover the run id and
-           resolve it through the same ``complete_job`` path ``execute_complete``
-           uses. The task log then names the actual platform error (e.g. the
-           Glue ``ErrorMessage`` and log tail) with the run id, where the
-           default handling would report only a generic "trigger failure" with
-           ``run: <unknown>``.
+           triggers (notably AWS Glue) raise on FAILED/STOPPED/TIMEOUT, so a
+           finished-but-failed run reaches ``__fail__`` too. This recovers the
+           run id and resolves it through the same ``complete_job`` path
+           ``execute_complete`` uses, so the task log names the real platform
+           error instead of a generic "trigger failure" with ``run: <unknown>``.
 
-        2. A genuine Triggerer crash mid-poll (network drop, expired auth,
-           Triggerer restart), which carries no resolvable run. The default
-           ``resume_execution`` would raise a bare ``TaskDeferralError`` whose
-           root cause is buried in the Triggerer logs, so the error goes
-           through the per-platform ``describe_failure`` seam tagged
-           ``is_trigger_failure`` (bucketed ``trigger/polling``) and raises the
-           non-retryable ``AirflowFailException``. A crash mid-poll does not
-           mean the job is safe to resubmit.
+        2. A genuine Triggerer crash mid-poll, which carries no resolvable
+           run. This goes through the per-platform ``describe_failure`` seam
+           tagged ``is_trigger_failure`` and raises the non-retryable
+           ``AirflowFailException``, since a crash mid-poll doesn't mean the
+           job is safe to resubmit.
 
-        Every other resume (a normal trigger event) is delegated untouched to
-        the base implementation, which dispatches to ``execute_complete``.
+        Every other resume is delegated to the base implementation.
         """
         if next_method == "__fail__":
             next_kwargs = next_kwargs or {}
@@ -233,7 +222,9 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             full = rehydrate(self.setup_info)
             handler = get_platform_handler(full["spark_family"], full)
 
-            error_text = "\n".join(traceback) if traceback else str(error)
+            # error and traceback can carry the run id independently of each
+            # other depending on the trigger, so check both.
+            error_text = "\n".join([*(traceback or []), str(error)])
             run_id = _terminal_run_id(error_text)
             if run_id is not None:
                 try:
@@ -241,16 +232,13 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                         {"run_id": run_id}, context, cluster_info=self.cluster_info
                     )
                 except (AirflowException, AirflowFailException):
-                    # complete_job resolved the run and raised the classified,
-                    # de-noised failure naming the real platform error. Surface it.
+                    # This is already the classified failure from complete_job, so it propagates unchanged.
                     raise
                 except Exception as resolve_exc:  # noqa: BLE001
-                    # Couldn't resolve the run (API error, unexpected shape);
-                    # fall through to the generic trigger-failure classification.
+                    # The run couldn't be resolved, so this falls through to the generic classification.
                     self.log.warning("Could not resolve terminal run %s: %s", run_id, resolve_exc)
                 else:
-                    # The run actually succeeded despite the __fail__ (rare);
-                    # finalize it as a normal completion.
+                    # The run succeeded despite __fail__ (rare), so this finalizes normally.
                     return self._finalize(context, result)
 
             info = handler.describe_failure(

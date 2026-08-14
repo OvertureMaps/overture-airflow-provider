@@ -30,8 +30,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `complete_glue_job` now falls back to the run's own CloudWatch output log
   stream (deterministically named after the run id) when `LogTail` is empty,
   so the full report reaches the task log's `cause:` line. A fetch failure
-  (missing stream, permissions, throttling) is swallowed and simply omits the
-  cause line rather than breaking failure reporting.
+  (missing stream, permissions, throttling) is swallowed, so the message
+  just omits the cause line and failure reporting stays intact.
+
+- **The CloudWatch fallback above could itself return a truncated tail that
+  cuts off right where the job's real failure report begins.** `GetLogEvents`
+  can hand back a stale, partial view of a stream for a while after a run
+  finishes. `_fetch_glue_output_log_tail` now polls a few times, watching for
+  the line Glue's driver prints right before exiting, as proof the stream has
+  nothing left to deliver. A freshly-completed stream can also hand every
+  event back on the first call out of timestamp order, so the fetch now
+  sorts events before joining them.
+
+- **Three Copilot review findings on the above.** A run id that lives only in
+  `error` is now checked alongside `traceback`. A malformed CloudWatch event
+  missing `timestamp`/`message` is now handled gracefully, keeping the
+  "returns `None` on any failure" contract intact. The log-tail fetch's
+  diagnostics now go through a module logger (`debug`/`warning`), filterable
+  by log level.
 
 ## [0.7.1] - 2026-08-10
 

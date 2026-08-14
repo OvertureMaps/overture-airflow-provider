@@ -580,6 +580,11 @@ class TestCompleteGlueJob:
                 "ErrorMessage": "S3 AccessDenied on DeleteObject",
             }
         }
+        # This mock also stands in for the "logs" client, so it needs the
+        # shutdown marker or the poll loop waits in real time for one.
+        mock_glue.get_log_events.return_value = {
+            "events": [{"message": "Running autoDebugger shutdown hook.", "timestamp": 0}]
+        }
         with patch(
             "overture_airflow_provider._glue.boto3.client",
             return_value=mock_glue,
@@ -593,13 +598,8 @@ class TestCompleteGlueJob:
         assert "hint:" in msg
 
     def _run_with_logs_client(self, job_run: dict, log_events: list[dict] | None):
-        """Run complete_glue_job with distinct mocks per boto3 client service.
-
-        The other tests in this class patch boto3.client to a single mock
-        for every service, which is fine when nothing calls "logs". These
-        tests exercise the CloudWatch fallback, so glue and logs need their
-        own mocks with their own return values.
-        """
+        """Run complete_glue_job with distinct "glue" and "logs" client mocks,
+        needed here since these tests exercise the CloudWatch fallback."""
         from overture_airflow_provider._glue import complete_glue_job
 
         handler = GluePlatformHandler(_glue_setup_info())
@@ -630,8 +630,12 @@ class TestCompleteGlueJob:
                 "ErrorMessage": "ValueError: Schema mismatch for buildings/building_part:",
             },
             log_events=[
-                {"message": "Schema mismatch for buildings/building_part:"},
-                {"message": "  sources[].provider: expected StringType, got missing"},
+                {"message": "Schema mismatch for buildings/building_part:", "timestamp": 0},
+                {
+                    "message": "  sources[].provider: expected StringType, got missing",
+                    "timestamp": 1,
+                },
+                {"message": "Running autoDebugger shutdown hook.", "timestamp": 2},
             ],
         )
         assert "sources[].provider: expected StringType, got missing" in msg
@@ -642,7 +646,7 @@ class TestCompleteGlueJob:
 
     def test_output_log_fetch_failure_still_renders_message(self):
         """A CloudWatch fetch failure (missing stream, throttling, permissions)
-        never breaks failure reporting; the message just has no cause line."""
+        never breaks failure reporting, so the message just has no cause line."""
         msg, _ = self._run_with_logs_client(
             job_run={"JobRunState": "FAILED", "ErrorMessage": "boom"},
             log_events=None,
@@ -652,7 +656,7 @@ class TestCompleteGlueJob:
 
     def test_prefers_glue_log_tail_when_present(self):
         """Glue's own LogTail, on the rare run where it is populated, is used
-        as-is; the CloudWatch output log is never queried."""
+        as-is, so the CloudWatch output log is never queried."""
         msg, mock_logs = self._run_with_logs_client(
             job_run={
                 "JobRunState": "FAILED",
@@ -664,6 +668,119 @@ class TestCompleteGlueJob:
         assert "some stderr tail from Glue itself" in msg
         assert "should not appear" not in msg
         mock_logs.get_log_events.assert_not_called()
+
+    def test_polls_until_shutdown_marker_appears(self):
+        """A first fetch that lands before Glue's own shutdown line has been
+        delivered to CloudWatch is discarded once a later fetch catches it."""
+        from overture_airflow_provider._glue import _fetch_glue_output_log_tail
+
+        early = {"events": [{"message": "Installed packages", "timestamp": 0}]}
+        caught_up = {
+            "events": [
+                {"message": "Schema mismatch for buildings/building", "timestamp": 1},
+                {"message": "Running autoDebugger shutdown hook.", "timestamp": 2},
+            ]
+        }
+        mock_logs = MagicMock()
+        mock_logs.get_log_events.side_effect = [early, caught_up]
+        mock_sleep = MagicMock()
+
+        with patch("overture_airflow_provider._glue.boto3.client", return_value=mock_logs):
+            result = _fetch_glue_output_log_tail(
+                "us-west-2", "jr_abc123", poll=True, sleep=mock_sleep
+            )
+
+        assert result == (
+            "Schema mismatch for buildings/building\nRunning autoDebugger shutdown hook."
+        )
+        assert mock_logs.get_log_events.call_count == 2
+        mock_sleep.assert_called_once()
+
+    def test_stops_polling_after_max_attempts(self):
+        """A log that never shows the shutdown line still returns the best
+        tail seen once the poll attempts run out."""
+        from overture_airflow_provider._glue import (
+            _LOG_TAIL_POLL_ATTEMPTS,
+            _fetch_glue_output_log_tail,
+        )
+
+        stale = {"events": [{"message": "still bootstrapping", "timestamp": 0}]}
+        mock_logs = MagicMock()
+        mock_logs.get_log_events.return_value = stale
+        mock_sleep = MagicMock()
+
+        with patch("overture_airflow_provider._glue.boto3.client", return_value=mock_logs):
+            result = _fetch_glue_output_log_tail(
+                "us-west-2", "jr_abc123", poll=True, sleep=mock_sleep
+            )
+
+        assert result == "still bootstrapping"
+        assert mock_logs.get_log_events.call_count == _LOG_TAIL_POLL_ATTEMPTS
+        assert mock_sleep.call_count == _LOG_TAIL_POLL_ATTEMPTS - 1
+
+    def test_no_poll_by_default_is_a_single_fetch(self):
+        """poll=False (the default) makes exactly one fetch, matching the
+        original one-shot behavior for callers that don't opt into polling."""
+        from overture_airflow_provider._glue import _fetch_glue_output_log_tail
+
+        mock_logs = MagicMock()
+        mock_logs.get_log_events.return_value = {
+            "events": [{"message": "Installed packages", "timestamp": 0}]
+        }
+        mock_sleep = MagicMock()
+
+        with patch("overture_airflow_provider._glue.boto3.client", return_value=mock_logs):
+            result = _fetch_glue_output_log_tail("us-west-2", "jr_abc123", sleep=mock_sleep)
+
+        assert result == "Installed packages"
+        mock_logs.get_log_events.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_tolerates_events_missing_expected_keys(self):
+        """A malformed CloudWatch event (missing timestamp or message) can't
+        break the "returns None on any failure" contract with a KeyError."""
+        from overture_airflow_provider._glue import _fetch_glue_output_log_tail
+
+        malformed = {
+            "events": [
+                {"message": "Running autoDebugger shutdown hook.", "timestamp": 1},
+                {"timestamp": 2},
+                {"message": "no timestamp here"},
+            ]
+        }
+        mock_logs = MagicMock()
+        mock_logs.get_log_events.return_value = malformed
+
+        with patch("overture_airflow_provider._glue.boto3.client", return_value=mock_logs):
+            result = _fetch_glue_output_log_tail("us-west-2", "jr_abc123")
+
+        assert result is not None
+        assert "Running autoDebugger shutdown hook." in result
+
+    def test_sorts_events_by_timestamp_before_joining(self):
+        """The API can return complete events out of their own timestamp
+        order, so sorting before joining keeps bounded_tail's truncation
+        landing on the real end of the log."""
+        from overture_airflow_provider._glue import _fetch_glue_output_log_tail
+
+        out_of_order = {
+            "events": [
+                {"message": "Running autoDebugger shutdown hook.", "timestamp": 300},
+                {"message": "Installed packages: ...", "timestamp": 100},
+                {"message": "Schema mismatch for buildings/building", "timestamp": 200},
+            ]
+        }
+        mock_logs = MagicMock()
+        mock_logs.get_log_events.return_value = out_of_order
+
+        with patch("overture_airflow_provider._glue.boto3.client", return_value=mock_logs):
+            result = _fetch_glue_output_log_tail("us-west-2", "jr_abc123", poll=True)
+
+        assert result == (
+            "Installed packages: ...\n"
+            "Schema mismatch for buildings/building\n"
+            "Running autoDebugger shutdown hook."
+        )
 
 
 class TestGlueHandlerCompleteJobEventContract:

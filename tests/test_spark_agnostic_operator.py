@@ -208,16 +208,14 @@ def test_execute_complete_calls_handler_and_finalizes():
 
 
 def test_resume_execution_resolves_terminal_glue_failure():
-    """A trigger that raised on a terminal FAILED state is resolved as a real
-    job failure: the run id is recovered and complete_job surfaces the platform
-    error, so the task log names the real cause and skips the generic
-    trigger-failure classification."""
+    """A trigger that raised on a terminal FAILED state resolves as a real job
+    failure: the run id is recovered, complete_job surfaces the platform
+    error, and the generic trigger-failure classification is skipped."""
     from overture_airflow_provider._airflow_compat import AirflowException
 
     op = _make_operator()
     handler = MagicMock()
-    # complete_glue_job raises the classified, de-noised failure naming the
-    # real Glue ErrorMessage; simulate that here.
+    # Mirrors complete_glue_job's classified failure format.
     handler.complete_job.side_effect = AirflowException(
         "Spark job FAILED on GLUE\n  reason: Validation failed: 9 errors in divisions/division"
     )
@@ -239,10 +237,41 @@ def test_resume_execution_resolves_terminal_glue_failure():
 
     msg = str(exc.value)
     assert "Validation failed: 9 errors" in msg
-    # Resolved through the completion path; the generic trigger bucket is skipped.
+    # Resolved via complete_job, so the generic bucket is skipped.
     handler.complete_job.assert_called_once()
     assert handler.complete_job.call_args.args[0] == {"run_id": run_id}
     handler.describe_failure.assert_not_called()
+
+
+def test_resume_execution_finds_run_id_in_error_when_traceback_lacks_it():
+    """The run id can live only in `error` even when a traceback is present,
+    e.g. if the trigger's own frames don't repeat the final exception line."""
+    from overture_airflow_provider._airflow_compat import AirflowException
+
+    op = _make_operator()
+    handler = MagicMock()
+    handler.complete_job.side_effect = AirflowException("Spark job FAILED on GLUE")
+
+    run_id = "jr_" + "c" * 64
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(AirflowException):
+            op.resume_execution(
+                "__fail__",
+                {
+                    "error": f"Exiting Job {run_id} Run State: FAILED",
+                    "traceback": ["Traceback (most recent call last):", '  File "x.py", line 1'],
+                },
+                {"ti": MagicMock()},
+            )
+
+    handler.complete_job.assert_called_once()
+    assert handler.complete_job.call_args.args[0] == {"run_id": run_id}
 
 
 def test_resume_execution_falls_back_when_run_unresolvable():

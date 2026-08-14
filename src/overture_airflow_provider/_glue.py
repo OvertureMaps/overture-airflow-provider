@@ -1,13 +1,18 @@
 """AWS Glue execution: Python package + JAR caching, job submission."""
 
 import json
+import logging
 import shutil
+import time
+from collections.abc import Callable
 
 import boto3
 
 from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize
 from overture_airflow_provider.spark import SparkSedona
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
+
+_log = logging.getLogger(__name__)
 
 MAX_TIMEOUT_HOURS = 8
 
@@ -467,34 +472,92 @@ def submit_glue_job(
 
 
 _GLUE_OUTPUT_LOG_GROUP = "/aws-glue/jobs/output"
+#: Glue's driver prints this immediately before exiting, on every job run
+#: regardless of the job's own code. Its presence means the stream has
+#: nothing left to deliver.
+_GLUE_SHUTDOWN_MARKER = "Running autoDebugger shutdown hook."
+#: Bounds on how long the CloudWatch catch-up poll below can run.
+_LOG_TAIL_POLL_ATTEMPTS = 6
+_LOG_TAIL_POLL_INTERVAL_SECONDS = 4
+#: Logged with each diagnostic line below so a task log shows which version
+#: of this function's fetch/sort logic actually ran.
+_LOG_TAIL_FETCH_VERSION = "sort-v1"
 
 
 def _fetch_glue_output_log_tail(
-    region: str, run_id: str | None, max_events: int = 1000
+    region: str,
+    run_id: str | None,
+    max_events: int = 1000,
+    poll: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> str | None:
-    """Best-effort fetch of the tail of a Glue job run's driver stdout.
+    """Best-effort fetch of a Glue job run's driver stdout tail.
 
-    Glue's own ``JobRun.LogTail`` field is not populated for GlueVersion 5.0
-    Spark jobs (confirmed against real runs). A job's own diagnostics, e.g. a
-    validation job's full multi-line error report printed via plain
-    ``print()``, live only in the run's CloudWatch output log stream, named
-    after the run id under ``/aws-glue/jobs/output``. Returns ``None`` on any
-    failure (stream not yet created, permissions, throttling), so an
-    enrichment failure here can never break failure reporting itself.
+    Glue's own ``JobRun.LogTail`` is empty for GlueVersion 5.0 Spark jobs, so
+    a job's own diagnostics (e.g. a validation job's error report) live only
+    in its CloudWatch output log stream, named after the run id.
+
+    ``GetLogEvents`` can return an incomplete or out-of-order view for a
+    while after a run finishes, even once the stream is done. ``poll=True``
+    retries until ``_GLUE_SHUTDOWN_MARKER`` shows up, proving the stream is
+    actually done; events are sorted by timestamp before joining regardless,
+    since order isn't guaranteed even once everything's arrived. Omitting
+    ``poll`` does a single fetch.
+
+    Returns ``None`` on any failure, so a fetch problem here can't break
+    failure reporting itself.
     """
     if not run_id:
         return None
     try:
         logs_client = boto3.client("logs", region_name=region)
-        response = logs_client.get_log_events(
-            logGroupName=_GLUE_OUTPUT_LOG_GROUP,
-            logStreamName=run_id,
-            startFromHead=False,
-            limit=max_events,
-        )
-        return "\n".join(e["message"] for e in response.get("events", [])) or None
     except Exception:
         return None
+
+    attempts = _LOG_TAIL_POLL_ATTEMPTS if poll else 1
+    events: list[dict] = []
+    for attempt in range(attempts):
+        try:
+            response = logs_client.get_log_events(
+                logGroupName=_GLUE_OUTPUT_LOG_GROUP,
+                logStreamName=run_id,
+                startFromHead=False,
+                limit=max_events,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "log-tail fetch attempt %d/%d for %s raised: %s",
+                attempt + 1,
+                attempts,
+                run_id,
+                exc,
+            )
+            break
+        events = sorted(response.get("events", []), key=lambda e: e.get("timestamp", 0))
+        complete = any(_GLUE_SHUTDOWN_MARKER in e.get("message", "") for e in events)
+        _log.debug(
+            "log-tail fetch [%s] attempt %d/%d for %s: %d events "
+            "(first_ts=%s, last_ts=%s), shutdown marker %s",
+            _LOG_TAIL_FETCH_VERSION,
+            attempt + 1,
+            attempts,
+            run_id,
+            len(events),
+            events[0].get("timestamp") if events else None,
+            events[-1].get("timestamp") if events else None,
+            "found" if complete else "not found",
+        )
+        if complete or attempt == attempts - 1:
+            break
+        sleep(_LOG_TAIL_POLL_INTERVAL_SECONDS)
+    tail = "\n".join(e.get("message", "") for e in events) or None
+    _log.debug(
+        "log-tail fetch [%s] returning %d chars for %s",
+        _LOG_TAIL_FETCH_VERSION,
+        len(tail) if tail else 0,
+        run_id,
+    )
+    return tail
 
 
 def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None) -> dict:
@@ -520,7 +583,7 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
             from overture_airflow_provider._failures import format_failure
 
             if not job_run.get("LogTail"):
-                output_tail = _fetch_glue_output_log_tail(region, run_id)
+                output_tail = _fetch_glue_output_log_tail(region, run_id, poll=True)
                 if output_tail:
                     job_run = {**job_run, "LogTail": output_tail}
 

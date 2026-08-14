@@ -207,6 +207,81 @@ def test_execute_complete_calls_handler_and_finalizes():
     assert result["spark_impl"] == "GLUE_SEDONA"
 
 
+def test_resume_execution_resolves_terminal_glue_failure():
+    """A trigger that raised on a terminal FAILED state is resolved as a real
+    job failure: the run id is recovered and complete_job surfaces the platform
+    error, so the task log names the real cause and skips the generic
+    trigger-failure classification."""
+    from overture_airflow_provider._airflow_compat import AirflowException
+
+    op = _make_operator()
+    handler = MagicMock()
+    # complete_glue_job raises the classified, de-noised failure naming the
+    # real Glue ErrorMessage; simulate that here.
+    handler.complete_job.side_effect = AirflowException(
+        "Spark job FAILED on GLUE\n  reason: Validation failed: 9 errors in divisions/division"
+    )
+
+    run_id = "jr_" + "a" * 64
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(AirflowException) as exc:
+            op.resume_execution(
+                "__fail__",
+                {"error": f"Exiting Job {run_id} Run State: FAILED"},
+                {"ti": MagicMock()},
+            )
+
+    msg = str(exc.value)
+    assert "Validation failed: 9 errors" in msg
+    # Resolved through the completion path; the generic trigger bucket is skipped.
+    handler.complete_job.assert_called_once()
+    assert handler.complete_job.call_args.args[0] == {"run_id": run_id}
+    handler.describe_failure.assert_not_called()
+
+
+def test_resume_execution_falls_back_when_run_unresolvable():
+    """If the recovered run can't be resolved (API error), the generic
+    trigger-failure classification still surfaces and the raw resolution error
+    stays contained."""
+    from overture_airflow_provider._airflow_compat import AirflowFailException
+    from overture_airflow_provider._failures import TRIGGER_POLLING, FailureInfo
+
+    op = _make_operator()
+    handler = MagicMock()
+    handler.complete_job.side_effect = RuntimeError("get_job_run timed out")
+    handler.describe_failure.return_value = FailureInfo(
+        platform="GLUE",
+        job_ref="metrics_job",
+        state="FAILED",
+        reason="unresolved",
+        classification=TRIGGER_POLLING,
+    )
+
+    run_id = "jr_" + "b" * 64
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(AirflowFailException) as exc:
+            op.resume_execution(
+                "__fail__",
+                {"error": f"Exiting Job {run_id} Run State: FAILED"},
+                {"ti": MagicMock()},
+            )
+
+    assert "trigger/polling failure" in str(exc.value)
+    handler.describe_failure.assert_called_once()
+
+
 def test_resume_execution_delegates_normal_event():
     op = _make_operator()
     op.execute_complete = MagicMock(return_value="finalized")

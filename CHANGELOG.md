@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deferred Glue job failures surfaced as a generic "trigger/polling failure"
+  instead of the real error.** The AWS Glue trigger raises on a terminal
+  FAILED/STOPPED/TIMEOUT state rather than emitting a completion event, so a
+  finished-but-failed run reaches `resume_execution` as a `__fail__` and was
+  classified as a Triggerer crash: the task log showed
+  `Spark job FAILED on GLUE (trigger/polling failure ...) run: <unknown>`
+  while the actual Glue `ErrorMessage` stayed only in CloudWatch.
+  `resume_execution` now recovers the run id from the trigger error and
+  resolves it through the same `complete_job` path `execute_complete` uses, so
+  the task log names the real platform error with the run id. Genuine
+  Triggerer crashes (no resolvable run) keep the trigger-failure
+  classification.
+
 ## [0.7.1] - 2026-08-10
 
 ### Fixed

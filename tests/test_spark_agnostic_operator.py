@@ -211,7 +211,10 @@ def test_resume_execution_resolves_terminal_glue_failure():
     """A trigger that raised on a terminal FAILED state resolves as a real job
     failure: the run id is recovered, complete_job surfaces the platform
     error, and the generic trigger-failure classification is skipped."""
-    from overture_airflow_provider._airflow_compat import AirflowException
+    from overture_airflow_provider._airflow_compat import (
+        AirflowException,
+        AirflowFailException,
+    )
 
     op = _make_operator()
     handler = MagicMock()
@@ -237,6 +240,10 @@ def test_resume_execution_resolves_terminal_glue_failure():
 
     msg = str(exc.value)
     assert "Validation failed: 9 errors" in msg
+    # The run id resolved above means the job launched: never retryable, same
+    # as the launched-and-failed case in execute(), even though complete_job
+    # itself only ever raises the plain (retryable-by-default) AirflowException.
+    assert type(exc.value) is AirflowFailException
     # Resolved via complete_job, so the generic bucket is skipped.
     handler.complete_job.assert_called_once()
     assert handler.complete_job.call_args.args[0] == {"run_id": run_id}

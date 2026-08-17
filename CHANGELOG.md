@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   diagnostics now go through a module logger (`debug`/`warning`), filterable
   by log level.
 
+- **A resolved terminal Glue failure re-raised as the retryable
+  `AirflowException`, letting a caller-configured retry resubmit a job that
+  already ran to a real failure.** `resume_execution`'s recovered-run-id path
+  reaches `complete_job` only once a run id is confirmed, i.e. the job
+  launched, but `complete_job` only ever raises plain `AirflowException`. That
+  plain exception is now converted to the non-retryable `AirflowFailException`,
+  matching the same launched-and-failed reasoning `execute()` already applies.
+
 ## [0.7.1] - 2026-08-10
 
 ### Fixed

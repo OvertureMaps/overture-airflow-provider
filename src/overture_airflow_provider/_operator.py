@@ -231,9 +231,14 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                     result = handler.complete_job(
                         {"run_id": run_id}, context, cluster_info=self.cluster_info
                     )
-                except (AirflowException, AirflowFailException):
-                    # This is already the classified failure from complete_job, so it propagates unchanged.
+                except AirflowFailException:
+                    # Already the classified, non-retryable failure; propagate unchanged.
                     raise
+                except AirflowException as resolve_exc:
+                    # complete_job only ever raises plain AirflowException, but a
+                    # resolved run_id means the job launched -- never retryable,
+                    # same as the launched-and-failed case in execute() above.
+                    raise AirflowFailException(str(resolve_exc)) from None
                 except Exception as resolve_exc:  # noqa: BLE001
                     # The run couldn't be resolved, so this falls through to the generic classification.
                     self.log.warning("Could not resolve terminal run %s: %s", run_id, resolve_exc)

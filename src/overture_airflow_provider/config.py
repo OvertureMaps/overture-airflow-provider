@@ -280,11 +280,16 @@ class GlueConfig:
             task log. Set ``False`` to silence that stream (e.g. for very chatty
             jobs) and rely on the Glue console / classified failure message
             instead.
+        output_log_group: CloudWatch log group holding each run's driver
+            stdout, keyed by run id. Defaults to Glue's own
+            ``/aws-glue/jobs/output``; override only if your jobs are
+            configured to write continuous logging output elsewhere.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
     execution_class: str = "STANDARD"
     verbose: bool = True
+    output_log_group: str = "/aws-glue/jobs/output"
 
 
 @dataclass

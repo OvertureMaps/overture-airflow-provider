@@ -644,6 +644,38 @@ class TestCompleteGlueJob:
         assert call_kwargs["logGroupName"] == "/aws-glue/jobs/output"
         assert call_kwargs["logStreamName"] == "jr_abc123"
 
+    def test_uses_configured_log_group_override(self):
+        """A consumer's GlueConfig.output_log_group flows through setup_info
+        to the CloudWatch fetch, for jobs that write continuous logging
+        output to a group other than Glue's own default."""
+        from overture_airflow_provider._glue import complete_glue_job
+
+        setup_info = {
+            **_glue_setup_info(),
+            "glue_output_log_group": "/custom/glue-output",
+        }
+        handler = GluePlatformHandler(setup_info)
+        context = {"ti": MagicMock(task_id="execute_spark_job")}
+
+        mock_glue = MagicMock()
+        mock_glue.get_job_run.return_value = {
+            "JobRun": {"JobRunState": "FAILED", "ErrorMessage": "boom"}
+        }
+        mock_logs = MagicMock()
+        mock_logs.get_log_events.return_value = {
+            "events": [{"message": "Running autoDebugger shutdown hook.", "timestamp": 0}]
+        }
+
+        def _client(service_name, **kwargs):
+            return {"glue": mock_glue, "logs": mock_logs}[service_name]
+
+        with patch("overture_airflow_provider._glue.boto3.client", side_effect=_client):
+            with pytest.raises(AirflowException):
+                complete_glue_job(setup_info, "jr_abc123", context, handler=handler)
+
+        call_kwargs = mock_logs.get_log_events.call_args.kwargs
+        assert call_kwargs["logGroupName"] == "/custom/glue-output"
+
     def test_output_log_fetch_failure_still_renders_message(self):
         """A CloudWatch fetch failure (missing stream, throttling, permissions)
         never breaks failure reporting, so the message just has no cause line."""

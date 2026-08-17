@@ -56,6 +56,7 @@ SERIALIZABLE_KEYS = (
     "databricks_gpu",
     "glue_execution_class",
     "glue_verbose",
+    "glue_output_log_group",
     "iam_role_name",
     "codeartifact_domain_owner",
     "codeartifact_domain",

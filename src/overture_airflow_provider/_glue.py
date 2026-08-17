@@ -471,6 +471,8 @@ def submit_glue_job(
     }
 
 
+#: AWS's own default continuous-logging output log group; see GlueConfig
+#: .output_log_group in config.py for how a consumer overrides this.
 _GLUE_OUTPUT_LOG_GROUP = "/aws-glue/jobs/output"
 #: Glue's driver prints this immediately before exiting, on every job run
 #: regardless of the job's own code. Its presence means the stream has
@@ -490,12 +492,16 @@ def _fetch_glue_output_log_tail(
     max_events: int = 1000,
     poll: bool = False,
     sleep: Callable[[float], None] = time.sleep,
+    log_group: str = _GLUE_OUTPUT_LOG_GROUP,
 ) -> str | None:
     """Best-effort fetch of a Glue job run's driver stdout tail.
 
     Glue's own ``JobRun.LogTail`` is empty for GlueVersion 5.0 Spark jobs, so
     a job's own diagnostics (e.g. a validation job's error report) live only
-    in its CloudWatch output log stream, named after the run id.
+    in its CloudWatch output log stream, named after the run id. ``log_group``
+    defaults to Glue's own log group but should be set from the consumer's
+    ``GlueConfig.output_log_group`` when a job writes continuous logging
+    output elsewhere.
 
     ``GetLogEvents`` can return an incomplete or out-of-order view for a
     while after a run finishes, even once the stream is done. ``poll=True``
@@ -519,7 +525,7 @@ def _fetch_glue_output_log_tail(
     for attempt in range(attempts):
         try:
             response = logs_client.get_log_events(
-                logGroupName=_GLUE_OUTPUT_LOG_GROUP,
+                logGroupName=log_group,
                 logStreamName=run_id,
                 startFromHead=False,
                 limit=max_events,
@@ -583,7 +589,10 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
             from overture_airflow_provider._failures import format_failure
 
             if not job_run.get("LogTail"):
-                output_tail = _fetch_glue_output_log_tail(region, run_id, poll=True)
+                log_group = setup_info.get("glue_output_log_group", _GLUE_OUTPUT_LOG_GROUP)
+                output_tail = _fetch_glue_output_log_tail(
+                    region, run_id, poll=True, log_group=log_group
+                )
                 if output_tail:
                     job_run = {**job_run, "LogTail": output_tail}
 

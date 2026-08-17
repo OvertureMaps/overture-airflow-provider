@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-17
+
+### Added
+
+- **`GlueConfig.output_log_group`, so a consumer whose jobs write continuous
+  logging output to a non-default group can still get the CloudWatch
+  fallback below.** The CloudWatch output log group backing that fallback
+  was hardcoded to AWS's own `/aws-glue/jobs/output`. Defaults to that same
+  value; override it via `GlueConfig` when your jobs are configured
+  otherwise.
+
 ### Fixed
 
 - **Deferred Glue job failures surfaced as a generic "trigger/polling failure"

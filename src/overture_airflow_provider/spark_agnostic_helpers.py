@@ -23,6 +23,9 @@ from overture_airflow_provider.python_package_utils import (
 class SparkAgnosticHelper:
     """Shared logic for Spark-agnostic operations (package + JAR caching)."""
 
+    # Shared S3 cache location for Python wheels from the private registry.
+    S3_PYPI_CACHE_PREFIX = "python_wheels/codeartifact_cache"
+
     def __init__(
         self,
         job_name: str,
@@ -98,28 +101,72 @@ class SparkAgnosticHelper:
                 return True
         return False
 
+    def _cache_native_wheel(self, wheel_path: str, wheel_filename: str) -> str | None:
+        """Cache a native wheel in the shared S3 wheel cache.
+
+        Returns the ``s3://`` URI on success, or ``None`` when the cache
+        check/upload fails (caller falls back to a pip spec).
+        """
+        cached_s3_key = f"{self.S3_PYPI_CACHE_PREFIX}/{wheel_filename}"
+        cached_s3_path = f"s3://{self.s3_bucket}/{cached_s3_key}"
+        try:
+            try:
+                self.s3_client.head_object(Bucket=self.s3_bucket, Key=cached_s3_key)
+                print(f"Found cached native wheel in S3: {cached_s3_path}")
+                return cached_s3_path
+            except self.s3_client.exceptions.ClientError as exc:
+                if exc.response["Error"]["Code"] != "404":
+                    raise
+            self.s3_client.upload_file(wheel_path, self.s3_bucket, cached_s3_key)
+            print(f"Uploaded native wheel to shared cache: {cached_s3_path}")
+            return cached_s3_path
+        except Exception as exc:
+            print(
+                f"WARNING: failed to cache native wheel {wheel_filename} in S3 ({exc}); "
+                f"falling back to pip install from PyPI at cluster bootstrap"
+            )
+            return None
+
     def download_and_cache_python_packages(
         self,
         py_pi_client,
         packages: list[str],
         python_version: str,
         job_runner_wheel_prefix: str | None = None,
+        cache_native_wheels: bool = False,
     ) -> tuple[str, str | None, str, list[str]]:
         """Download Python packages and cache them in S3.
 
-        Native deps are detected from wheel filenames and excluded from S3
-        uploads. Only **explicitly requested** packages (in ``packages``) are
-        tracked and returned for install via ``--additional-python-modules``
-        on Glue. Transitive native deps that exist in the target environment
-        (e.g. numpy/shapely) are not included.
+        Native deps are detected from wheel filenames and excluded from the
+        ``--extra-py-files`` S3 uploads. Only **explicitly requested**
+        packages (in ``packages``) are tracked and returned for install via
+        ``--additional-python-modules`` on Glue. Transitive native deps that
+        exist in the target environment (e.g. numpy/shapely) are not included.
+
+        When ``cache_native_wheels`` is True, explicitly requested native
+        wheels are uploaded to the shared S3 wheel cache and returned as
+        ``s3://.../*.whl`` URIs (Glue installs those without touching public
+        PyPI). If caching a wheel fails, that package falls back to a bare
+        ``pkg==version`` spec (pip-installed from PyPI at cluster bootstrap).
+
+        Args:
+            py_pi_client: CodeArtifact/PyPI client for authenticated downloads.
+            packages: Explicitly requested package specs.
+            python_version: Target Python version for wheel resolution.
+            job_runner_wheel_prefix: Wheel filename prefix to keep locally.
+            cache_native_wheels: Upload explicitly requested native wheels to
+                the shared S3 cache and return their S3 URIs instead of pip
+                specs. Leave False for platforms that require pip specs
+                (e.g. Wherobots).
 
         Returns:
             Tuple of:
               - comma-separated S3 paths of cached pure-Python wheels,
               - job-runner wheel local path (or None),
               - temp folder path (caller cleans up),
-              - list of explicitly requested native package specs
-                (e.g. ``['numba==0.59.0']``).
+              - list of explicitly requested native package entries: pip
+                specs (e.g. ``'numba==0.59.0'``) or, with
+                ``cache_native_wheels``, S3 wheel URIs.
         """
         # Force-install via pip for caller-configured complex packages.
         excluded_native_packages = [pkg for pkg in packages if self._force_pip_install(pkg)]
@@ -148,11 +195,12 @@ class SparkAgnosticHelper:
         py_pi_downloader.download_packages(packages, python_version=python_version)
 
         # Shared S3 cache location for Python wheels from the private registry.
-        s3_pypi_cache_prefix = "python_wheels/codeartifact_cache"
+        s3_pypi_cache_prefix = self.S3_PYPI_CACHE_PREFIX
 
         cached_wheels: list[str] = []
         wheels_to_upload: list[str] = []
         job_runner_whl: str | None = None
+        handled_native_names: set[str] = set()
 
         for file in os.listdir(tmp_folder_pypi):
             if not file.endswith(".whl"):
@@ -167,12 +215,18 @@ class SparkAgnosticHelper:
                 pkg_name, version = self._parse_wheel_filename(file)
                 if pkg_name:
                     if pkg_name.lower() in requested_package_names:
-                        if pkg_name not in excluded_native_packages:
-                            excluded_native_packages.append(f"{pkg_name}=={version}")
-                            print(
-                                f"Native package (explicitly requested): {file} -> "
-                                f"will install via pip: {pkg_name}=={version}"
-                            )
+                        if pkg_name.lower() not in handled_native_names:
+                            handled_native_names.add(pkg_name.lower())
+                            entry = None
+                            if cache_native_wheels:
+                                entry = self._cache_native_wheel(wheel_path, file)
+                            if entry is None:
+                                entry = f"{pkg_name}=={version}"
+                                print(
+                                    f"Native package (explicitly requested): {file} -> "
+                                    f"will install via pip: {entry}"
+                                )
+                            excluded_native_packages.append(entry)
                     else:
                         print(f"Native package (transitive dep, skipping): {file}")
                 else:
@@ -210,7 +264,9 @@ class SparkAgnosticHelper:
         print(f"Using Python wheels from cache and uploads: {py_files}")
 
         if excluded_native_packages:
-            print(f"Native packages to install via pip: {excluded_native_packages}")
+            print(
+                f"Native package install entries (S3 wheel or pip spec): {excluded_native_packages}"
+            )
 
         return py_files, job_runner_whl, tmp_folder_pypi, excluded_native_packages
 

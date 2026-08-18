@@ -121,8 +121,10 @@ class TestDownloadAndCachePythonPackages:
         requested_packages,
         existing_s3_keys=None,
         job_runner_wheel_prefix=None,
+        cache_native_wheels=False,
+        s3_mock=None,
     ):
-        s3_mock = _make_s3_mock(existing_s3_keys)
+        s3_mock = s3_mock if s3_mock is not None else _make_s3_mock(existing_s3_keys)
         helper = _make_helper(s3_mock)
 
         mock_client = MagicMock()
@@ -149,6 +151,7 @@ class TestDownloadAndCachePythonPackages:
                 packages=list(requested_packages),
                 python_version="3.11",
                 job_runner_wheel_prefix=job_runner_wheel_prefix,
+                cache_native_wheels=cache_native_wheels,
             )
 
         result_with_meta = result + (s3_mock,)
@@ -238,6 +241,110 @@ class TestDownloadAndCachePythonPackages:
         )
         assert py_files == ""
         assert native == []
+        assert len(s3._uploaded) == 0
+
+
+SEDONA_WHEEL = "apache_sedona-1.7.2-cp311-cp311-manylinux_2_17_x86_64.whl"
+SEDONA_CACHE_KEY = f"python_wheels/codeartifact_cache/{SEDONA_WHEEL}"
+SEDONA_S3_URI = f"s3://test-glue-assets/{SEDONA_CACHE_KEY}"
+
+
+class TestCacheNativeWheels:
+    """cache_native_wheels=True: native wheels served from the S3 cache."""
+
+    _run = TestDownloadAndCachePythonPackages._run
+
+    def test_native_wheel_uploaded_on_cache_miss(self):
+        _, _, _, native, s3 = self._run(
+            wheel_files=[SEDONA_WHEEL],
+            requested_packages=["apache-sedona==1.7.2"],
+            cache_native_wheels=True,
+        )
+        assert native == [SEDONA_S3_URI]
+        assert (s3._uploaded[0][1]) == SEDONA_CACHE_KEY
+
+    def test_native_wheel_not_uploaded_on_cache_hit(self):
+        _, _, _, native, s3 = self._run(
+            wheel_files=[SEDONA_WHEEL],
+            requested_packages=["apache-sedona==1.7.2"],
+            existing_s3_keys={SEDONA_CACHE_KEY},
+            cache_native_wheels=True,
+        )
+        assert native == [SEDONA_S3_URI]
+        assert len(s3._uploaded) == 0
+
+    def test_native_wheel_not_in_extra_py_files(self):
+        py_files, _, _, _, _ = self._run(
+            wheel_files=[SEDONA_WHEEL],
+            requested_packages=["apache-sedona==1.7.2"],
+            cache_native_wheels=True,
+        )
+        assert SEDONA_WHEEL not in py_files
+
+    def test_upload_failure_falls_back_to_pip_spec(self):
+        s3_mock = _make_s3_mock()
+        s3_mock.upload_file.side_effect = RuntimeError("s3 unavailable")
+        _, _, _, native, _ = self._run(
+            wheel_files=[SEDONA_WHEEL],
+            requested_packages=["apache-sedona==1.7.2"],
+            cache_native_wheels=True,
+            s3_mock=s3_mock,
+        )
+        assert native == ["apache-sedona==1.7.2"]
+
+    def test_head_object_non_404_falls_back_to_pip_spec(self):
+        s3_mock = _make_s3_mock()
+        s3_mock.head_object.side_effect = ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
+        )
+        _, _, _, native, _ = self._run(
+            wheel_files=[SEDONA_WHEEL],
+            requested_packages=["apache-sedona==1.7.2"],
+            cache_native_wheels=True,
+            s3_mock=s3_mock,
+        )
+        assert native == ["apache-sedona==1.7.2"]
+
+    def test_transitive_native_dep_still_skipped(self):
+        _, _, _, native, s3 = self._run(
+            wheel_files=[
+                SEDONA_WHEEL,
+                "numpy-1.24.0-cp311-cp311-manylinux_2_17_x86_64.whl",
+            ],
+            requested_packages=["apache-sedona==1.7.2"],
+            cache_native_wheels=True,
+        )
+        assert native == [SEDONA_S3_URI]
+        assert all("numpy" not in key for _, key in s3._uploaded)
+
+    def test_force_pip_package_stays_bare_spec(self):
+        s3_mock = _make_s3_mock()
+        helper = _make_helper(s3_mock)
+        helper.force_pip_packages = ["sentence-transformers"]
+
+        with (
+            patch("overture_airflow_provider.spark_agnostic_helpers.PyPiDownloader"),
+            patch(
+                "overture_airflow_provider.spark_agnostic_helpers.tempfile.mkdtemp",
+                return_value=tempfile.mkdtemp(),
+            ),
+        ):
+            _, _, _, native = helper.download_and_cache_python_packages(
+                py_pi_client=MagicMock(),
+                packages=["sentence-transformers==2.2.0"],
+                python_version="3.11",
+                cache_native_wheels=True,
+            )
+        assert native == ["sentence-transformers==2.2.0"]
+        assert len(s3_mock._uploaded) == 0
+
+    def test_flag_off_returns_pip_spec(self):
+        _, _, _, native, s3 = self._run(
+            wheel_files=[SEDONA_WHEEL],
+            requested_packages=["apache-sedona==1.7.2"],
+            cache_native_wheels=False,
+        )
+        assert native == ["apache-sedona==1.7.2"]
         assert len(s3._uploaded) == 0
 
 

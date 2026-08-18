@@ -293,6 +293,7 @@ class TestGlueExecuteJob:
         iam_role_name="AWSGlueServiceRole",
         simulate_submit=False,
         mapping_context=False,
+        native_packages=None,
     ):
         from overture_airflow_provider._glue import submit_glue_job
 
@@ -303,7 +304,7 @@ class TestGlueExecuteJob:
             "scala_script_location": "s3://bucket/job_runner_glue.scala",
             "s3_bucket": "test-bucket",
             "s3_prefix": "overture-airflow-operator/test.Job/20240101",
-            "native_packages": [],
+            "native_packages": native_packages or [],
         }
         jar_info = {
             "jars_s3": "s3://bucket/sedona.jar,s3://bucket/geotools.jar",
@@ -387,6 +388,42 @@ class TestGlueExecuteJob:
         default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
         assert "--additional-python-modules" in default_args
         assert "apache-sedona==1.7.0" in default_args["--additional-python-modules"]
+
+    def test_sedona_s3_wheel_preferred_over_pypi_spec(self):
+        sedona_uri = (
+            "s3://test-bucket/python_wheels/codeartifact_cache/"
+            "apache_sedona-1.7.0-cp311-cp311-manylinux_2_17_x86_64.whl"
+        )
+        _, captured = self._run_glue(native_packages=[sedona_uri])
+        modules = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"][
+            "--additional-python-modules"
+        ]
+        assert sedona_uri in modules
+        assert "apache-sedona==1.7.0" not in modules
+        # sedona listed exactly once
+        assert sum("sedona" in m for m in modules.split(", ")) == 1
+
+    def test_sedona_pip_spec_fallback_not_duplicated(self):
+        _, captured = self._run_glue(native_packages=["apache-sedona==1.7.0"])
+        modules = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"][
+            "--additional-python-modules"
+        ]
+        assert modules.split(", ").count("apache-sedona==1.7.0") == 1
+        assert sum("sedona" in m for m in modules.split(", ")) == 1
+
+    def test_mixed_native_packages_sedona_uri_and_pip_spec(self):
+        sedona_uri = (
+            "s3://test-bucket/python_wheels/codeartifact_cache/"
+            "apache_sedona-1.7.0-cp311-cp311-manylinux_2_17_x86_64.whl"
+        )
+        _, captured = self._run_glue(native_packages=[sedona_uri, "numba==0.59.0"])
+        modules = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"][
+            "--additional-python-modules"
+        ]
+        parts = modules.split(", ")
+        assert sedona_uri in parts
+        assert "numba==0.59.0" in parts
+        assert sum("sedona" in m for m in parts) == 1
 
     def test_extra_jars_in_default_args(self):
         _, captured = self._run_glue()

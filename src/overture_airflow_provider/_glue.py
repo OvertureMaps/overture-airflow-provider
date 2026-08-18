@@ -76,6 +76,9 @@ def download_python_packages_glue(
             packages=packages_to_download,
             python_version=setup_info["python_version"],
             job_runner_wheel_prefix=None,  # runners are now bundled in the provider
+            # Serve native wheels (e.g. apache-sedona) from the S3 cache so Glue
+            # bootstrap doesn't depend on public PyPI availability.
+            cache_native_wheels=True,
         )
     )
 
@@ -219,11 +222,17 @@ def build_glue_operator_kwargs(
 
     native_packages = package_info.get("native_packages", [])
     sedona_module = jar_info.get("sedona_module")
-    additional_modules = [sedona_module] if sedona_module else []
-    if native_packages:
-        for pkg in native_packages:
-            if "apache-sedona" not in pkg:
-                additional_modules.append(pkg)
+
+    # Entries may be pip specs ("apache-sedona==1.7.2") or S3 wheel URIs
+    # (".../apache_sedona-1.7.2-...whl"); normalize underscores so sedona is
+    # detected — and listed — exactly once, preferring the S3 wheel from the
+    # package step over the bare PyPI spec in jar_info.
+    def _is_sedona(entry: str) -> bool:
+        return "apache-sedona" in entry.replace("_", "-").lower()
+
+    sedona_entries = [pkg for pkg in native_packages if _is_sedona(pkg)]
+    additional_modules = sedona_entries or ([sedona_module] if sedona_module else [])
+    additional_modules += [pkg for pkg in native_packages if not _is_sedona(pkg)]
 
     glue_job_default_args = {
         "--extra-jars": jar_info["jars_s3"],

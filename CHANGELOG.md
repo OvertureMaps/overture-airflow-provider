@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-17
+
+### Added
+
+- **`GlueConfig.output_log_group`, so a consumer whose jobs write continuous
+  logging output to a non-default group can still get the CloudWatch
+  fallback below.** The CloudWatch output log group backing that fallback
+  was hardcoded to AWS's own `/aws-glue/jobs/output`. Defaults to that same
+  value; override it via `GlueConfig` when your jobs are configured
+  otherwise.
+
+### Fixed
+
+- **Deferred Glue job failures surfaced as a generic "trigger/polling failure"
+  where the real error belonged.** The AWS Glue trigger raises on a terminal
+  FAILED/STOPPED/TIMEOUT state, and a raising trigger reaches
+  `resume_execution` as a `__fail__`, so a finished-but-failed run was
+  classified as a Triggerer crash: the task log showed
+  `Spark job FAILED on GLUE (trigger/polling failure ...) run: <unknown>`
+  while the actual Glue `ErrorMessage` stayed only in CloudWatch.
+  `resume_execution` now recovers the run id from the trigger error and
+  resolves it through the same `complete_job` path `execute_complete` uses, so
+  the task log names the real platform error with the run id. Genuine
+  Triggerer crashes (no resolvable run) keep the trigger-failure
+  classification.
+
+- **Glue failure messages carried only a one-line `ErrorMessage`, even though
+  the job's own diagnostics (e.g. a validation job's full multi-line error
+  report) were sitting in CloudWatch the whole time.** Glue's `JobRun.LogTail`
+  field, meant to carry a stderr tail, is empty for GlueVersion 5.0 Spark
+  jobs, so `describe_failure`'s root-cause line was always blank for Glue.
+  `complete_glue_job` now falls back to the run's own CloudWatch output log
+  stream (deterministically named after the run id) when `LogTail` is empty,
+  so the full report reaches the task log's `cause:` line. A fetch failure
+  (missing stream, permissions, throttling) is swallowed, so the message
+  just omits the cause line and failure reporting stays intact.
+
+- **The CloudWatch fallback above could itself return a truncated tail that
+  cuts off right where the job's real failure report begins.** `GetLogEvents`
+  can hand back a stale, partial view of a stream for a while after a run
+  finishes. `_fetch_glue_output_log_tail` now polls a few times, watching for
+  the line Glue's driver prints right before exiting, as proof the stream has
+  nothing left to deliver. A freshly-completed stream can also hand every
+  event back on the first call out of timestamp order, so the fetch now
+  sorts events before joining them.
+
+- **Three Copilot review findings on the above.** A run id that lives only in
+  `error` is now checked alongside `traceback`. A malformed CloudWatch event
+  missing `timestamp`/`message` is now handled gracefully, keeping the
+  "returns `None` on any failure" contract intact. The log-tail fetch's
+  diagnostics now go through a module logger (`debug`/`warning`), filterable
+  by log level.
+
+- **A resolved terminal Glue failure re-raised as the retryable
+  `AirflowException`, letting a caller-configured retry resubmit a job that
+  already ran to a real failure.** `resume_execution`'s recovered-run-id path
+  reaches `complete_job` only once a run id is confirmed, i.e. the job
+  launched, but `complete_job` only ever raises plain `AirflowException`. That
+  plain exception is now converted to the non-retryable `AirflowFailException`,
+  matching the same launched-and-failed reasoning `execute()` already applies.
+
 ## [0.7.1] - 2026-08-10
 
 ### Fixed

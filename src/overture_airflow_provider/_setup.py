@@ -130,6 +130,7 @@ def setup_spark_job(
         "databricks_gpu": databricks_config.gpu,
         "glue_execution_class": glue_config.execution_class,
         "glue_verbose": glue_config.verbose,
+        "glue_output_log_group": glue_config.output_log_group,
         "iam_role_name": glue_config.iam_role_name,
         # Registry params stored for client reconstruction after XCom round-trip
         "codeartifact_domain_owner": package_registry.domain_owner,

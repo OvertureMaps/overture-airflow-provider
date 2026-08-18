@@ -22,6 +22,7 @@ worker for hours.
 
 import datetime
 import json
+import re
 
 from overture_airflow_provider._airflow_compat import (
     AirflowException,
@@ -37,6 +38,22 @@ from overture_airflow_provider.links import (
 )
 from overture_airflow_provider.setup_info import rehydrate
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
+
+_GLUE_RUN_ID_RE = re.compile(r"\bjr_[0-9a-f]{16,}\b")
+
+
+def _terminal_run_id(error_text: str) -> str | None:
+    """Recover a Glue run id from a trigger error reporting a terminal state.
+
+    The Glue trigger raises ``... Job jr_<hex> Run State: FAILED`` (or
+    STOPPED/TIMEOUT) on a terminal state. A message with both a run id and a
+    run state is resolvable; a genuine Triggerer crash carries neither, so
+    this returns ``None`` and the caller keeps the generic classification.
+    """
+    if "Run State" not in error_text:
+        return None
+    match = _GLUE_RUN_ID_RE.search(error_text)
+    return match.group(0) if match else None
 
 
 def _xcom_datetime_default(obj):
@@ -178,23 +195,23 @@ class SparkAgnosticExecuteOperator(BaseOperator):
     def resume_execution(self, next_method, next_kwargs, context):
         """Enrich deferral/trigger (Triggerer) failures before they surface.
 
-        When a provider trigger crashes mid-poll (network drop, expired auth,
-        Triggerer restart), Airflow resumes the task with the ``__fail__``
-        sentinel for ``next_method`` instead of the normal completion callback.
-        The default ``resume_execution`` would raise a bare ``TaskDeferralError``
-        whose root cause is buried in the Triggerer logs -- exactly the
-        unclassified noise this provider exists to tame.
+        Airflow resumes a deferred task with the ``__fail__`` sentinel in two
+        cases:
 
-        We intercept that sentinel (the documented mechanism on both Airflow 2
-        and 3) and route the error through the same per-platform
-        ``describe_failure`` seam used by the submit and complete paths, tagged
-        ``is_trigger_failure`` so the classifier buckets it as ``trigger/polling``.
-        A trigger only exists once a job has launched, so this path is always
-        ``run_launched=True`` and raises the non-retryable
-        ``AirflowFailException`` -- a Triggerer crash mid-poll doesn't mean the
-        job is safe to resubmit. Every other resume (a normal trigger event) is
-        delegated untouched to the base implementation, which dispatches to
-        ``execute_complete``.
+        1. A finished job that reached a terminal non-success state. Some
+           triggers (notably AWS Glue) raise on FAILED/STOPPED/TIMEOUT, so a
+           finished-but-failed run reaches ``__fail__`` too. This recovers the
+           run id and resolves it through the same ``complete_job`` path
+           ``execute_complete`` uses, so the task log names the real platform
+           error instead of a generic "trigger failure" with ``run: <unknown>``.
+
+        2. A genuine Triggerer crash mid-poll, which carries no resolvable
+           run. This goes through the per-platform ``describe_failure`` seam
+           tagged ``is_trigger_failure`` and raises the non-retryable
+           ``AirflowFailException``, since a crash mid-poll doesn't mean the
+           job is safe to resubmit.
+
+        Every other resume is delegated to the base implementation.
         """
         if next_method == "__fail__":
             next_kwargs = next_kwargs or {}
@@ -204,6 +221,31 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             error = next_kwargs.get("error", "Trigger failed")
             full = rehydrate(self.setup_info)
             handler = get_platform_handler(full["spark_family"], full)
+
+            # error and traceback can carry the run id independently of each
+            # other depending on the trigger, so check both.
+            error_text = "\n".join([*(traceback or []), str(error)])
+            run_id = _terminal_run_id(error_text)
+            if run_id is not None:
+                try:
+                    result = handler.complete_job(
+                        {"run_id": run_id}, context, cluster_info=self.cluster_info
+                    )
+                except AirflowFailException:
+                    # Already the classified, non-retryable failure; propagate unchanged.
+                    raise
+                except AirflowException as resolve_exc:
+                    # complete_job only ever raises plain AirflowException, but a
+                    # resolved run_id means the job launched -- never retryable,
+                    # same as the launched-and-failed case in execute() above.
+                    raise AirflowFailException(str(resolve_exc)) from None
+                except Exception as resolve_exc:  # noqa: BLE001
+                    # The run couldn't be resolved, so this falls through to the generic classification.
+                    self.log.warning("Could not resolve terminal run %s: %s", run_id, resolve_exc)
+                else:
+                    # The run succeeded despite __fail__ (rare), so this finalizes normally.
+                    return self._finalize(context, result)
+
             info = handler.describe_failure(
                 error=error if isinstance(error, BaseException) else Exception(str(error)),
                 run_launched=True,

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-18
+
+### Fixed
+
+- **`bundle_inspector`'s SQL syntax highlighting silently stopped working under
+  SRI-enforcing browsers.** The `index.html` template pinned an
+  `integrity` hash against `prismjs@1.29.0/prism.min.js`, but that path
+  isn't actually published by the `prismjs` npm package: the real tarball
+  ships only unminified `prism.js` at its root. `cdn.jsdelivr.net` was
+  synthesizing `prism.min.js` on the fly and caching the result, so its
+  bytes (and hash) could drift whenever jsdelivr's own minifier changed,
+  independent of the pinned package version. When that happened, the
+  browser rejected the stale hash with `Failed to find a valid digest in
+  the 'integrity' attribute`, and `prism-sql.min.js` then threw
+  `Uncaught ReferenceError: Prism is not defined`. Every other CDN asset in
+  that template (`maplibre-gl.js`, `themes/prism.min.css`,
+  `components/prism-sql.min.js`, `marked.min.js`) is a real file in its
+  package, so their hashes are safe to pin as-is; only the synthesized
+  `prism.min.js` wasn't. Dropped `integrity`/`crossorigin` from that one tag
+  instead of pinning against jsdelivr's derivative output: this is a
+  read-only internal dashboard, not a spot that warrants chasing a moving
+  hash for a minifier we don't control.
+
 ## [0.7.2] - 2026-08-17
 
 ### Added

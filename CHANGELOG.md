@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-18
+
 ### Fixed
 
 - **`bundle_inspector`'s SQL syntax highlighting silently stopped working under

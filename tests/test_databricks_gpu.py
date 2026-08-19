@@ -7,7 +7,9 @@ import pytest
 
 import overture_airflow_provider._databricks as dbx
 from overture_airflow_provider._databricks import (
+    _resolve_databricks_cloud,
     _resolve_databricks_node_config,
+    discover_databricks_cloud,
     discover_gpu_cluster_options,
 )
 
@@ -59,6 +61,84 @@ def _patch_workspace(monkeypatch, clusters):
         "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
         staticmethod(lambda conn_id: _Conn()),
     )
+
+
+def _patch_workspace_config(monkeypatch, *, is_aws=False, is_azure=False, is_gcp=False):
+    """Patch `DatabricksSdkHook.get_workspace_client` to yield a client whose
+    `.config` reports the given cloud, mirroring the databricks-sdk's own
+    host-derived `Config.is_aws`/`is_azure`/`is_gcp` properties.
+    """
+    fake_config = types.SimpleNamespace(is_aws=is_aws, is_azure=is_azure, is_gcp=is_gcp)
+
+    @contextmanager
+    def _fake_workspace_client(self):
+        yield types.SimpleNamespace(config=fake_config)
+
+    monkeypatch.setattr(
+        "overture_airflow_provider.hooks.DatabricksSdkHook.get_workspace_client",
+        _fake_workspace_client,
+    )
+
+    class _Conn:
+        host = "https://example.cloud.databricks.com"
+        login = None
+        password = "token"
+        extra_dejson = {}
+
+    monkeypatch.setattr(
+        "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
+        staticmethod(lambda conn_id: _Conn()),
+    )
+
+
+class TestDiscoverDatabricksCloud:
+    def test_detects_aws(self, monkeypatch):
+        _patch_workspace_config(monkeypatch, is_aws=True)
+        assert discover_databricks_cloud("databricks_default") == "aws"
+
+    def test_detects_azure(self, monkeypatch):
+        _patch_workspace_config(monkeypatch, is_azure=True)
+        assert discover_databricks_cloud("databricks_default") == "azure"
+
+    def test_detects_gcp(self, monkeypatch):
+        _patch_workspace_config(monkeypatch, is_gcp=True)
+        assert discover_databricks_cloud("databricks_default") == "gcp"
+
+    def test_raises_on_unknown_cloud(self, monkeypatch):
+        _patch_workspace_config(monkeypatch)
+        with pytest.raises(ValueError, match="does not resolve to a known cloud"):
+            discover_databricks_cloud("databricks_default")
+
+
+class TestResolveDatabricksCloud:
+    def test_explicit_cloud_skips_discovery(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            dbx, "discover_databricks_cloud", lambda conn_id: calls.append(conn_id) or "aws"
+        )
+        result = _resolve_databricks_cloud({"databricks_cloud": "gcp", "databricks_conf": {}})
+        assert result == "gcp"
+        assert calls == []
+
+    def test_empty_cloud_triggers_discovery(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            dbx, "discover_databricks_cloud", lambda conn_id: calls.append(conn_id) or "aws"
+        )
+        result = _resolve_databricks_cloud(
+            {"databricks_cloud": "", "databricks_conf": {"databricks_conn_id": "my_conn"}}
+        )
+        assert result == "aws"
+        assert calls == ["my_conn"]
+
+    def test_discovery_defaults_conn_id(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            dbx, "discover_databricks_cloud", lambda conn_id: calls.append(conn_id) or "azure"
+        )
+        result = _resolve_databricks_cloud({"databricks_conf": {}})
+        assert result == "azure"
+        assert calls == ["databricks_default"]
 
 
 class TestDiscoverGpuClusterOptions:

@@ -360,6 +360,17 @@ class DatabricksConfig:
             (explicit node/GPU count) over ``spark_cluster_desired_worker_cores``;
             core-based sizing is an indirect proxy for GPUs and assumes a fixed
             cores-per-GPU node shape.
+        cloud: Which cloud the target workspace runs on: ``"aws"``, ``"azure"``,
+            or ``"gcp"``. Picks the cluster attributes key the Clusters API
+            requires (``aws_attributes`` / ``azure_attributes`` /
+            ``gcp_attributes``) and, unless ``worker_instance_types`` /
+            ``driver_node_type`` are pinned, the default node-type catalog.
+            Defaults to ``"azure"`` (this provider's original, Azure-only
+            behavior), so existing Azure callers are unaffected. Set this to
+            ``"aws"``/``"gcp"`` explicitly, or to ``""`` to auto-detect from
+            the workspace connection's host via the ``databricks-sdk`` (no API
+            round trip; requires the ``[databricks]`` extra and a reachable
+            connection at setup time).
     """
 
     cluster_conf: dict[str, Any] = field(default_factory=dict)
@@ -374,6 +385,7 @@ class DatabricksConfig:
     driver_node_type: str = ""
     spark_version: str = ""
     gpu: bool = False
+    cloud: str = "azure"
 
 
 @dataclass

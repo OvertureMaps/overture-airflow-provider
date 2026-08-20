@@ -126,6 +126,24 @@ def test_render_wherobots_skips_region_resolution():
     assert isinstance(region, str)
 
 
+def test_render_wherobots_omits_version_by_default():
+    # Regression for #81: rendered output must match the real submission —
+    # no version field means the GA runtime.
+    result = render_spark_job(spark_impl_name="WHEROBOTS_v1_5_0", **_COMMON_KWARGS)
+    assert "version" not in result.operator_kwargs
+    assert "version" not in result.submit_payload
+
+
+def test_render_wherobots_honors_config_version_override():
+    result = render_spark_job(
+        spark_impl_name="WHEROBOTS_v1_5_0",
+        wherobots_config=WherobotsConfig(version="preview"),
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["version"] == "preview"
+    assert result.submit_payload["version"] == "preview"
+
+
 _WHEROBOTS_CONFIG_WITH_ROLE = WherobotsConfig(role_arn="arn:aws:iam::123456789012:role/wb-access")
 
 

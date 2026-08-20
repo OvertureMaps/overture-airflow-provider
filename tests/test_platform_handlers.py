@@ -1588,19 +1588,19 @@ class TestWherobotsExecuteJob:
     def test_ga_impl_omits_runtime_version(self):
         # Regression for #81: version="preview" was hardcoded, submitting
         # Scala 2.12 JARs to the WherobotsDB 2.x (Spark 4 / Scala 2.13)
-        # runtime. WHEROBOTS_v1_5_0 must target GA, i.e. omit ``version``.
+        # runtime. By default ``version`` must be omitted so the API targets GA.
         _, kwargs = self._run()
         assert "version" not in kwargs
 
 
 class TestWherobotsRunVersion:
-    """Deriving the Wherobots run-API ``version`` from the SparkImpl (#81)."""
+    """The Wherobots run-API ``version`` field: GA by default, opt-in override (#81)."""
 
-    def _build(self, **overrides):
+    def _build(self, setup_info=None, **overrides):
         from overture_airflow_provider._wherobots import build_wherobots_operator_kwargs
 
         kwargs = dict(
-            setup_info=_wherobots_setup_info(),
+            setup_info=setup_info or _wherobots_setup_info(),
             package_info={
                 "py_files": [],
                 "script_location": "",
@@ -1622,22 +1622,25 @@ class TestWherobotsRunVersion:
         kwargs.update(overrides)
         return build_wherobots_operator_kwargs(**kwargs)
 
-    def test_wherobotsdb_1x_maps_to_none(self):
-        from overture_airflow_provider._wherobots import wherobots_run_version
-
-        assert wherobots_run_version("1.5.0") is None
-
-    def test_wherobotsdb_2x_maps_to_preview(self):
-        from overture_airflow_provider._wherobots import wherobots_run_version
-
-        assert wherobots_run_version("2.30.2") == "preview"
-
-    def test_default_derives_ga_and_omits_version_field(self):
+    def test_default_omits_version_field(self):
         built = self._build()
         assert "version" not in built["operator_kwargs"]
         assert "version" not in built["submit_payload"]
 
-    def test_explicit_version_override_is_kept(self):
+    def test_wherobots_config_version_override_is_used(self):
+        # WherobotsConfig.version flows through setup_info as wherobots_version.
+        setup_info = {**_wherobots_setup_info(), "wherobots_version": "preview"}
+        built = self._build(setup_info=setup_info)
+        assert built["operator_kwargs"]["version"] == "preview"
+        assert built["submit_payload"]["version"] == "preview"
+
+    def test_empty_config_version_still_omits_field(self):
+        setup_info = {**_wherobots_setup_info(), "wherobots_version": ""}
+        built = self._build(setup_info=setup_info)
+        assert "version" not in built["operator_kwargs"]
+        assert "version" not in built["submit_payload"]
+
+    def test_explicit_version_argument_wins(self):
         built = self._build(version="preview")
         assert built["operator_kwargs"]["version"] == "preview"
         assert built["submit_payload"]["version"] == "preview"

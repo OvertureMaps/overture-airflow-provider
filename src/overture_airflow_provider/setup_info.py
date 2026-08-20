@@ -41,6 +41,7 @@ SERIALIZABLE_KEYS = (
     "runner_script_overrides",
     "wherobots_external_id",
     "wherobots_role_arn",
+    "wherobots_version",
     "aws_region",
     "databricks_conf",
     "databricks_extra_libraries",

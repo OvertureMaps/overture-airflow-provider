@@ -5,7 +5,6 @@ import re
 import shutil
 
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
-from overture_airflow_provider.spark import SparkImpl
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 from overture_airflow_provider.spark_platform_handlers import registered_catalog_names
 
@@ -21,24 +20,6 @@ except ImportError:
 MAX_TIMEOUT_HOURS = 8
 WHEROBOTS_PROVIDER = "com.wherobots.awssdk.auth.WherobotsAssumeRoleCredentialsProvider"
 _API_SUBDOMAIN_PREFIX = "api."
-
-
-def wherobots_run_version(native_version: str) -> str | None:
-    """Map a ``SparkImpl``'s WherobotsDB version to the run-API ``version`` field.
-
-    WherobotsDB 1.x is the GA runtime (Spark 3.5 / Scala 2.12): return ``None``
-    so the field is omitted from the submission and the API targets GA.
-    WherobotsDB 2.x (Spark 4 / Scala 2.13) is currently only published as the
-    ``"preview"`` channel; revisit this mapping when 2.x goes GA.
-
-    Submitting a Scala 2.12 JAR to the 2.x runtime fails at class-load time
-    (``NoClassDefFoundError: scala/Serializable``), so the version must follow
-    the impl's declared Spark/Scala versions rather than being hardcoded.
-    """
-    major = native_version.split(".", 1)[0]
-    if major.isdigit() and int(major) >= 2:
-        return "preview"
-    return None
 
 
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
@@ -302,18 +283,19 @@ def build_wherobots_operator_kwargs(
     enum (set ``resolve_region=False`` to skip when the SDK isn't installed,
     in which case the raw AWS region string is returned in ``region``).
 
-    ``version=None`` (the default) derives the run-API ``version`` from the
-    selected ``SparkImpl`` (see :func:`wherobots_run_version`); pass a string
-    to force a specific runtime channel. When the derived/forced value is
-    ``None`` the field is omitted so the API targets the GA runtime.
+    ``version=None`` (the default) uses the caller's ``WherobotsConfig.version``
+    override from ``setup_info`` when set, otherwise the field is omitted so
+    submissions target the GA runtime. Pass a string (e.g. ``"preview"``) to
+    force a specific runtime channel. The GA runtime matches what
+    ``SparkImpl.WHEROBOTS_v1_5_0`` declares (Spark 3.5 / Scala 2.12); the
+    preview channel runs Spark 4 / Scala 2.13, which cannot load Scala 2.12
+    JARs (``NoClassDefFoundError: scala/Serializable``).
 
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
     """
     if version is None:
-        version = wherobots_run_version(
-            SparkImpl.from_str(setup_info["spark_impl_name"]).get_native_version()
-        )
+        version = setup_info.get("wherobots_version") or None
 
     my_parameters = setup_info["parameters"]
 
@@ -464,8 +446,8 @@ def execute_wherobots_job(
 ) -> dict:
     """Submit and wait for a Wherobots job.
 
-    ``version=None`` derives the runtime channel from the selected
-    ``SparkImpl`` (see :func:`wherobots_run_version`).
+    ``version=None`` targets the GA runtime unless the caller opted into
+    another channel via ``WherobotsConfig.version``.
     """
     if not WHEROBOTS_AVAILABLE:
         raise ImportError("Wherobots dependencies are not installed")

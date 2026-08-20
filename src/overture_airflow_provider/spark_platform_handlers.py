@@ -579,8 +579,7 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
 
         # Wherobots has no upstream Airflow trigger, so it runs synchronously and
         # returns the final result with no deferral. The runtime ``version`` is
-        # derived from the SparkImpl (GA for WherobotsDB 1.x) — see
-        # wherobots_run_version.
+        # omitted (GA) unless the caller set WherobotsConfig.version.
         result = execute_wherobots_job(
             setup_info=self.setup_info,
             package_info=package_info,

@@ -1585,6 +1585,63 @@ class TestWherobotsExecuteJob:
         result, _ = self._run(simulate_submit=False)
         assert "job_url" not in result
 
+    def test_ga_impl_omits_runtime_version(self):
+        # Regression for #81: version="preview" was hardcoded, submitting
+        # Scala 2.12 JARs to the WherobotsDB 2.x (Spark 4 / Scala 2.13)
+        # runtime. WHEROBOTS_v1_5_0 must target GA, i.e. omit ``version``.
+        _, kwargs = self._run()
+        assert "version" not in kwargs
+
+
+class TestWherobotsRunVersion:
+    """Deriving the Wherobots run-API ``version`` from the SparkImpl (#81)."""
+
+    def _build(self, **overrides):
+        from overture_airflow_provider._wherobots import build_wherobots_operator_kwargs
+
+        kwargs = dict(
+            setup_info=_wherobots_setup_info(),
+            package_info={
+                "py_files": [],
+                "script_location": "",
+                "python_packages_or_jars_list": [
+                    {"sourceType": "FILE", "filePath": "s3://bucket/my-pipeline-1.0.jar"}
+                ],
+            },
+            jar_info={"jars_s3": []},
+            module_name="",
+            class_name="com.example.Main",
+            extra_spark_conf={},
+            spark_cluster_size="",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            wherobots_role_arn="arn:aws:iam::123456789012:role/test",
+            task_id="execute_spark_job",
+            resolve_region=False,
+        )
+        kwargs.update(overrides)
+        return build_wherobots_operator_kwargs(**kwargs)
+
+    def test_wherobotsdb_1x_maps_to_none(self):
+        from overture_airflow_provider._wherobots import wherobots_run_version
+
+        assert wherobots_run_version("1.5.0") is None
+
+    def test_wherobotsdb_2x_maps_to_preview(self):
+        from overture_airflow_provider._wherobots import wherobots_run_version
+
+        assert wherobots_run_version("2.30.2") == "preview"
+
+    def test_default_derives_ga_and_omits_version_field(self):
+        built = self._build()
+        assert "version" not in built["operator_kwargs"]
+        assert "version" not in built["submit_payload"]
+
+    def test_explicit_version_override_is_kept(self):
+        built = self._build(version="preview")
+        assert built["operator_kwargs"]["version"] == "preview"
+        assert built["submit_payload"]["version"] == "preview"
+
 
 class TestSparkJobLink:
     """Tests for SparkJobLink.get_link."""

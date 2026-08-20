@@ -5,6 +5,7 @@ import re
 import shutil
 
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
+from overture_airflow_provider.spark import SparkImpl
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 from overture_airflow_provider.spark_platform_handlers import registered_catalog_names
 
@@ -20,6 +21,24 @@ except ImportError:
 MAX_TIMEOUT_HOURS = 8
 WHEROBOTS_PROVIDER = "com.wherobots.awssdk.auth.WherobotsAssumeRoleCredentialsProvider"
 _API_SUBDOMAIN_PREFIX = "api."
+
+
+def wherobots_run_version(native_version: str) -> str | None:
+    """Map a ``SparkImpl``'s WherobotsDB version to the run-API ``version`` field.
+
+    WherobotsDB 1.x is the GA runtime (Spark 3.5 / Scala 2.12): return ``None``
+    so the field is omitted from the submission and the API targets GA.
+    WherobotsDB 2.x (Spark 4 / Scala 2.13) is currently only published as the
+    ``"preview"`` channel; revisit this mapping when 2.x goes GA.
+
+    Submitting a Scala 2.12 JAR to the 2.x runtime fails at class-load time
+    (``NoClassDefFoundError: scala/Serializable``), so the version must follow
+    the impl's declared Spark/Scala versions rather than being hardcoded.
+    """
+    major = native_version.split(".", 1)[0]
+    if major.isdigit() and int(major) >= 2:
+        return "preview"
+    return None
 
 
 def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
@@ -274,7 +293,7 @@ def build_wherobots_operator_kwargs(
     spark_cluster_desired_workers: str,
     wherobots_role_arn: str,
     task_id: str,
-    version: str = "preview",
+    version: str | None = None,
     resolve_region: bool = True,
 ) -> dict:
     """Pure-Python assembly of WherobotsRunOperator kwargs.
@@ -283,9 +302,19 @@ def build_wherobots_operator_kwargs(
     enum (set ``resolve_region=False`` to skip when the SDK isn't installed,
     in which case the raw AWS region string is returned in ``region``).
 
+    ``version=None`` (the default) derives the run-API ``version`` from the
+    selected ``SparkImpl`` (see :func:`wherobots_run_version`); pass a string
+    to force a specific runtime channel. When the derived/forced value is
+    ``None`` the field is omitted so the API targets the GA runtime.
+
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
     """
+    if version is None:
+        version = wherobots_run_version(
+            SparkImpl.from_str(setup_info["spark_impl_name"]).get_native_version()
+        )
+
     my_parameters = setup_info["parameters"]
 
     python_packages_or_jars_list = list(package_info["python_packages_or_jars_list"])
@@ -385,13 +414,14 @@ def build_wherobots_operator_kwargs(
         "task_id": task_id,
         "name": name,
         "runtime": runtime_name,
-        "version": version,
         "poll_logs": poll_logs,
         "polling_interval": polling_interval,
         "timeout_seconds": (3600 * MAX_TIMEOUT_HOURS),
         "region": region_val,
         "environment": environment,
     }
+    if version is not None:
+        operator_kwargs["version"] = version
     if run_jar is not None:
         operator_kwargs["run_jar"] = run_jar
     if run_python is not None:
@@ -401,10 +431,11 @@ def build_wherobots_operator_kwargs(
     submit_payload = {
         "name": name,
         "runtime": runtime_name,
-        "version": version,
         "region": setup_info["aws_region"],
         "environment": environment,
     }
+    if version is not None:
+        submit_payload["version"] = version
     if run_jar is not None:
         submit_payload["run_jar"] = run_jar
     if run_python is not None:
@@ -429,9 +460,13 @@ def execute_wherobots_job(
     wherobots_role_arn: str,
     task_id: str,
     context,
-    version: str = "preview",
+    version: str | None = None,
 ) -> dict:
-    """Submit and wait for a Wherobots job."""
+    """Submit and wait for a Wherobots job.
+
+    ``version=None`` derives the runtime channel from the selected
+    ``SparkImpl`` (see :func:`wherobots_run_version`).
+    """
     if not WHEROBOTS_AVAILABLE:
         raise ImportError("Wherobots dependencies are not installed")
 

@@ -286,10 +286,7 @@ def build_wherobots_operator_kwargs(
     ``version=None`` (the default) uses the caller's ``WherobotsConfig.version``
     override from ``setup_info`` when set, otherwise the field is omitted so
     submissions target the GA runtime. Pass a string (e.g. ``"preview"``) to
-    force a specific runtime channel. The GA runtime matches what
-    ``SparkImpl.WHEROBOTS_v1_5_0`` declares (Spark 3.5 / Scala 2.12); the
-    preview channel runs Spark 4 / Scala 2.13, which cannot load Scala 2.12
-    JARs (``NoClassDefFoundError: scala/Serializable``).
+    force a specific runtime channel.
 
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.

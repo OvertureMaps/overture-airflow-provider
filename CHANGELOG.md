@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-24
+
+### Fixed
+
+- **Scala jobs failed on Wherobots with
+  `NoClassDefFoundError: scala/Serializable`.** Every Wherobots submission
+  hardcoded `version="preview"`, which resolves to the WherobotsDB 2.x stack
+  (Spark 4 / Scala 2.13) — but `SparkImpl.WHEROBOTS_v1_5_0` declares
+  Spark 3.5 / Scala 2.12, so any Scala 2.12 JAR died at driver class-load
+  time (Python jobs happened to survive, masking the bug). Submissions now
+  target the stable runtime by default via the new `WherobotsConfig.version`
+  field, which defaults to `"latest"` (the run API's own default). Set it to
+  `"preview"` to opt into the preview channel deliberately, or `None` to omit
+  the field from the submission; the config field is the single source of
+  truth for the runtime channel (the internal `version=` pass-through
+  argument was removed). The `wherobots` extra now requires
+  `airflow-providers-wherobots>=1.4.3`, the first release whose operator
+  accepts the `version` kwarg (already an implicit requirement of the old
+  hardcoded value). (#81)
+
 ## [0.8.0] - 2026-08-19
 
 ### Fixed

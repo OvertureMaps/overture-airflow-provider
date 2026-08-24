@@ -195,6 +195,7 @@ def _build_render_setup_info(
         "runner_script_overrides": dict(artifact_store.runner_script_overrides),
         "wherobots_external_id": wherobots_config.external_id,
         "wherobots_role_arn": wherobots_config.role_arn,
+        "wherobots_version": wherobots_config.version,
         "aws_region": wherobots_config.aws_region,
         "databricks_conf": databricks_config.cluster_conf,
         "databricks_extra_libraries": list(databricks_config.extra_libraries),

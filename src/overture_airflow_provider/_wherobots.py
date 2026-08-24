@@ -275,7 +275,6 @@ def build_wherobots_operator_kwargs(
     spark_cluster_desired_workers: str,
     wherobots_role_arn: str,
     task_id: str,
-    version: str = "preview",
     resolve_region: bool = True,
 ) -> dict:
     """Pure-Python assembly of WherobotsRunOperator kwargs.
@@ -284,9 +283,17 @@ def build_wherobots_operator_kwargs(
     enum (set ``resolve_region=False`` to skip when the SDK isn't installed,
     in which case the raw AWS region string is returned in ``region``).
 
+    The run-API ``version`` (runtime channel) comes from
+    ``WherobotsConfig.version`` via ``setup_info["wherobots_version"]``:
+    ``"latest"`` (the config default, and the API's own default) targets the
+    stable GA runtime; ``"preview"`` opts into the preview channel; a
+    ``None``/empty/missing value omits the field entirely.
+
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
     """
+    version = setup_info.get("wherobots_version") or None
+
     my_parameters = setup_info["parameters"]
 
     python_packages_or_jars_list = list(package_info["python_packages_or_jars_list"])
@@ -386,13 +393,14 @@ def build_wherobots_operator_kwargs(
         "task_id": task_id,
         "name": name,
         "runtime": runtime_name,
-        "version": version,
         "poll_logs": poll_logs,
         "polling_interval": polling_interval,
         "timeout_seconds": (3600 * MAX_TIMEOUT_HOURS),
         "region": region_val,
         "environment": environment,
     }
+    if version is not None:
+        operator_kwargs["version"] = version
     if run_jar is not None:
         operator_kwargs["run_jar"] = run_jar
     if run_python is not None:
@@ -402,10 +410,11 @@ def build_wherobots_operator_kwargs(
     submit_payload = {
         "name": name,
         "runtime": runtime_name,
-        "version": version,
         "region": setup_info["aws_region"],
         "environment": environment,
     }
+    if version is not None:
+        submit_payload["version"] = version
     if run_jar is not None:
         submit_payload["run_jar"] = run_jar
     if run_python is not None:
@@ -430,9 +439,12 @@ def execute_wherobots_job(
     wherobots_role_arn: str,
     task_id: str,
     context,
-    version: str = "preview",
 ) -> dict:
-    """Submit and wait for a Wherobots job."""
+    """Submit and wait for a Wherobots job.
+
+    The runtime channel comes from ``WherobotsConfig.version`` (``"latest"``
+    by default) via ``setup_info["wherobots_version"]``.
+    """
     if not WHEROBOTS_AVAILABLE:
         raise ImportError("Wherobots dependencies are not installed")
 
@@ -448,7 +460,6 @@ def execute_wherobots_job(
         spark_cluster_desired_workers=spark_cluster_desired_workers,
         wherobots_role_arn=wherobots_role_arn,
         task_id=task_id,
-        version=version,
         resolve_region=True,
     )
 

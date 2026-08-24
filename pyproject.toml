@@ -35,12 +35,12 @@ dependencies = [
 
 [project.optional-dependencies]
 databricks = ["apache-airflow-providers-databricks", "databricks-sdk"]
-wherobots = ["airflow-providers-wherobots"]
+wherobots = ["airflow-providers-wherobots>=1.4.3"]
 bundle-inspector = ["pyarrow", "shapely"]
 all = [
     "apache-airflow-providers-databricks",
     "databricks-sdk",
-    "airflow-providers-wherobots",
+    "airflow-providers-wherobots>=1.4.3",
     "pyarrow",
     "shapely",
 ]

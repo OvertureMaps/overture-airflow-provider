@@ -127,6 +127,53 @@ def discover_gpu_cluster_options(
     return result
 
 
+def discover_databricks_cloud(databricks_conn_id: str) -> str:
+    """Detect which cloud a Databricks workspace is hosted on.
+
+    Reads the ``databricks-sdk``'s own environment detection (derived from the
+    connection host, e.g. ``*.azuredatabricks.net`` vs. ``*.cloud.databricks.com``
+    — no API round trip), so callers don't have to plumb an explicit
+    ``aws``/``azure``/``gcp`` hint through Airflow Variables to pick the right
+    cluster attributes key (``aws_attributes`` vs. ``azure_attributes`` vs.
+    ``gcp_attributes``).
+
+    Returns ``"aws"``, ``"azure"``, or ``"gcp"``. Raises ``ValueError`` if the
+    workspace host doesn't resolve to a known cloud.
+    """
+    # Lazy import: the hook pulls in databricks-sdk / Airflow, both optional at
+    # package-import time.
+    from overture_airflow_provider.hooks import DatabricksSdkHook
+
+    with DatabricksSdkHook(databricks_conn_id).get_workspace_client() as client:
+        config = client.config
+        if config.is_aws:
+            return "aws"
+        if config.is_azure:
+            return "azure"
+        if config.is_gcp:
+            return "gcp"
+
+    raise ValueError(
+        f"Databricks connection {databricks_conn_id!r} host does not resolve to a "
+        "known cloud (aws/azure/gcp); set DatabricksConfig.cloud explicitly"
+    )
+
+
+def _resolve_databricks_cloud(setup_info: dict) -> str:
+    """Resolve the target cloud: explicit override wins, else auto-discover.
+
+    ``DatabricksConfig.cloud`` defaults to ``"azure"`` (this provider's
+    original, Azure-only behavior), so existing callers never trigger a
+    workspace lookup. Auto-discovery only runs when a caller explicitly sets
+    ``cloud=""`` to opt into it.
+    """
+    cloud = setup_info.get("databricks_cloud") or None
+    if cloud:
+        return cloud
+    conn_id = setup_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
+    return discover_databricks_cloud(conn_id)
+
+
 def _resolve_databricks_node_config(setup_info: dict) -> dict:
     """Merge explicit Databricks node overrides with optional GPU discovery.
 
@@ -280,6 +327,7 @@ def setup_databricks_cluster(
     print(f"extra_spark_env_vars: {extra_spark_env_vars}")
 
     node_config = _resolve_databricks_node_config(setup_info)
+    cloud = _resolve_databricks_cloud(setup_info)
 
     databricks_spark_conf = setup_info.get("databricks_spark_conf", {}) or {}
     databricks_spark_env_vars = setup_info.get("databricks_spark_env_vars", {}) or {}
@@ -298,16 +346,12 @@ def setup_databricks_cluster(
             (int(spark_cluster_desired_workers) if spark_cluster_desired_workers else None),
             instance_types=node_config["worker_instance_types"],
             driver_node_type=node_config["driver_node_type"],
+            cloud=cloud,
         ),
         "spark_version": (node_config["spark_version"] or spark_impl.get_native_version()),
         "spark_conf": _merge_spark_conf(
             _DATABRICKS_SPARK_CONF_DEFAULTS, databricks_spark_conf, extra_spark_conf
         ),
-        "azure_attributes": {
-            "first_on_demand": 1,
-            "availability": "ON_DEMAND_AZURE",
-            "spot_bid_max_price": -1,
-        },
         "spark_env_vars": {
             "PIP_PRE": "true",
             "SPARK_JAR_PATHS": spark_jar_paths or "",

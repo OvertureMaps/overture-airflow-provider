@@ -108,6 +108,11 @@ override fields avoids the workspace call (and its auth) entirely.
 
 AWS region field is `aws_region` (not `region`).
 
+`version` (default `"latest"`) is the Wherobots run-API runtime channel:
+`"latest"` targets the stable runtime (the API's own default). Only set
+`"preview"` deliberately — the preview stack runs Spark 4 / Scala 2.13 and
+cannot load Scala 2.12 JARs. `None` omits the field from submissions.
+
 ### Cluster sizing classes
 
 `AwsGlueClusterSize` / `DatabricksClusterSize` / `WherobotsClusterSize` are

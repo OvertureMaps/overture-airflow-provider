@@ -32,6 +32,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Both tasks now pass `doc_md` explicitly as a flush-left string constant
   instead.
 
+## [0.9.0] - 2026-08-24
+
+### Fixed
+
+- **Scala jobs failed on Wherobots with
+  `NoClassDefFoundError: scala/Serializable`.** Every Wherobots submission
+  hardcoded `version="preview"`, which resolves to the WherobotsDB 2.x stack
+  (Spark 4 / Scala 2.13) — but `SparkImpl.WHEROBOTS_v1_5_0` declares
+  Spark 3.5 / Scala 2.12, so any Scala 2.12 JAR died at driver class-load
+  time (Python jobs happened to survive, masking the bug). Submissions now
+  target the stable runtime by default via the new `WherobotsConfig.version`
+  field, which defaults to `"latest"` (the run API's own default). Set it to
+  `"preview"` to opt into the preview channel deliberately, or `None` to omit
+  the field from the submission; the config field is the single source of
+  truth for the runtime channel (the internal `version=` pass-through
+  argument was removed). The `wherobots` extra now requires
+  `airflow-providers-wherobots>=1.4.3`, the first release whose operator
+  accepts the `version` kwarg (already an implicit requirement of the old
+  hardcoded value). (#81)
+
+## [0.8.0] - 2026-08-19
+
+### Fixed
+
+- **`DatabricksConfig` always submitted `azure_attributes`, rejecting clusters
+  on AWS workspaces.** `setup_databricks_cluster` and
+  `DatabricksClusterSize.as_json` hardcoded that key with no `aws_attributes`
+  branch and no cloud detection, so the Databricks Clusters API rejected the
+  spec outright against an AWS workspace
+  (`airflow.exceptions.AirflowException: Spark job FAILED on DATABRICKS
+  (submit/config failure, likely a provider or configuration fault)`,
+  `databricks_base.py:615 ERROR - ... raised HTTPError`). Worker/driver
+  instance-type discovery had the same gap: it only returned Azure VM SKUs
+  (`Standard_E4a_v4`), so an AWS workspace got sized with SKUs it can't run.
+  Caught live in OvertureMaps/tf-data-platform#4779's CI smoke test against a
+  real AWS Databricks workspace (fixes #78).
+
+### Added
+
+- **`DatabricksConfig.cloud`**, so a caller running against an AWS or GCP
+  workspace can pin the target cloud explicitly (`"aws"`, `"azure"`, or
+  `"gcp"`). Defaults to `"azure"` (this provider's original, Azure-only
+  behavior), so existing callers are unaffected and never trigger a workspace
+  lookup. Set it to `""` to auto-detect instead, via the `databricks-sdk`'s
+  own environment detection (derived from the connection host, no API round
+  trip). Picks the cluster attributes key the Clusters API requires
+  (`aws_attributes` / `azure_attributes` / `gcp_attributes`) and, unless
+  `worker_instance_types`/`driver_node_type` are pinned, the default node-type
+  catalog for that cloud. `DatabricksClusterSize` now carries an
+  `aws_databricks_instance_types` catalog (`m5d.*` family) alongside the
+  existing Azure one, and `from_desired_cores`/`from_cluster_size` both take a
+  `cloud` kwarg.
+
 ## [0.7.3] - 2026-08-18
 
 ### Fixed

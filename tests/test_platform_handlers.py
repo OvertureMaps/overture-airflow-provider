@@ -112,6 +112,7 @@ def _databricks_setup_info():
         "wherobots_external_id": "",
         "aws_region": "us-east-1",
         "databricks_conf": {"databricks_conn_id": "databricks_default"},
+        "databricks_cloud": "azure",
         "glue_execution_class": "STANDARD",
         "iam_role_name": "AWSGlueServiceRole",
     }
@@ -140,6 +141,7 @@ def _wherobots_setup_info():
         "job_runner_wheel_prefix": None,
         "wherobots_external_id": "test-external-id",
         "wherobots_role_arn": "arn:aws:iam::123456789012:role/test-role",
+        "wherobots_version": "latest",
         "aws_region": "us-east-1",
         "databricks_conf": None,
         "glue_execution_class": "STANDARD",
@@ -1020,6 +1022,45 @@ class TestDatabricksSetupCluster:
         assert cluster["driver_node_type_id"] == "Standard_NC8as_T4_v3"
         assert cluster["spark_version"] == "15.4.x-gpu-ml-scala2.12"
 
+    def test_aws_cloud_sets_aws_attributes_and_ec2_worker_type(self):
+        # Regression for #78: the cluster builder used to hardcode
+        # azure_attributes with no aws_attributes branch, which Databricks
+        # rejects outright on an AWS workspace.
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "aws"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster = result["new_cluster"]
+        assert "aws_attributes" in cluster
+        assert "azure_attributes" not in cluster
+        assert cluster["node_type_id"].startswith("m5d.")
+
+    def test_cloud_discovery_fills_in_when_unset(self, monkeypatch):
+        import overture_airflow_provider._databricks as dbx
+
+        monkeypatch.setattr(dbx, "discover_databricks_cloud", lambda conn_id: "aws")
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = ""
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        assert "aws_attributes" in result["new_cluster"]
+
     def test_download_python_packages_returns_none(self):
         handler = DatabricksPlatformHandler(_databricks_setup_info())
         assert handler.download_python_packages("anything") is None
@@ -1587,6 +1628,76 @@ class TestWherobotsExecuteJob:
         # job_url should be absent rather than present with a None/empty value.
         result, _ = self._run(simulate_submit=False)
         assert "job_url" not in result
+
+    def test_ga_impl_targets_latest_runtime_by_default(self):
+        # Regression for #81: version="preview" was hardcoded, submitting
+        # Scala 2.12 JARs to the WherobotsDB 2.x (Spark 4 / Scala 2.13)
+        # runtime. The default must target the stable channel ("latest").
+        _, kwargs = self._run()
+        assert kwargs["version"] == "latest"
+
+
+class TestWherobotsRunVersion:
+    """The Wherobots run-API ``version`` field: "latest" by default, opt-in override (#81)."""
+
+    def _build(self, setup_info=None, **overrides):
+        from overture_airflow_provider._wherobots import build_wherobots_operator_kwargs
+
+        kwargs = dict(
+            setup_info=setup_info or _wherobots_setup_info(),
+            package_info={
+                "py_files": [],
+                "script_location": "",
+                "python_packages_or_jars_list": [
+                    {"sourceType": "FILE", "filePath": "s3://bucket/my-pipeline-1.0.jar"}
+                ],
+            },
+            jar_info={"jars_s3": []},
+            module_name="",
+            class_name="com.example.Main",
+            extra_spark_conf={},
+            spark_cluster_size="",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            wherobots_role_arn="arn:aws:iam::123456789012:role/test",
+            task_id="execute_spark_job",
+            resolve_region=False,
+        )
+        kwargs.update(overrides)
+        return build_wherobots_operator_kwargs(**kwargs)
+
+    def test_default_targets_latest(self):
+        built = self._build()
+        assert built["operator_kwargs"]["version"] == "latest"
+        assert built["submit_payload"]["version"] == "latest"
+
+    def test_wherobots_config_version_override_is_used(self):
+        # WherobotsConfig.version flows through setup_info as wherobots_version.
+        setup_info = {**_wherobots_setup_info(), "wherobots_version": "preview"}
+        built = self._build(setup_info=setup_info)
+        assert built["operator_kwargs"]["version"] == "preview"
+        assert built["submit_payload"]["version"] == "preview"
+
+    def test_none_config_version_omits_field(self):
+        setup_info = {**_wherobots_setup_info(), "wherobots_version": None}
+        built = self._build(setup_info=setup_info)
+        assert "version" not in built["operator_kwargs"]
+        assert "version" not in built["submit_payload"]
+
+    def test_empty_config_version_omits_field(self):
+        setup_info = {**_wherobots_setup_info(), "wherobots_version": ""}
+        built = self._build(setup_info=setup_info)
+        assert "version" not in built["operator_kwargs"]
+        assert "version" not in built["submit_payload"]
+
+    def test_missing_config_key_omits_field(self):
+        # Older serialized setup_info (pre-upgrade XCom) lacks the key; the
+        # field is omitted and the API's own default ("latest") applies.
+        setup_info = _wherobots_setup_info()
+        del setup_info["wherobots_version"]
+        built = self._build(setup_info=setup_info)
+        assert "version" not in built["operator_kwargs"]
+        assert "version" not in built["submit_payload"]
 
 
 class TestSparkJobLink:

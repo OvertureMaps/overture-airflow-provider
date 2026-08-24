@@ -126,6 +126,24 @@ def test_render_wherobots_skips_region_resolution():
     assert isinstance(region, str)
 
 
+def test_render_wherobots_targets_latest_by_default():
+    # Regression for #81: rendered output must match the real submission —
+    # the stable "latest" channel, never a hardcoded "preview".
+    result = render_spark_job(spark_impl_name="WHEROBOTS_v1_5_0", **_COMMON_KWARGS)
+    assert result.operator_kwargs["version"] == "latest"
+    assert result.submit_payload["version"] == "latest"
+
+
+def test_render_wherobots_honors_config_version_override():
+    result = render_spark_job(
+        spark_impl_name="WHEROBOTS_v1_5_0",
+        wherobots_config=WherobotsConfig(version="preview"),
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["version"] == "preview"
+    assert result.submit_payload["version"] == "preview"
+
+
 _WHEROBOTS_CONFIG_WITH_ROLE = WherobotsConfig(role_arn="arn:aws:iam::123456789012:role/wb-access")
 
 

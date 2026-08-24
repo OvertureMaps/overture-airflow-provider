@@ -466,8 +466,9 @@ def submit_glue_job(
         )
 
     # Recorded the moment the run id is known -- before any polling/deferral --
-    # so a zombie kill anywhere after this point still leaves a trail the next
-    # try can cancel instead of racing a second run against the same output.
+    # so a zombie kill anywhere after this point still leaves a trail this
+    # task instance's on_failure_callback can cancel instead of a retry
+    # racing a second run against the same output.
     record_launched_run(
         context,
         platform="glue",

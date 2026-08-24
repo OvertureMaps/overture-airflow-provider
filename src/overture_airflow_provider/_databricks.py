@@ -488,10 +488,10 @@ def submit_databricks_job(
 
     if not synchronous_success:
         # Recorded the moment the run id is known, before deferral, so a
-        # zombie kill anywhere after this point still leaves a trail the next
-        # try can cancel instead of racing a second run against the same
-        # output. Skipped when the run already finished synchronously --
-        # there's nothing left to retry-cancel.
+        # zombie kill anywhere after this point still leaves a trail this
+        # task instance's on_failure_callback can cancel instead of a retry
+        # racing a second run against the same output. Skipped when the run
+        # already finished synchronously -- there's nothing left to cancel.
         record_launched_run(
             context,
             platform="databricks",

@@ -470,8 +470,8 @@ def execute_wherobots_job(
             if key == "run_id" and value and not early_xcom_pushed:
                 # Recorded the moment the run id is known -- Wherobots submission
                 # blocks until the run finishes, so this is the only chance to
-                # leave a trail a zombie-killed try's retry can cancel before
-                # racing a second run against the same output.
+                # leave a trail this task instance's on_failure_callback can
+                # cancel if a zombie kill hits mid-run.
                 record_launched_run(
                     context,
                     platform="wherobots",

@@ -261,13 +261,13 @@ class SparkPlatformHandler(ABC):
 
     @abstractmethod
     def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
-        """Best-effort stop of a remote run left over from a zombie-killed try.
+        """Best-effort stop of a remote run left over from a failed try.
 
-        Called before submitting a new run on retry, when the previous try's
-        run id was recorded but the try never reached a terminal state itself
-        (the scheduler failed it externally). Implementations should raise on
-        failure -- the caller treats this as best-effort and logs a warning,
-        never lets it fail the retry.
+        Called from the operator's ``on_failure_callback`` when this task
+        instance recorded a run id but never reached a terminal state itself
+        (e.g. the scheduler failed it externally as a zombie). Implementations
+        should raise on failure -- the caller treats this as best-effort and
+        logs a warning, never lets it block the caller's own failure handling.
         """
 
 

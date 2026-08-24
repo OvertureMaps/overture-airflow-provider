@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-24
+
 ### Fixed
 
 - **Scala jobs failed on Wherobots with

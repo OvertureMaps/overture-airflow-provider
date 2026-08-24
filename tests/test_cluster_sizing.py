@@ -4,6 +4,7 @@ import pytest
 
 from overture_airflow_provider.cluster_sizing import (
     AwsGlueClusterSize,
+    ClusterSize,
     DatabricksClusterSize,
     InstanceCalculator,
 )
@@ -158,6 +159,61 @@ def test_databricks_from_cluster_size():
     result = DatabricksClusterSize.from_cluster_size(ClusterSize.S)
     assert result["node_type_id"] == "Standard_E8a_v4"
     assert result["autoscale"]["min_workers"] == 5
+
+
+# ─── cloud-specific attributes (#78) ──────────────────────────────────────────
+
+
+class TestDatabricksClusterSizeCloudAttributes:
+    """Databricks rejects a cluster spec carrying the wrong cloud's attributes
+    key (e.g. `azure_attributes` on an AWS workspace), so exactly one of
+    `aws_attributes`/`azure_attributes`/`gcp_attributes` must be present and it
+    must match the target workspace's cloud.
+    """
+
+    def test_default_cloud_is_azure(self):
+        result = DatabricksClusterSize.from_desired_cores(40)
+        assert "azure_attributes" in result
+        assert "aws_attributes" not in result
+        assert "gcp_attributes" not in result
+
+    def test_aws_cloud_uses_aws_attributes_and_ec2_catalog(self):
+        result = DatabricksClusterSize.from_desired_cores(40, cloud="aws")
+        assert "aws_attributes" in result
+        assert "azure_attributes" not in result
+        assert result["node_type_id"] in {
+            "m5d.xlarge",
+            "m5d.2xlarge",
+            "m5d.4xlarge",
+            "m5d.8xlarge",
+            "m5d.12xlarge",
+            "m5d.16xlarge",
+            "m5d.24xlarge",
+        }
+        assert result["driver_node_type_id"] == "m5d.xlarge"
+
+    def test_gcp_cloud_uses_gcp_attributes(self):
+        result = DatabricksClusterSize.from_desired_cores(
+            40, instance_types={"n1-standard-8": 8}, cloud="gcp"
+        )
+        assert "gcp_attributes" in result
+        assert "aws_attributes" not in result
+        assert "azure_attributes" not in result
+
+    def test_explicit_instance_types_win_over_cloud_default_catalog(self):
+        # A caller-supplied catalog (e.g. pinned GPU SKUs) still applies
+        # regardless of which cloud's attributes key gets set.
+        result = DatabricksClusterSize.from_desired_cores(
+            32, instance_types={"my.custom.sku": 8}, cloud="aws"
+        )
+        assert result["node_type_id"] == "my.custom.sku"
+        assert "aws_attributes" in result
+
+    def test_from_cluster_size_aws(self):
+        result = DatabricksClusterSize.from_cluster_size(ClusterSize.S, cloud="aws")
+        assert result["node_type_id"] == "m5d.2xlarge"
+        assert result["driver_node_type_id"] == "m5d.xlarge"
+        assert "aws_attributes" in result
 
 
 def test_wherobots_from_desired_cores_all_branches():

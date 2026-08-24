@@ -76,18 +76,82 @@ azure_databricks_instance_types = {
     "Standard_E96a_v4": 96,
 }
 
+# EC2 instance types carrying local NVMe storage (the AWS analogue of the
+# Azure "a"-series above), sized to roughly the same core ladder. Core counts
+# per size: https://aws.amazon.com/ec2/instance-types/m5/
+aws_databricks_instance_types = {
+    "m5d.xlarge": 4,
+    "m5d.2xlarge": 8,
+    "m5d.4xlarge": 16,
+    "m5d.8xlarge": 32,
+    "m5d.12xlarge": 48,
+    "m5d.16xlarge": 64,
+    "m5d.24xlarge": 96,
+}
+
+_DEFAULT_CLOUD = "azure"
+
 
 class DatabricksClusterSize:
+    # Per-cloud (driver, worker, number_of_workers) shortcuts for from_cluster_size.
     mapping = {
-        ClusterSize.XS: ("Standard_E4a_v4", "Standard_E4a_v4", 2),
-        ClusterSize.S: ("Standard_E4a_v4", "Standard_E8a_v4", 5),
-        ClusterSize.M: ("Standard_E4a_v4", "Standard_E8a_v4", 20),
-        ClusterSize.L: ("Standard_E4a_v4", "Standard_E16a_v4", 40),
-        ClusterSize.XL: ("Standard_E4a_v4", "Standard_E32a_v4", 64),
+        "azure": {
+            ClusterSize.XS: ("Standard_E4a_v4", "Standard_E4a_v4", 2),
+            ClusterSize.S: ("Standard_E4a_v4", "Standard_E8a_v4", 5),
+            ClusterSize.M: ("Standard_E4a_v4", "Standard_E8a_v4", 20),
+            ClusterSize.L: ("Standard_E4a_v4", "Standard_E16a_v4", 40),
+            ClusterSize.XL: ("Standard_E4a_v4", "Standard_E32a_v4", 64),
+        },
+        "aws": {
+            ClusterSize.XS: ("m5d.xlarge", "m5d.xlarge", 2),
+            ClusterSize.S: ("m5d.xlarge", "m5d.2xlarge", 5),
+            ClusterSize.M: ("m5d.xlarge", "m5d.2xlarge", 20),
+            ClusterSize.L: ("m5d.xlarge", "m5d.4xlarge", 40),
+            ClusterSize.XL: ("m5d.xlarge", "m5d.8xlarge", 64),
+        },
     }
 
+    _INSTANCE_TYPES = {
+        "azure": azure_databricks_instance_types,
+        "aws": aws_databricks_instance_types,
+    }
+    _DEFAULT_DRIVER = {"azure": "Standard_E4a_v4", "aws": "m5d.xlarge"}
+
     @classmethod
-    def as_json(cls, driver_node_type, worker_node_type, number_of_workers) -> dict:
+    def _cloud_attributes(cls, cloud: str) -> dict:
+        """Return the single cloud-specific attributes key the Clusters API accepts.
+
+        Databricks rejects a cluster spec carrying ``azure_attributes`` against
+        an AWS workspace (and vice versa), so exactly one of these keys must be
+        present, matching the workspace's actual cloud.
+        """
+        if cloud == "aws":
+            return {
+                "aws_attributes": {
+                    "first_on_demand": 1,
+                    "availability": "SPOT_WITH_FALLBACK",
+                    "zone_id": "auto",
+                    "spot_bid_price_percent": 100,
+                }
+            }
+        if cloud == "gcp":
+            return {
+                "gcp_attributes": {
+                    "availability": "PREEMPTIBLE_WITH_FALLBACK_GCP",
+                }
+            }
+        return {
+            "azure_attributes": {
+                "first_on_demand": 1,
+                "availability": "SPOT_WITH_FALLBACK_AZURE",
+                "spot_bid_max_price": -1,
+            }
+        }
+
+    @classmethod
+    def as_json(
+        cls, driver_node_type, worker_node_type, number_of_workers, cloud: str = _DEFAULT_CLOUD
+    ) -> dict:
         return {
             "node_type_id": worker_node_type,
             "driver_node_type_id": driver_node_type,
@@ -95,11 +159,7 @@ class DatabricksClusterSize:
                 "min_workers": number_of_workers,
                 "max_workers": number_of_workers,
             },
-            "azure_attributes": {
-                "first_on_demand": 1,
-                "availability": "SPOT_WITH_FALLBACK_AZURE",
-                "spot_bid_max_price": -1,
-            },
+            **cls._cloud_attributes(cloud),
         }
 
     @classmethod
@@ -110,20 +170,27 @@ class DatabricksClusterSize:
         *,
         instance_types: dict | None = None,
         driver_node_type: str | None = None,
+        cloud: str = _DEFAULT_CLOUD,
     ) -> dict:
-        driver_node_type = driver_node_type or "Standard_E4a_v4"
+        driver_node_type = driver_node_type or cls._DEFAULT_DRIVER.get(
+            cloud, cls._DEFAULT_DRIVER[_DEFAULT_CLOUD]
+        )
         worker_node_type, number_of_workers = InstanceCalculator.calculate_instances(
             min_instance_count=1,
             desired_cores=desired_cores,
-            instance_types=instance_types or azure_databricks_instance_types,
+            instance_types=(
+                instance_types
+                or cls._INSTANCE_TYPES.get(cloud, cls._INSTANCE_TYPES[_DEFAULT_CLOUD])
+            ),
             desired_workers=desired_workers,
         )
-        return cls.as_json(driver_node_type, worker_node_type, number_of_workers)
+        return cls.as_json(driver_node_type, worker_node_type, number_of_workers, cloud=cloud)
 
     @classmethod
-    def from_cluster_size(cls, cluster_size: ClusterSize) -> dict:
-        driver_node_type, worker_node_type, number_of_workers = cls.mapping[cluster_size]
-        return cls.as_json(driver_node_type, worker_node_type, number_of_workers)
+    def from_cluster_size(cls, cluster_size: ClusterSize, cloud: str = _DEFAULT_CLOUD) -> dict:
+        cloud_mapping = cls.mapping.get(cloud, cls.mapping[_DEFAULT_CLOUD])
+        driver_node_type, worker_node_type, number_of_workers = cloud_mapping[cluster_size]
+        return cls.as_json(driver_node_type, worker_node_type, number_of_workers, cloud=cloud)
 
 
 # Wherobots ----------------------------------------------------------------

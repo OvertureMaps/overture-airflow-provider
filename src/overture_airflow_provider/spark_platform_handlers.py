@@ -578,8 +578,8 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
         from overture_airflow_provider._wherobots import execute_wherobots_job
 
         # Wherobots has no upstream Airflow trigger, so it runs synchronously and
-        # returns the final result with no deferral. The runtime ``version`` is
-        # omitted (GA) unless the caller set WherobotsConfig.version.
+        # returns the final result with no deferral. The runtime ``version``
+        # comes from WherobotsConfig.version ("latest" by default).
         result = execute_wherobots_job(
             setup_info=self.setup_info,
             package_info=package_info,

@@ -15,11 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (Spark 4 / Scala 2.13) — but `SparkImpl.WHEROBOTS_v1_5_0` declares
   Spark 3.5 / Scala 2.12, so any Scala 2.12 JAR died at driver class-load
   time (Python jobs happened to survive, masking the bug). Submissions now
-  omit the run-API `version` field by default so they target the GA runtime.
-  Callers can still opt into another channel explicitly via the new
-  `WherobotsConfig.version` field (e.g. `"preview"`), or per-call via the
-  existing `version=` argument on `build_wherobots_operator_kwargs` /
-  `execute_wherobots_job`. (#81)
+  target the stable runtime by default via the new `WherobotsConfig.version`
+  field, which defaults to `"latest"` (the run API's own default). Set it to
+  `"preview"` to opt into the preview channel deliberately, or `None` to omit
+  the field from the submission; the existing `version=` argument on
+  `build_wherobots_operator_kwargs` / `execute_wherobots_job` still wins
+  per-call. The `wherobots` extra now requires
+  `airflow-providers-wherobots>=1.4.3`, the first release whose operator
+  accepts the `version` kwarg (already an implicit requirement of the old
+  hardcoded value). (#81)
 
 ## [0.7.3] - 2026-08-18
 

@@ -126,12 +126,12 @@ def test_render_wherobots_skips_region_resolution():
     assert isinstance(region, str)
 
 
-def test_render_wherobots_omits_version_by_default():
+def test_render_wherobots_targets_latest_by_default():
     # Regression for #81: rendered output must match the real submission —
-    # no version field means the GA runtime.
+    # the stable "latest" channel, never a hardcoded "preview".
     result = render_spark_job(spark_impl_name="WHEROBOTS_v1_5_0", **_COMMON_KWARGS)
-    assert "version" not in result.operator_kwargs
-    assert "version" not in result.submit_payload
+    assert result.operator_kwargs["version"] == "latest"
+    assert result.submit_payload["version"] == "latest"
 
 
 def test_render_wherobots_honors_config_version_override():

@@ -387,18 +387,19 @@ class WherobotsConfig:
         external_id: External ID for the cross-account assume-role call.
         aws_region: AWS region used for Iceberg credential config and for
             resolving the Wherobots run region.
-        version: Optional Wherobots run-API ``version`` (runtime channel).
-            ``None`` (default) omits the field so submissions target the GA
-            runtime. Set e.g. ``"preview"`` to opt into the preview channel —
-            note the preview stack may run a different Spark/Scala version
-            than the selected ``SparkImpl`` declares (Scala 2.12 JARs fail to
-            load on the Scala 2.13 preview runtime).
+        version: Wherobots run-API ``version`` (runtime channel). Defaults to
+            ``"latest"``, the stable GA runtime (the API's own default). Set
+            ``"preview"`` to opt into the preview channel — note the preview
+            stack may run a different Spark/Scala version than the selected
+            ``SparkImpl`` declares (Scala 2.12 JARs fail to load on the
+            Scala 2.13 preview runtime). Set ``None`` to omit the field from
+            the submission entirely.
     """
 
     role_arn: str = ""
     external_id: str = ""
     aws_region: str = "us-east-1"
-    version: str | None = None
+    version: str | None = "latest"
 
 
 @dataclass

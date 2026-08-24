@@ -284,9 +284,10 @@ def build_wherobots_operator_kwargs(
     in which case the raw AWS region string is returned in ``region``).
 
     ``version=None`` (the default) uses the caller's ``WherobotsConfig.version``
-    override from ``setup_info`` when set, otherwise the field is omitted so
-    submissions target the GA runtime. Pass a string (e.g. ``"preview"``) to
-    force a specific runtime channel.
+    from ``setup_info``: ``"latest"`` (the config default, and the API's own
+    default) targets the stable GA runtime; ``"preview"`` opts into the
+    preview channel; a ``None``/empty config value omits the field entirely.
+    Pass a string here to force a specific channel per-call.
 
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
@@ -443,8 +444,8 @@ def execute_wherobots_job(
 ) -> dict:
     """Submit and wait for a Wherobots job.
 
-    ``version=None`` targets the GA runtime unless the caller opted into
-    another channel via ``WherobotsConfig.version``.
+    ``version=None`` uses the runtime channel from ``WherobotsConfig.version``
+    (``"latest"`` by default).
     """
     if not WHEROBOTS_AVAILABLE:
         raise ImportError("Wherobots dependencies are not installed")

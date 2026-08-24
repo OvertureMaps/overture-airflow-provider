@@ -63,6 +63,28 @@ from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
 
+# @task auto-populates doc_md from the function's own docstring, but Airflow
+# renders that verbatim without dedenting it first (apache/airflow#66477), so
+# any indented continuation line becomes an accidental Markdown code block in
+# the Task Documentation panel. These constants are passed as doc_md
+# explicitly instead -- plain strings, not docstrings, so `ruff format`
+# leaves their indentation alone.
+_SETUP_TASK_DOC = """\
+Resolve versions, build run identifier, project setup_info to XCom.
+
+All string args are Jinja-rendered by Airflow before this function runs
+(they are `op_kwargs` on the underlying PythonOperator).
+"""
+
+_SETUP_CLUSTER_TASK_DOC = """\
+Compute merged Spark config and (for Databricks) the cluster spec.
+
+The four `iceberg_*_config` JSON strings are the `IcebergConfig` fields
+passed as `op_kwargs` (not the dataclass itself), so Airflow renders any
+Jinja in them before this task runs. They are reassembled into an
+`IcebergConfig` and the platform variant is selected here.
+"""
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -258,7 +280,7 @@ def _spark_agnostic_task_group(
         else None
     )
 
-    @task(task_id="setup", retries=2)
+    @task(task_id="setup", retries=2, doc_md=_SETUP_TASK_DOC)
     def setup_task(
         spark_impl_name: str,
         sedona_version: str,
@@ -268,11 +290,7 @@ def _spark_agnostic_task_group(
         parameters: str,
         spark_jar_paths: str,
     ):
-        """Resolve versions, build run identifier, project setup_info to XCom.
-
-        All string args are Jinja-rendered by Airflow before this function
-        runs (they are ``op_kwargs`` on the underlying PythonOperator).
-        """
+        """Resolve versions, build run identifier, project setup_info to XCom."""
         setup_info = setup_spark_job(
             spark_impl_name=spark_impl_name,
             sedona_version=sedona_version,
@@ -303,7 +321,7 @@ def _spark_agnostic_task_group(
         full = rehydrate(setup_info)
         return get_platform_handler(full["spark_family"], full).download_jars()
 
-    @task(task_id="setup_cluster", retries=2)
+    @task(task_id="setup_cluster", retries=2, doc_md=_SETUP_CLUSTER_TASK_DOC)
     def setup_cluster_task(
         setup_info: dict,
         extra_spark_conf: str = "{}",
@@ -317,13 +335,7 @@ def _spark_agnostic_task_group(
         iceberg_s3tables_config: str = "{}",
         iceberg_wherobots_s3tables_config: str = "{}",
     ):
-        """Compute merged Spark config and (for Databricks) the cluster spec.
-
-        The four ``iceberg_*_config`` JSON strings are the ``IcebergConfig``
-        fields passed as ``op_kwargs`` (not the dataclass itself), so Airflow
-        renders any Jinja in them before this task runs. They are reassembled
-        into an ``IcebergConfig`` and the platform variant is selected here.
-        """
+        """Compute merged Spark config and (for Databricks) the cluster spec."""
         full = rehydrate(setup_info)
         iceberg_config = IcebergConfig(
             spark_config=iceberg_primary_config,

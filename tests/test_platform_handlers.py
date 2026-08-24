@@ -112,6 +112,7 @@ def _databricks_setup_info():
         "wherobots_external_id": "",
         "aws_region": "us-east-1",
         "databricks_conf": {"databricks_conn_id": "databricks_default"},
+        "databricks_cloud": "azure",
         "glue_execution_class": "STANDARD",
         "iam_role_name": "AWSGlueServiceRole",
     }
@@ -1019,6 +1020,45 @@ class TestDatabricksSetupCluster:
         assert cluster["node_type_id"] == "Standard_NC8as_T4_v3"
         assert cluster["driver_node_type_id"] == "Standard_NC8as_T4_v3"
         assert cluster["spark_version"] == "15.4.x-gpu-ml-scala2.12"
+
+    def test_aws_cloud_sets_aws_attributes_and_ec2_worker_type(self):
+        # Regression for #78: the cluster builder used to hardcode
+        # azure_attributes with no aws_attributes branch, which Databricks
+        # rejects outright on an AWS workspace.
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "aws"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster = result["new_cluster"]
+        assert "aws_attributes" in cluster
+        assert "azure_attributes" not in cluster
+        assert cluster["node_type_id"].startswith("m5d.")
+
+    def test_cloud_discovery_fills_in_when_unset(self, monkeypatch):
+        import overture_airflow_provider._databricks as dbx
+
+        monkeypatch.setattr(dbx, "discover_databricks_cloud", lambda conn_id: "aws")
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = ""
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        assert "aws_attributes" in result["new_cluster"]
 
     def test_download_python_packages_returns_none(self):
         handler = DatabricksPlatformHandler(_databricks_setup_info())

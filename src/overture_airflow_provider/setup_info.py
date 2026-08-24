@@ -55,6 +55,7 @@ SERIALIZABLE_KEYS = (
     "databricks_driver_node_type",
     "databricks_spark_version",
     "databricks_gpu",
+    "databricks_cloud",
     "glue_execution_class",
     "glue_verbose",
     "glue_output_log_group",

@@ -259,6 +259,17 @@ class SparkPlatformHandler(ABC):
         reports a terminal state. Raises on job failure.
         """
 
+    @abstractmethod
+    def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
+        """Best-effort stop of a remote run left over from a zombie-killed try.
+
+        Called before submitting a new run on retry, when the previous try's
+        run id was recorded but the try never reached a terminal state itself
+        (the scheduler failed it externally). Implementations should raise on
+        failure -- the caller treats this as best-effort and logs a warning,
+        never lets it fail the retry.
+        """
+
 
 class GluePlatformHandler(SparkPlatformHandler):
     """Handler for AWS Glue."""
@@ -370,6 +381,11 @@ class GluePlatformHandler(SparkPlatformHandler):
         if event:
             run_id = event.get("run_id") or event.get("value")
         return complete_glue_job(self.setup_info, run_id, context, handler=self)
+
+    def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
+        from overture_airflow_provider._glue import cancel_glue_run
+
+        cancel_glue_run(run_id, extra)
 
 
 class DatabricksPlatformHandler(SparkPlatformHandler):
@@ -498,6 +514,11 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
 
         return complete_databricks_job(self.setup_info, cluster_info, event, context, handler=self)
 
+    def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
+        from overture_airflow_provider._databricks import cancel_databricks_run
+
+        cancel_databricks_run(run_id, extra)
+
 
 class WherobotsPlatformHandler(SparkPlatformHandler):
     """Handler for Wherobots."""
@@ -603,6 +624,11 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
         cluster_info: dict | None = None,
     ) -> dict:
         raise RuntimeError("Wherobots jobs run synchronously and never defer.")
+
+    def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
+        from overture_airflow_provider._wherobots import cancel_wherobots_run
+
+        cancel_wherobots_run(run_id, extra)
 
 
 _HANDLERS = {

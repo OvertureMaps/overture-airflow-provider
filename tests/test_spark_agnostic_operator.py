@@ -476,3 +476,225 @@ def test_run_launched_returns_false_on_xcom_error():
     ti = MagicMock()
     ti.xcom_pull.side_effect = Exception("db gone")
     assert _make_operator()._run_launched({"ti": ti}) is False
+
+
+# --- Retry-cancel guard ------------------------------------------------------
+#
+# XCom is cleared before every retry, so a zombie-killed try's run id can only
+# survive via the Airflow Variable the retry guard writes. These tests cover
+# the operator side of that hand-off: cancelling a stale run on the next try,
+# and clearing the recorded run once nothing can retry-cancel it anymore.
+
+
+def test_cancel_prior_run_noop_on_first_try():
+    op = _make_operator()
+    handler = MagicMock()
+    ti = MagicMock()
+    ti.try_number = 1
+    with patch("overture_airflow_provider._operator.pop_recorded_run") as mock_pop:
+        op._cancel_prior_run_if_retried({"ti": ti}, handler)
+    mock_pop.assert_not_called()
+    handler.cancel_run.assert_not_called()
+
+
+def test_cancel_prior_run_noop_when_nothing_recorded():
+    op = _make_operator()
+    handler = MagicMock()
+    ti = MagicMock()
+    ti.try_number = 2
+    with patch("overture_airflow_provider._operator.pop_recorded_run", return_value=None):
+        op._cancel_prior_run_if_retried({"ti": ti}, handler)
+    handler.cancel_run.assert_not_called()
+
+
+def test_cancel_prior_run_cancels_recorded_run_on_retry():
+    op = _make_operator()
+    handler = MagicMock()
+    ti = MagicMock()
+    ti.try_number = 2
+    prior = {"platform": "glue", "run_id": "jr_1", "extra": {"job_name": "job"}}
+    with patch("overture_airflow_provider._operator.pop_recorded_run", return_value=prior):
+        op._cancel_prior_run_if_retried({"ti": ti}, handler)
+    handler.cancel_run.assert_called_once_with("jr_1", {"job_name": "job"})
+
+
+def test_cancel_prior_run_swallows_cancel_run_exception():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.cancel_run.side_effect = RuntimeError("platform unreachable")
+    ti = MagicMock()
+    ti.try_number = 2
+    prior = {"platform": "glue", "run_id": "jr_1", "extra": None}
+    with patch("overture_airflow_provider._operator.pop_recorded_run", return_value=prior):
+        op._cancel_prior_run_if_retried({"ti": ti}, handler)  # must not raise
+
+
+def test_execute_calls_cancel_prior_run_before_submit():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_2"}
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch.object(op, "_cancel_prior_run_if_retried") as mock_cancel,
+    ):
+        with pytest.raises(TaskDeferred):
+            op.execute(context)
+
+    mock_cancel.assert_called_once_with(context, handler)
+    # Cancellation must happen before submission -- otherwise a retry could
+    # race the prior try's still-running job while writing to the same path.
+    assert handler.submit_job.call_args is not None
+
+
+def test_finalize_clears_recorded_run_on_success():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {
+        "trigger": None,
+        "result": {"job_url": "https://wherobots/run/1", "status": "SUCCESS"},
+    }
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.clear_recorded_run") as mock_clear,
+    ):
+        op.execute(context)
+
+    mock_clear.assert_called_once_with(context)
+
+
+def test_execute_clears_recorded_run_on_non_retryable_failure():
+    from overture_airflow_provider._airflow_compat import AirflowFailException
+    from overture_airflow_provider._failures import DOWNSTREAM_JOB, FailureInfo
+
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.side_effect = RuntimeError("job blew up")
+    handler.describe_failure.return_value = FailureInfo(
+        platform="WHEROBOTS",
+        job_ref="metrics_job",
+        state="FAILED",
+        classification=DOWNSTREAM_JOB,
+    )
+    ti = MagicMock()
+    ti.xcom_pull.return_value = '{"job_url": "https://wherobots/run/1"}'
+    context = {"ti": ti}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.clear_recorded_run") as mock_clear,
+    ):
+        with pytest.raises(AirflowFailException):
+            op.execute(context)
+
+    mock_clear.assert_called_once_with(context)
+
+
+def test_execute_leaves_recorded_run_on_retryable_failure():
+    from overture_airflow_provider._airflow_compat import AirflowException
+    from overture_airflow_provider._failures import SUBMIT_CONFIG, FailureInfo
+
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.side_effect = RuntimeError("CLUSTER_NOT_FOUND")
+    handler.describe_failure.return_value = FailureInfo(
+        platform="DATABRICKS",
+        job_ref="metrics_job",
+        state="FAILED",
+        reason="CLUSTER_NOT_FOUND",
+        classification=SUBMIT_CONFIG,
+        hint="Cluster config: check the cluster id/policy.",
+    )
+    ti = MagicMock()
+    ti.xcom_pull.return_value = None
+    context = {"ti": ti}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.clear_recorded_run") as mock_clear,
+    ):
+        with pytest.raises(AirflowException):
+            op.execute(context)
+
+    # A retryable submit/config failure never recorded a run in the first
+    # place, and the retry guard exists precisely to catch it next try --
+    # so nothing should be cleared here.
+    mock_clear.assert_not_called()
+
+
+def test_resume_execution_clears_recorded_run_when_trigger_failure_resolves_launched_run():
+    from overture_airflow_provider._airflow_compat import AirflowException, AirflowFailException
+
+    op = _make_operator()
+    handler = MagicMock()
+    handler.complete_job.side_effect = AirflowException("job FAILED")
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch(
+            "overture_airflow_provider._operator._terminal_run_id",
+            return_value="jr_3",
+        ),
+        patch("overture_airflow_provider._operator.clear_recorded_run") as mock_clear,
+    ):
+        with pytest.raises(AirflowFailException):
+            op.resume_execution("__fail__", {"error": "job FAILED"}, context)
+
+    mock_clear.assert_called_once_with(context)
+
+
+def test_resume_execution_clears_recorded_run_on_generic_trigger_crash():
+    from overture_airflow_provider._airflow_compat import AirflowFailException
+    from overture_airflow_provider._failures import TRIGGER_POLLING, FailureInfo
+
+    op = _make_operator()
+    handler = MagicMock()
+    handler.describe_failure.return_value = FailureInfo(
+        platform="GLUE",
+        job_ref="metrics_job",
+        state="FAILED",
+        reason="Triggerer lost connection",
+        classification=TRIGGER_POLLING,
+    )
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.clear_recorded_run") as mock_clear,
+    ):
+        with pytest.raises(AirflowFailException):
+            op.resume_execution(
+                "__fail__",
+                {"error": "Triggerer lost connection", "traceback": ["line1", "line2"]},
+                context,
+            )
+
+    mock_clear.assert_called_once_with(context)

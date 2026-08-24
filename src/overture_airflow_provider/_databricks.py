@@ -2,6 +2,7 @@
 
 import json
 
+from overture_airflow_provider._retry_guard import record_launched_run
 from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 from overture_airflow_provider.spark_platform_handlers import _merge_spark_conf
 
@@ -485,6 +486,19 @@ def submit_databricks_job(
             value=_build_agnostic_xcom_payload(setup_info, job_url=run_page_url),
         )
 
+    if not synchronous_success:
+        # Recorded the moment the run id is known, before deferral, so a
+        # zombie kill anywhere after this point still leaves a trail the next
+        # try can cancel instead of racing a second run against the same
+        # output. Skipped when the run already finished synchronously --
+        # there's nothing left to retry-cancel.
+        record_launched_run(
+            context,
+            platform="databricks",
+            run_id=run_id,
+            extra={"databricks_conn_id": conn_id},
+        )
+
     result = None
     if synchronous_success:
         # Run finished (successfully) before we could defer; build the final
@@ -498,6 +512,15 @@ def submit_databricks_job(
         "result": result,
         "platform_operator": platform_operator,
     }
+
+
+def cancel_databricks_run(run_id: str, extra: dict | None = None) -> None:
+    """Best-effort cancel of a Databricks run left over from a zombie-killed try."""
+    from airflow.providers.databricks.hooks.databricks import DatabricksHook
+
+    extra = extra or {}
+    hook = DatabricksHook(databricks_conn_id=extra.get("databricks_conn_id"))
+    hook.cancel_run(run_id)
 
 
 def complete_databricks_job(

@@ -32,6 +32,7 @@ from overture_airflow_provider._airflow_compat import (
 )
 from overture_airflow_provider._failures import format_failure
 from overture_airflow_provider._report_issue import REPORT_ISSUE_XCOM_KEY
+from overture_airflow_provider._retry_guard import clear_recorded_run, pop_recorded_run
 from overture_airflow_provider.links import (
     SPARK_AGNOSTIC_XCOM_KEY,
     ReportIssueLink,
@@ -137,6 +138,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         full = rehydrate(self.setup_info)
         merged_spark_conf = (self.cluster_info or {}).get("merged_spark_conf", {})
         handler = get_platform_handler(full["spark_family"], full)
+        self._cancel_prior_run_if_retried(context, handler)
 
         try:
             submitted = handler.submit_job(
@@ -175,6 +177,10 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             # is a submit/config fault (e.g. a worker recycle mid-submit) that a
             # caller-configured retry can safely resolve.
             exc_cls = AirflowFailException if run_launched else AirflowException
+            if exc_cls is AirflowFailException:
+                # Non-retryable: nothing will retry-cancel this run, so drop
+                # the recorded run id instead of leaving it to leak.
+                clear_recorded_run(context)
             raise exc_cls(format_failure(info)) from None
 
         trigger = submitted.get("trigger")
@@ -233,11 +239,13 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                     )
                 except AirflowFailException:
                     # Already the classified, non-retryable failure; propagate unchanged.
+                    clear_recorded_run(context)
                     raise
                 except AirflowException as resolve_exc:
                     # complete_job only ever raises plain AirflowException, but a
                     # resolved run_id means the job launched -- never retryable,
                     # same as the launched-and-failed case in execute() above.
+                    clear_recorded_run(context)
                     raise AirflowFailException(str(resolve_exc)) from None
                 except Exception as resolve_exc:  # noqa: BLE001
                     # The run couldn't be resolved, so this falls through to the generic classification.
@@ -251,8 +259,47 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                 run_launched=True,
                 is_trigger_failure=True,
             )
+            clear_recorded_run(context)
             raise AirflowFailException(format_failure(info)) from None
         return super().resume_execution(next_method, next_kwargs, context)
+
+    def _cancel_prior_run_if_retried(self, context, handler) -> None:
+        """Cancel a run recorded by a zombie-killed previous try, if any.
+
+        XCom is cleared before every retry, but the Airflow Variable used by
+        the retry guard isn't -- so a prior try's run id survives here even
+        when the scheduler failed that try externally (a zombie kill) without
+        ever running the operator's own exception handling or ``on_kill``.
+        Best-effort: a failure here never blocks this try's own submission.
+        """
+        ti = context.get("ti") if hasattr(context, "get") else None
+        try_number = getattr(ti, "try_number", None) if ti is not None else None
+        if not try_number or try_number <= 1:
+            return
+        prior = pop_recorded_run(context)
+        if not prior or not prior.get("run_id"):
+            return
+        try:
+            handler.cancel_run(prior["run_id"], prior.get("extra"))
+        except Exception:
+            self.log.warning(
+                "Retry %s: could not cancel prior %s run %s left over from the "
+                "previous try; it may still be writing output concurrently "
+                "with this retry.",
+                try_number,
+                prior.get("platform"),
+                prior.get("run_id"),
+                exc_info=True,
+            )
+        else:
+            self.log.warning(
+                "Retry %s: cancelled prior %s run %s left over from a "
+                "zombie-killed try to avoid two concurrent runs writing the "
+                "same output.",
+                try_number,
+                prior.get("platform"),
+                prior["run_id"],
+            )
 
     def _push_report_issue_config(self, context) -> None:
         """Push the report-issue config to XCom so the link works even on failure.
@@ -291,6 +338,9 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             return False
 
     def _finalize(self, context, result: dict) -> dict:
+        # This try reached a terminal (success) state on its own -- nothing
+        # left for a retry to cancel.
+        clear_recorded_run(context)
         agnostic_xcom = _build_agnostic_xcom(self.setup_info, result)
         ti = context.get("ti") if hasattr(context, "get") else None
         if ti is not None and callable(getattr(ti, "xcom_push", None)):

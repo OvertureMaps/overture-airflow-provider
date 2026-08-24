@@ -337,6 +337,7 @@ class TestGlueExecuteJob:
                 "overture_airflow_provider._glue.boto3.client",
                 return_value=mock_glue_client,
             ),
+            patch("overture_airflow_provider._glue.record_launched_run"),
         ):
             context = self._make_context(mapping=mapping_context)
             result = submit_glue_job(
@@ -1063,6 +1064,7 @@ class TestDatabricksSubmitJob:
                 "airflow.providers.databricks.hooks.databricks.DatabricksHook",
                 return_value=mock_hook,
             ),
+            patch("overture_airflow_provider._databricks.record_launched_run"),
         ):
             result = submit_databricks_job(
                 setup_info=_databricks_setup_info(),
@@ -1351,6 +1353,7 @@ class TestWherobotsExecuteJob:
                 "overture_airflow_provider._airflow_compat.BaseHook.get_connection",
                 return_value=MagicMock(host="api.cloud.wherobots.com"),
             ),
+            patch("overture_airflow_provider._wherobots.record_launched_run"),
         ):
             result = execute_wherobots_job(
                 setup_info=setup_info,
@@ -1746,3 +1749,29 @@ class TestReportIssueLink:
         ):
             url = link.get_link(self._make_operator(), ti_key=MagicMock(run_id="r1"))
         assert url.startswith("https://github.com/owner/repo/issues/new?")
+
+
+class TestCancelRun:
+    """Each platform handler's cancel_run must delegate to its module-level
+    cancel_*_run helper, which the retry guard calls when a zombie-killed
+    prior try's run needs to be stopped before a retry resubmits."""
+
+    def test_glue_delegates_to_cancel_glue_run(self):
+        handler = GluePlatformHandler(_glue_setup_info())
+        with patch("overture_airflow_provider._glue.cancel_glue_run") as mock_cancel:
+            handler.cancel_run("jr_123", {"job_name": "job", "region": "us-west-2"})
+        mock_cancel.assert_called_once_with("jr_123", {"job_name": "job", "region": "us-west-2"})
+
+    def test_databricks_delegates_to_cancel_databricks_run(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        with patch("overture_airflow_provider._databricks.cancel_databricks_run") as mock_cancel:
+            handler.cancel_run("12345", {"databricks_conn_id": "databricks_default"})
+        mock_cancel.assert_called_once_with("12345", {"databricks_conn_id": "databricks_default"})
+
+    def test_wherobots_delegates_to_cancel_wherobots_run(self):
+        handler = WherobotsPlatformHandler(_wherobots_setup_info())
+        with patch("overture_airflow_provider._wherobots.cancel_wherobots_run") as mock_cancel:
+            handler.cancel_run("wb_run_123", {"wherobots_conn_id": "wherobots_default"})
+        mock_cancel.assert_called_once_with(
+            "wb_run_123", {"wherobots_conn_id": "wherobots_default"}
+        )

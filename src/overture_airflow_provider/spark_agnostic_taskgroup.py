@@ -63,12 +63,8 @@ from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
 
-# @task auto-populates doc_md from the function's own docstring, but Airflow
-# renders that verbatim without dedenting it first (apache/airflow#66477), so
-# any indented continuation line becomes an accidental Markdown code block in
-# the Task Documentation panel. These constants are passed as doc_md
-# explicitly instead -- plain strings, not docstrings, so `ruff format`
-# leaves their indentation alone.
+# Task Documentation for these two: see test_task_doc_md.py for why doc_md is
+# passed explicitly here instead of relying on @task's docstring auto-populate.
 _SETUP_TASK_DOC = """\
 Resolve versions, build run identifier, project setup_info to XCom.
 

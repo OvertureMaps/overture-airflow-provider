@@ -274,7 +274,6 @@ def build_wherobots_operator_kwargs(
     spark_cluster_desired_workers: str,
     wherobots_role_arn: str,
     task_id: str,
-    version: str | None = None,
     resolve_region: bool = True,
 ) -> dict:
     """Pure-Python assembly of WherobotsRunOperator kwargs.
@@ -283,17 +282,16 @@ def build_wherobots_operator_kwargs(
     enum (set ``resolve_region=False`` to skip when the SDK isn't installed,
     in which case the raw AWS region string is returned in ``region``).
 
-    ``version=None`` (the default) uses the caller's ``WherobotsConfig.version``
-    from ``setup_info``: ``"latest"`` (the config default, and the API's own
-    default) targets the stable GA runtime; ``"preview"`` opts into the
-    preview channel; a ``None``/empty config value omits the field entirely.
-    Pass a string here to force a specific channel per-call.
+    The run-API ``version`` (runtime channel) comes from
+    ``WherobotsConfig.version`` via ``setup_info["wherobots_version"]``:
+    ``"latest"`` (the config default, and the API's own default) targets the
+    stable GA runtime; ``"preview"`` opts into the preview channel; a
+    ``None``/empty/missing value omits the field entirely.
 
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
     """
-    if version is None:
-        version = setup_info.get("wherobots_version") or None
+    version = setup_info.get("wherobots_version") or None
 
     my_parameters = setup_info["parameters"]
 
@@ -440,12 +438,11 @@ def execute_wherobots_job(
     wherobots_role_arn: str,
     task_id: str,
     context,
-    version: str | None = None,
 ) -> dict:
     """Submit and wait for a Wherobots job.
 
-    ``version=None`` uses the runtime channel from ``WherobotsConfig.version``
-    (``"latest"`` by default).
+    The runtime channel comes from ``WherobotsConfig.version`` (``"latest"``
+    by default) via ``setup_info["wherobots_version"]``.
     """
     if not WHEROBOTS_AVAILABLE:
         raise ImportError("Wherobots dependencies are not installed")
@@ -462,7 +459,6 @@ def execute_wherobots_job(
         spark_cluster_desired_workers=spark_cluster_desired_workers,
         wherobots_role_arn=wherobots_role_arn,
         task_id=task_id,
-        version=version,
         resolve_region=True,
     )
 

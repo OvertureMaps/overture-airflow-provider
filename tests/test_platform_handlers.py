@@ -1656,11 +1656,6 @@ class TestWherobotsRunVersion:
         assert "version" not in built["operator_kwargs"]
         assert "version" not in built["submit_payload"]
 
-    def test_explicit_version_argument_wins(self):
-        built = self._build(version="preview")
-        assert built["operator_kwargs"]["version"] == "preview"
-        assert built["submit_payload"]["version"] == "preview"
-
 
 class TestSparkJobLink:
     """Tests for SparkJobLink.get_link."""

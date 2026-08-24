@@ -1043,6 +1043,45 @@ class TestDatabricksSetupCluster:
         assert "azure_attributes" not in cluster
         assert cluster["node_type_id"].startswith("m5d.")
 
+    def test_aws_cloud_sets_s3_cluster_log_conf(self):
+        # Regression for #86: the cluster builder used to hardcode a `dbfs`
+        # cluster_log_conf destination with no cloud branch, which UC-first AWS
+        # workspaces reject (no legacy DBFS root access).
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "aws"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster_log_conf = result["new_cluster"]["cluster_log_conf"]
+        assert "s3" in cluster_log_conf
+        assert "dbfs" not in cluster_log_conf
+        assert cluster_log_conf["s3"]["destination"].startswith("s3://test-bucket/")
+
+    def test_azure_cloud_keeps_dbfs_cluster_log_conf(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "azure"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster_log_conf = result["new_cluster"]["cluster_log_conf"]
+        assert "dbfs" in cluster_log_conf
+        assert "s3" not in cluster_log_conf
+        assert cluster_log_conf["dbfs"]["destination"].startswith("dbfs:/FileStore/deploy/")
+
     def test_cloud_discovery_fills_in_when_unset(self, monkeypatch):
         import overture_airflow_provider._databricks as dbx
 

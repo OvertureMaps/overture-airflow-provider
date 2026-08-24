@@ -303,8 +303,16 @@ class DatabricksConfig:
         extra_libraries: Extra ``{"pypi": {"package": "..."}}`` library entries
             appended to the auto-generated cluster libraries list. Use for
             pinning environment-specific transitive deps.
-        dbfs_root_template: Template for the DBFS root used to stage job assets.
+        dbfs_root_template: Template for the DBFS root used to stage job assets
+            and, on non-AWS clouds, the ``cluster_log_conf`` destination.
             ``{s3_assets_root}`` is substituted at runtime.
+
+            Deprecated: DBFS is Databricks' legacy filesystem, superseded by
+            Unity Catalog volumes/external locations, and this opt-in path
+            will be removed in a future major version; see
+            OvertureMaps/overture-airflow-provider#87. AWS callers already
+            avoid it by setting ``cloud="aws"``, which routes cluster logs
+            through ``s3://{s3_assets_bucket}/...`` instead.
         workspace_scripts_path_template: Template for the workspace path
             holding the runner notebook and init script. ``{s3_assets_root}`` is
             substituted at runtime. Use a **bare** workspace path (e.g.

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-24
+
+### Fixed
+
+- **A zombie-killed Spark task's retry resubmitted the job while the original
+  run kept writing to the same output, duplicating/corrupting it.**
+  `SparkAgnosticExecuteOperator` never cancelled a still-running remote job
+  before a retry submitted a new one, and a zombie kill bypasses `on_kill()`
+  entirely (the scheduler fails the task instance externally without
+  signaling the process), so there was no hook to catch it. Any caller with
+  `retries >= 1` was exposed. Each platform handler (Glue, Databricks,
+  Wherobots) now records the launched run id to the task instance's own
+  XCom as soon as it's known, and the operator wraps `on_failure_callback`
+  (chaining through any caller-supplied one) to read that recorded run and
+  cancel it at failure-detection time, before a retry can resubmit.
+  Fixes #83.
+
+- **`setup`/`setup_cluster`'s Task Documentation rendered as a Markdown code
+  block, with literal double-backtick markup instead of inline code.** `@task`
+  auto-populates `doc_md` from the function's own docstring without
+  dedenting it first (apache/airflow#66477 is still open), so a docstring's
+  indented continuation lines land as an indented code block once rendered.
+  Both tasks now pass `doc_md` explicitly as a flush-left string constant
+  instead.
+
 ## [0.7.3] - 2026-08-18
 
 ### Fixed

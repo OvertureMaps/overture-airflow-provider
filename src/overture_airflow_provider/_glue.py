@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 import boto3
 
+from overture_airflow_provider._retry_guard import record_launched_run
 from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize
 from overture_airflow_provider.spark import SparkSedona
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
@@ -464,11 +465,29 @@ def submit_glue_job(
             value=_build_agnostic_xcom_payload(setup_info, job_url=job_url),
         )
 
+    # Recorded the moment the run id is known -- before any polling/deferral --
+    # so a zombie kill anywhere after this point still leaves a trail this
+    # task instance's on_failure_callback can cancel instead of a retry
+    # racing a second run against the same output.
+    record_launched_run(
+        context,
+        platform="glue",
+        run_id=run_id,
+        extra={"job_name": job_name, "region": region},
+    )
+
     return {
         "trigger": trigger,
         "run_id": run_id,
         "platform_operator": platform_operator,
     }
+
+
+def cancel_glue_run(run_id: str, extra: dict | None = None) -> None:
+    """Best-effort stop of a Glue job run left over from a zombie-killed try."""
+    extra = extra or {}
+    glue_client = boto3.client("glue", region_name=extra.get("region"))
+    glue_client.batch_stop_job_run(JobName=extra.get("job_name"), JobRunIds=[run_id])
 
 
 #: AWS's own default continuous-logging output log group; see GlueConfig

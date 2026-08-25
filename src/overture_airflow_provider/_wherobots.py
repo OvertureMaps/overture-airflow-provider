@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 
+from overture_airflow_provider._retry_guard import record_launched_run
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 from overture_airflow_provider.spark_platform_handlers import registered_catalog_names
@@ -478,6 +479,16 @@ def execute_wherobots_job(
                 kwargs.get("value") if "value" in kwargs else (args[1] if len(args) > 1 else None)
             )
             if key == "run_id" and value and not early_xcom_pushed:
+                # Recorded the moment the run id is known -- Wherobots submission
+                # blocks until the run finishes, so this is the only chance to
+                # leave a trail this task instance's on_failure_callback can
+                # cancel if a zombie kill hits mid-run.
+                record_launched_run(
+                    context,
+                    platform="wherobots",
+                    run_id=str(value),
+                    extra={"wherobots_conn_id": platform_operator.wherobots_conn_id},
+                )
                 job_url = _build_wherobots_run_url(platform_operator.wherobots_conn_id, str(value))
                 if job_url:
                     original_xcom_push(
@@ -500,3 +511,14 @@ def execute_wherobots_job(
     if captured_job_url:
         result["job_url"] = captured_job_url
     return result
+
+
+def cancel_wherobots_run(run_id: str, extra: dict | None = None) -> None:
+    """Best-effort cancel of a Wherobots run left over from a zombie-killed try."""
+    from airflow_providers_wherobots.hooks.base import DEFAULT_CONN_ID
+    from airflow_providers_wherobots.hooks.rest_api import WherobotsRestAPIHook
+
+    extra = extra or {}
+    conn_id = extra.get("wherobots_conn_id") or DEFAULT_CONN_ID
+    with WherobotsRestAPIHook(conn_id) as hook:
+        hook.cancel_run(run_id)

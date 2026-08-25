@@ -476,3 +476,173 @@ def test_run_launched_returns_false_on_xcom_error():
     ti = MagicMock()
     ti.xcom_pull.side_effect = Exception("db gone")
     assert _make_operator()._run_launched({"ti": ti}) is False
+
+
+# --- Retry-cancel guard ------------------------------------------------------
+#
+# Airflow only clears a task instance's XCom right before its *next* try
+# starts, not at failure-detection time, and it invokes on_failure_callback
+# at failure-detection time even for a zombie kill (a scheduler-side path,
+# since the worker process is already gone). So the operator wraps
+# on_failure_callback to read whatever run id this task instance recorded
+# before it died and cancel it, before a retry can race it.
+
+
+def test_init_wraps_on_failure_callback():
+    op = _make_operator()
+    assert op.on_failure_callback == op._cancel_run_then_delegate
+
+
+def test_cancel_run_then_delegate_noop_when_nothing_recorded():
+    op = _make_operator()
+    handler = MagicMock()
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=None),
+    ):
+        op._cancel_run_then_delegate(context)
+
+    handler.cancel_run.assert_not_called()
+
+
+def test_cancel_run_then_delegate_cancels_recorded_run():
+    op = _make_operator()
+    handler = MagicMock()
+    context = {"ti": MagicMock()}
+    recorded = {"platform": "glue", "run_id": "jr_1", "extra": {"job_name": "job"}}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=recorded),
+    ):
+        op._cancel_run_then_delegate(context)
+
+    handler.cancel_run.assert_called_once_with("jr_1", {"job_name": "job"})
+
+
+def test_cancel_run_then_delegate_swallows_cancel_run_exception():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.cancel_run.side_effect = RuntimeError("platform unreachable")
+    context = {"ti": MagicMock()}
+    recorded = {"platform": "glue", "run_id": "jr_1", "extra": None}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=recorded),
+    ):
+        op._cancel_run_then_delegate(context)  # must not raise
+
+
+def test_cancel_run_then_delegate_calls_user_callback():
+    user_callback = MagicMock()
+    op = SparkAgnosticExecuteOperator(
+        task_id="execute_spark_job",
+        setup_info=_SETUP_INFO,
+        package_info={},
+        jar_info={},
+        cluster_info={"merged_spark_conf": {}},
+        module_name="my_module",
+        class_name="MyClass",
+        parameters="{}",
+        on_failure_callback=user_callback,
+    )
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch("overture_airflow_provider._operator.get_platform_handler", return_value=MagicMock()),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=None),
+    ):
+        op._cancel_run_then_delegate(context)
+
+    user_callback.assert_called_once_with(context)
+
+
+def test_cancel_run_then_delegate_calls_every_user_callback_in_a_list():
+    first_callback = MagicMock()
+    second_callback = MagicMock()
+    op = SparkAgnosticExecuteOperator(
+        task_id="execute_spark_job",
+        setup_info=_SETUP_INFO,
+        package_info={},
+        jar_info={},
+        cluster_info={"merged_spark_conf": {}},
+        module_name="my_module",
+        class_name="MyClass",
+        parameters="{}",
+        on_failure_callback=[first_callback, second_callback],
+    )
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch("overture_airflow_provider._operator.get_platform_handler", return_value=MagicMock()),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=None),
+    ):
+        op._cancel_run_then_delegate(context)
+
+    first_callback.assert_called_once_with(context)
+    second_callback.assert_called_once_with(context)
+
+
+def test_cancel_run_then_delegate_still_calls_user_callback_when_cancel_fails():
+    # A failure cancelling the prior run is a safety-net gap, not a reason to
+    # also swallow the caller's own on_failure_callback (e.g. their alerting).
+    user_callback = MagicMock()
+    op = SparkAgnosticExecuteOperator(
+        task_id="execute_spark_job",
+        setup_info=_SETUP_INFO,
+        package_info={},
+        jar_info={},
+        cluster_info={"merged_spark_conf": {}},
+        module_name="my_module",
+        class_name="MyClass",
+        parameters="{}",
+        on_failure_callback=user_callback,
+    )
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", side_effect=RuntimeError("boom")),
+    ):
+        op._cancel_run_then_delegate(context)
+
+    user_callback.assert_called_once_with(context)
+
+
+def test_execute_no_longer_calls_cancel_before_submit():
+    # The retry-cancel guard now runs from on_failure_callback (at
+    # failure-detection time) instead of reactively at the start of the next
+    # try, so execute() itself has nothing left to do for it up front.
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_2"}
+    context = {"ti": MagicMock()}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run") as mock_read,
+    ):
+        with pytest.raises(TaskDeferred):
+            op.execute(context)
+
+    mock_read.assert_not_called()

@@ -32,6 +32,7 @@ from overture_airflow_provider._airflow_compat import (
 )
 from overture_airflow_provider._failures import format_failure
 from overture_airflow_provider._report_issue import REPORT_ISSUE_XCOM_KEY
+from overture_airflow_provider._retry_guard import read_recorded_run
 from overture_airflow_provider.links import (
     SPARK_AGNOSTIC_XCOM_KEY,
     ReportIssueLink,
@@ -115,6 +116,9 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         report_issue_config=None,
         **kwargs,
     ):
+        # Wrapped below so a zombie-killed try's run still gets cancelled even
+        # when the caller supplies their own on_failure_callback.
+        user_on_failure_callback = kwargs.pop("on_failure_callback", None)
         super().__init__(**kwargs)
         self.setup_info = setup_info
         self.package_info = package_info
@@ -128,6 +132,8 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         self.spark_cluster_desired_worker_cores = spark_cluster_desired_worker_cores
         self.spark_cluster_desired_workers = spark_cluster_desired_workers
         self.report_issue_config = report_issue_config or None
+        self._user_on_failure_callback = user_on_failure_callback
+        self.on_failure_callback = self._cancel_run_then_delegate
         # Opt-in: only surface the "Report Issue" link when a target is configured.
         if self.report_issue_config and self.report_issue_config.get("target"):
             self.operator_extra_links = (ReportIssueLink(),)
@@ -253,6 +259,47 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             )
             raise AirflowFailException(format_failure(info)) from None
         return super().resume_execution(next_method, next_kwargs, context)
+
+    def _cancel_run_then_delegate(self, context) -> None:
+        """Cancel a run this task instance recorded, then run the caller's
+        own ``on_failure_callback`` (if any) unchanged.
+
+        Airflow invokes ``on_failure_callback`` at failure-detection time --
+        for a zombie kill that runs from the scheduler/DAG-processor, not the
+        dead worker, since the worker never gets to run its own exception
+        handling or ``on_kill``. It still sees this task instance's own XCom
+        though: Airflow only clears XCom right before the *next* try starts,
+        not when a try fails. That's early enough to cancel a still-running
+        remote job before a retry resubmits and both write the same output
+        concurrently. Best-effort throughout: nothing here should ever stop
+        the caller's own callback from running.
+        """
+        try:
+            full = rehydrate(self.setup_info)
+            handler = get_platform_handler(full["spark_family"], full)
+            recorded = read_recorded_run(context)
+            if recorded and recorded.get("run_id"):
+                handler.cancel_run(recorded["run_id"], recorded.get("extra"))
+                self.log.warning(
+                    "Cancelled %s run %s left over from this failed try, so a "
+                    "retry doesn't race it while writing the same output.",
+                    recorded.get("platform"),
+                    recorded["run_id"],
+                )
+        except Exception:
+            self.log.warning(
+                "Could not cancel a run left over from this failed try; it "
+                "may still be writing output concurrently with a retry.",
+                exc_info=True,
+            )
+
+        callbacks = self._user_on_failure_callback
+        if not callbacks:
+            return
+        if not isinstance(callbacks, (list, tuple)):
+            callbacks = [callbacks]
+        for callback in callbacks:
+            callback(context)
 
     def _push_report_issue_config(self, context) -> None:
         """Push the report-issue config to XCom so the link works even on failure.

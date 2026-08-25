@@ -159,6 +159,33 @@ def discover_databricks_cloud(databricks_conn_id: str) -> str:
     )
 
 
+def _build_cluster_log_conf(cloud: str, setup_info: dict, run_identifier: str) -> dict:
+    """Build the ``cluster_log_conf`` destination for the target cloud.
+
+    AWS UC-first workspaces commonly don't grant legacy DBFS root access, so
+    AWS gets an ``s3`` destination built from the same asset-staging bucket
+    the Glue/Wherobots builders already use (see #86). Azure/GCP keep the
+    ``dbfs`` destination via ``DatabricksConfig.dbfs_root_template``.
+
+    ``dbfs`` is a legacy opt-in path: Databricks is deprecating the DBFS root
+    in favor of Unity Catalog volumes/external locations, so
+    ``dbfs_root_template`` and this branch will be removed in a future major
+    version (OvertureMaps/overture-airflow-provider#87). Prefer ``cloud="aws"``
+    (or a UC-native destination once one is added) on new setups.
+    """
+    if cloud == "aws":
+        s3_bucket = setup_info["s3_assets_bucket"]
+        s3_root = setup_info["s3_assets_root"]
+        destination = f"s3://{s3_bucket}/{s3_root}/{run_identifier}/sparkLogs"
+        return {"s3": {"destination": destination}}
+
+    dbfs_root = setup_info["databricks_dbfs_root_template"].format(
+        s3_assets_root=setup_info["s3_assets_root"]
+    )
+    destination = f"{dbfs_root}/{run_identifier}/sparkLogs"
+    return {"dbfs": {"destination": destination}}
+
+
 def _resolve_databricks_cloud(setup_info: dict) -> str:
     """Resolve the target cloud: explicit override wins, else auto-discover.
 
@@ -276,15 +303,6 @@ def setup_databricks_cluster(
 
     py_pi_client = setup_info["py_pi_client"]
 
-    # DBFS layout (templates caller-supplied to keep platform paths configurable).
-    dbfs_root = setup_info["databricks_dbfs_root_template"].format(
-        s3_assets_root=setup_info["s3_assets_root"]
-    )
-    dbfs_prefix = f"{dbfs_root}/{run_identifier}"
-    cluster_logs_path = f"{dbfs_prefix}/sparkLogs"
-
-    print(f"Databricks logs_path: {cluster_logs_path}")
-
     # extra_libraries lets the caller pin transitive deps (e.g. numpy/geopandas)
     # without the provider hardcoding versions.
     extra_libraries = setup_info.get("databricks_extra_libraries", []) or []
@@ -328,6 +346,9 @@ def setup_databricks_cluster(
 
     node_config = _resolve_databricks_node_config(setup_info)
     cloud = _resolve_databricks_cloud(setup_info)
+
+    cluster_log_conf = _build_cluster_log_conf(cloud, setup_info, run_identifier)
+    print(f"Databricks cluster_log_conf: {cluster_log_conf}")
 
     databricks_spark_conf = setup_info.get("databricks_spark_conf", {}) or {}
     databricks_spark_env_vars = setup_info.get("databricks_spark_env_vars", {}) or {}
@@ -377,7 +398,7 @@ def setup_databricks_cluster(
                 }
             }
         ],
-        "cluster_log_conf": {"dbfs": {"destination": cluster_logs_path}},
+        "cluster_log_conf": cluster_log_conf,
         "custom_tags": custom_tags,
     }
 

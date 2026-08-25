@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-25
+
+### Fixed
+
+- **Databricks `cluster_log_conf` hardcoded a `dbfs` destination, rejected on
+  AWS UC-first workspaces.** `setup_databricks_cluster` always wrote
+  `{"dbfs": {"destination": ...}}` built from `DatabricksConfig.dbfs_root_template`,
+  regardless of `DatabricksConfig.cloud`. Databricks' Clusters API only
+  accepts `dbfs` or `s3` destinations, and UC-first AWS workspaces (one
+  workspace per managed account, no legacy DBFS root) reject the `dbfs` one
+  outright (`INVALID_PARAMETER_VALUE: Invalid cluster log storage info`).
+  Confirmed live against `tf-data-platform`'s AWS Databricks smoke test
+  (fixes #86). Cluster log delivery now branches on `cloud` the same way #79
+  branched `*_attributes`: AWS gets an `s3` destination built from the same
+  `s3_assets_bucket`/`s3_assets_root` the Glue/Wherobots builders already use,
+  Azure/GCP keep the `dbfs` destination.
+
+### Deprecated
+
+- **`DatabricksConfig.dbfs_root_template`** (and the underlying DBFS cluster
+  log path). Databricks is deprecating the legacy DBFS root in favor of Unity
+  Catalog volumes/external locations; this field and its `dbfs` branch will be
+  removed in a future major version (OvertureMaps/overture-airflow-provider#87).
+
 ## [0.10.0] - 2026-08-24
 
 ### Fixed

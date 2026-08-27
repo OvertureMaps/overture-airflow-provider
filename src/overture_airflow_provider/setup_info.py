@@ -56,6 +56,7 @@ SERIALIZABLE_KEYS = (
     "databricks_spark_version",
     "databricks_gpu",
     "databricks_cloud",
+    "databricks_aws_instance_profile_arn",
     "glue_execution_class",
     "glue_verbose",
     "glue_output_log_group",

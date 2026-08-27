@@ -379,6 +379,13 @@ class DatabricksConfig:
             the workspace connection's host via the ``databricks-sdk`` (no API
             round trip; requires the ``[databricks]`` extra and a reachable
             connection at setup time).
+        aws_instance_profile_arn: AWS instance profile ARN registered with the
+            workspace, threaded into ``aws_attributes.instance_profile_arn``
+            when ``cloud == "aws"``. Databricks requires a per-cluster instance
+            profile for an ``s3`` ``cluster_log_conf`` destination (see
+            OvertureMaps/overture-airflow-provider#90); ignored on Azure/GCP.
+            Leave empty to omit ``instance_profile_arn`` entirely, matching the
+            provider's prior behavior.
     """
 
     cluster_conf: dict[str, Any] = field(default_factory=dict)
@@ -394,6 +401,7 @@ class DatabricksConfig:
     spark_version: str = ""
     gpu: bool = False
     cloud: str = "azure"
+    aws_instance_profile_arn: str = ""
 
 
 @dataclass

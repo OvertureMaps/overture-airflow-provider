@@ -130,6 +130,7 @@ def setup_spark_job(
         "databricks_spark_version": databricks_config.spark_version,
         "databricks_gpu": databricks_config.gpu,
         "databricks_cloud": databricks_config.cloud,
+        "databricks_aws_instance_profile_arn": databricks_config.aws_instance_profile_arn,
         "glue_execution_class": glue_config.execution_class,
         "glue_verbose": glue_config.verbose,
         "glue_output_log_group": glue_config.output_log_group,

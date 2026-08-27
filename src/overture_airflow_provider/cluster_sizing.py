@@ -118,7 +118,7 @@ class DatabricksClusterSize:
     _DEFAULT_DRIVER = {"azure": "Standard_E4a_v4", "aws": "m5d.xlarge"}
 
     @classmethod
-    def _cloud_attributes(cls, cloud: str) -> dict:
+    def _cloud_attributes(cls, cloud: str, aws_instance_profile_arn: str = "") -> dict:
         """Return the single cloud-specific attributes key the Clusters API accepts.
 
         Databricks rejects a cluster spec carrying ``azure_attributes`` against
@@ -126,14 +126,15 @@ class DatabricksClusterSize:
         present, matching the workspace's actual cloud.
         """
         if cloud == "aws":
-            return {
-                "aws_attributes": {
-                    "first_on_demand": 1,
-                    "availability": "SPOT_WITH_FALLBACK",
-                    "zone_id": "auto",
-                    "spot_bid_price_percent": 100,
-                }
+            aws_attributes = {
+                "first_on_demand": 1,
+                "availability": "SPOT_WITH_FALLBACK",
+                "zone_id": "auto",
+                "spot_bid_price_percent": 100,
             }
+            if aws_instance_profile_arn:
+                aws_attributes["instance_profile_arn"] = aws_instance_profile_arn
+            return {"aws_attributes": aws_attributes}
         if cloud == "gcp":
             return {
                 "gcp_attributes": {
@@ -150,7 +151,12 @@ class DatabricksClusterSize:
 
     @classmethod
     def as_json(
-        cls, driver_node_type, worker_node_type, number_of_workers, cloud: str = _DEFAULT_CLOUD
+        cls,
+        driver_node_type,
+        worker_node_type,
+        number_of_workers,
+        cloud: str = _DEFAULT_CLOUD,
+        aws_instance_profile_arn: str = "",
     ) -> dict:
         return {
             "node_type_id": worker_node_type,
@@ -159,7 +165,7 @@ class DatabricksClusterSize:
                 "min_workers": number_of_workers,
                 "max_workers": number_of_workers,
             },
-            **cls._cloud_attributes(cloud),
+            **cls._cloud_attributes(cloud, aws_instance_profile_arn),
         }
 
     @classmethod
@@ -171,6 +177,7 @@ class DatabricksClusterSize:
         instance_types: dict | None = None,
         driver_node_type: str | None = None,
         cloud: str = _DEFAULT_CLOUD,
+        aws_instance_profile_arn: str = "",
     ) -> dict:
         driver_node_type = driver_node_type or cls._DEFAULT_DRIVER.get(
             cloud, cls._DEFAULT_DRIVER[_DEFAULT_CLOUD]
@@ -184,13 +191,30 @@ class DatabricksClusterSize:
             ),
             desired_workers=desired_workers,
         )
-        return cls.as_json(driver_node_type, worker_node_type, number_of_workers, cloud=cloud)
+        return cls.as_json(
+            driver_node_type,
+            worker_node_type,
+            number_of_workers,
+            cloud=cloud,
+            aws_instance_profile_arn=aws_instance_profile_arn,
+        )
 
     @classmethod
-    def from_cluster_size(cls, cluster_size: ClusterSize, cloud: str = _DEFAULT_CLOUD) -> dict:
+    def from_cluster_size(
+        cls,
+        cluster_size: ClusterSize,
+        cloud: str = _DEFAULT_CLOUD,
+        aws_instance_profile_arn: str = "",
+    ) -> dict:
         cloud_mapping = cls.mapping.get(cloud, cls.mapping[_DEFAULT_CLOUD])
         driver_node_type, worker_node_type, number_of_workers = cloud_mapping[cluster_size]
-        return cls.as_json(driver_node_type, worker_node_type, number_of_workers, cloud=cloud)
+        return cls.as_json(
+            driver_node_type,
+            worker_node_type,
+            number_of_workers,
+            cloud=cloud,
+            aws_instance_profile_arn=aws_instance_profile_arn,
+        )
 
 
 # Wherobots ----------------------------------------------------------------

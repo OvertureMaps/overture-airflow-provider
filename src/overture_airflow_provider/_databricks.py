@@ -369,6 +369,9 @@ def setup_databricks_cluster(
             driver_node_type=node_config["driver_node_type"],
             cloud=cloud,
             aws_instance_profile_arn=setup_info.get("databricks_aws_instance_profile_arn", ""),
+            availability=setup_info.get("databricks_spot_availability", ""),
+            spot_bid_price_percent=setup_info.get("databricks_aws_spot_bid_price_percent"),
+            spot_bid_max_price=setup_info.get("databricks_azure_spot_bid_max_price"),
         ),
         "spark_version": (node_config["spark_version"] or spark_impl.get_native_version()),
         "spark_conf": _merge_spark_conf(

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-27
+
+### Added
+
+- **`DatabricksConfig.spot_availability`, `aws_spot_bid_price_percent`, and
+  `azure_spot_bid_max_price`.** The provider previously hardcoded
+  spot-with-fallback and its bid price/max price in
+  `DatabricksClusterSize._cloud_attributes`, with no way for a caller to opt a
+  workspace out of spot or tune the bid. These three fields override the
+  `availability`/`spot_bid_price_percent`/`spot_bid_max_price` keys in
+  `aws_attributes`/`azure_attributes` (e.g. set `spot_availability="ON_DEMAND"`
+  to disable spot); left unset, they keep today's hardcoded defaults
+  (`SPOT_WITH_FALLBACK*`, `100`, `-1`) unchanged.
+
 ## [0.10.2] - 2026-08-27
 
 ### Fixed

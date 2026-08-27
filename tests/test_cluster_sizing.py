@@ -251,6 +251,39 @@ class TestDatabricksClusterSizeCloudAttributes:
         )
         assert "aws_attributes" not in result
 
+    def test_default_spot_availability_and_bid_price_unchanged(self):
+        # Existing behavior when no overrides are passed.
+        aws_result = DatabricksClusterSize.from_desired_cores(40, cloud="aws")
+        assert aws_result["aws_attributes"]["availability"] == "SPOT_WITH_FALLBACK"
+        assert aws_result["aws_attributes"]["spot_bid_price_percent"] == 100
+
+        azure_result = DatabricksClusterSize.from_desired_cores(40, cloud="azure")
+        assert azure_result["azure_attributes"]["availability"] == "SPOT_WITH_FALLBACK_AZURE"
+        assert azure_result["azure_attributes"]["spot_bid_max_price"] == -1
+
+    def test_availability_override_applies_per_cloud(self):
+        aws_result = DatabricksClusterSize.from_desired_cores(
+            40, cloud="aws", availability="ON_DEMAND"
+        )
+        assert aws_result["aws_attributes"]["availability"] == "ON_DEMAND"
+
+        azure_result = DatabricksClusterSize.from_desired_cores(
+            40, cloud="azure", availability="ON_DEMAND"
+        )
+        assert azure_result["azure_attributes"]["availability"] == "ON_DEMAND"
+
+    def test_aws_spot_bid_price_percent_override(self):
+        result = DatabricksClusterSize.from_cluster_size(
+            ClusterSize.S, cloud="aws", spot_bid_price_percent=50
+        )
+        assert result["aws_attributes"]["spot_bid_price_percent"] == 50
+
+    def test_azure_spot_bid_max_price_override(self):
+        result = DatabricksClusterSize.from_cluster_size(
+            ClusterSize.S, cloud="azure", spot_bid_max_price=25
+        )
+        assert result["azure_attributes"]["spot_bid_max_price"] == 25
+
 
 def test_wherobots_from_desired_cores_all_branches():
     from overture_airflow_provider.cluster_sizing import WherobotsClusterSize

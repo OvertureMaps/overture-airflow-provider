@@ -118,19 +118,33 @@ class DatabricksClusterSize:
     _DEFAULT_DRIVER = {"azure": "Standard_E4a_v4", "aws": "m5d.xlarge"}
 
     @classmethod
-    def _cloud_attributes(cls, cloud: str, aws_instance_profile_arn: str = "") -> dict:
+    def _cloud_attributes(
+        cls,
+        cloud: str,
+        aws_instance_profile_arn: str = "",
+        availability: str = "",
+        spot_bid_price_percent: int | None = None,
+        spot_bid_max_price: int | float | None = None,
+    ) -> dict:
         """Return the single cloud-specific attributes key the Clusters API accepts.
 
         Databricks rejects a cluster spec carrying ``azure_attributes`` against
         an AWS workspace (and vice versa), so exactly one of these keys must be
         present, matching the workspace's actual cloud.
+
+        ``availability``/``spot_bid_price_percent``/``spot_bid_max_price``
+        override the provider's spot-with-fallback defaults; leave them unset
+        to keep today's hardcoded behavior (e.g. set ``availability`` to
+        ``"ON_DEMAND"`` to opt a workspace out of spot entirely).
         """
         if cloud == "aws":
             aws_attributes = {
                 "first_on_demand": 1,
-                "availability": "SPOT_WITH_FALLBACK",
+                "availability": availability or "SPOT_WITH_FALLBACK",
                 "zone_id": "auto",
-                "spot_bid_price_percent": 100,
+                "spot_bid_price_percent": (
+                    100 if spot_bid_price_percent is None else spot_bid_price_percent
+                ),
             }
             if aws_instance_profile_arn:
                 aws_attributes["instance_profile_arn"] = aws_instance_profile_arn
@@ -138,14 +152,14 @@ class DatabricksClusterSize:
         if cloud == "gcp":
             return {
                 "gcp_attributes": {
-                    "availability": "PREEMPTIBLE_WITH_FALLBACK_GCP",
+                    "availability": availability or "PREEMPTIBLE_WITH_FALLBACK_GCP",
                 }
             }
         return {
             "azure_attributes": {
                 "first_on_demand": 1,
-                "availability": "SPOT_WITH_FALLBACK_AZURE",
-                "spot_bid_max_price": -1,
+                "availability": availability or "SPOT_WITH_FALLBACK_AZURE",
+                "spot_bid_max_price": (-1 if spot_bid_max_price is None else spot_bid_max_price),
             }
         }
 
@@ -157,6 +171,9 @@ class DatabricksClusterSize:
         number_of_workers,
         cloud: str = _DEFAULT_CLOUD,
         aws_instance_profile_arn: str = "",
+        availability: str = "",
+        spot_bid_price_percent: int | None = None,
+        spot_bid_max_price: int | float | None = None,
     ) -> dict:
         return {
             "node_type_id": worker_node_type,
@@ -165,7 +182,13 @@ class DatabricksClusterSize:
                 "min_workers": number_of_workers,
                 "max_workers": number_of_workers,
             },
-            **cls._cloud_attributes(cloud, aws_instance_profile_arn),
+            **cls._cloud_attributes(
+                cloud,
+                aws_instance_profile_arn,
+                availability=availability,
+                spot_bid_price_percent=spot_bid_price_percent,
+                spot_bid_max_price=spot_bid_max_price,
+            ),
         }
 
     @classmethod
@@ -178,6 +201,9 @@ class DatabricksClusterSize:
         driver_node_type: str | None = None,
         cloud: str = _DEFAULT_CLOUD,
         aws_instance_profile_arn: str = "",
+        availability: str = "",
+        spot_bid_price_percent: int | None = None,
+        spot_bid_max_price: int | float | None = None,
     ) -> dict:
         driver_node_type = driver_node_type or cls._DEFAULT_DRIVER.get(
             cloud, cls._DEFAULT_DRIVER[_DEFAULT_CLOUD]
@@ -197,6 +223,9 @@ class DatabricksClusterSize:
             number_of_workers,
             cloud=cloud,
             aws_instance_profile_arn=aws_instance_profile_arn,
+            availability=availability,
+            spot_bid_price_percent=spot_bid_price_percent,
+            spot_bid_max_price=spot_bid_max_price,
         )
 
     @classmethod
@@ -205,6 +234,9 @@ class DatabricksClusterSize:
         cluster_size: ClusterSize,
         cloud: str = _DEFAULT_CLOUD,
         aws_instance_profile_arn: str = "",
+        availability: str = "",
+        spot_bid_price_percent: int | None = None,
+        spot_bid_max_price: int | float | None = None,
     ) -> dict:
         cloud_mapping = cls.mapping.get(cloud, cls.mapping[_DEFAULT_CLOUD])
         driver_node_type, worker_node_type, number_of_workers = cloud_mapping[cluster_size]
@@ -214,6 +246,9 @@ class DatabricksClusterSize:
             number_of_workers,
             cloud=cloud,
             aws_instance_profile_arn=aws_instance_profile_arn,
+            availability=availability,
+            spot_bid_price_percent=spot_bid_price_percent,
+            spot_bid_max_price=spot_bid_max_price,
         )
 
 

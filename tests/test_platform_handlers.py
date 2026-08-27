@@ -1093,6 +1093,50 @@ class TestDatabricksSetupCluster:
         cluster_log_conf = result["new_cluster"]["cluster_log_conf"]
         assert cluster_log_conf["s3"]["region"] == "us-west-2"
 
+    def test_aws_cluster_log_region_override_skips_boto3(self, monkeypatch):
+        # DatabricksConfig.aws_cluster_log_region overrides boto3 auto-detection.
+        import overture_airflow_provider._databricks as dbx
+
+        monkeypatch.setattr(
+            dbx.boto3,
+            "Session",
+            lambda: (_ for _ in ()).throw(AssertionError("boto3.Session() should not be called")),
+        )
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "aws"
+        handler.setup_info["databricks_aws_cluster_log_region"] = "eu-west-1"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster_log_conf = result["new_cluster"]["cluster_log_conf"]
+        assert cluster_log_conf["s3"]["region"] == "eu-west-1"
+
+    def test_aws_cluster_log_endpoint_is_set_when_configured(self):
+        # DatabricksConfig.aws_cluster_log_endpoint sets s3.endpoint for
+        # S3-compatible destinations (e.g. MinIO).
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "aws"
+        handler.setup_info["databricks_aws_cluster_log_endpoint"] = "https://minio.internal:9000"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster_log_conf = result["new_cluster"]["cluster_log_conf"]
+        assert cluster_log_conf["s3"]["endpoint"] == "https://minio.internal:9000"
+
     def test_azure_cloud_keeps_dbfs_cluster_log_conf(self):
         handler = DatabricksPlatformHandler(_databricks_setup_info())
         handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"

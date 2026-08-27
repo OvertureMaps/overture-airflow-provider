@@ -386,6 +386,18 @@ class DatabricksConfig:
             OvertureMaps/overture-airflow-provider#90); ignored on Azure/GCP.
             Leave empty to omit ``instance_profile_arn`` entirely, matching the
             provider's prior behavior.
+        aws_cluster_log_region: Overrides the ``s3.region`` set on the
+            ``cluster_log_conf`` when ``cloud == "aws"`` (Databricks'
+            ``S3StorageInfo`` requires ``region`` or ``endpoint``; see
+            OvertureMaps/overture-airflow-provider#92). Leave empty to
+            auto-detect via ``boto3.Session().region_name`` (the standard AWS
+            SDK chain: ``AWS_REGION``/``AWS_DEFAULT_REGION`` env vars,
+            ``~/.aws/config``, etc.); ignored on Azure/GCP.
+        aws_cluster_log_endpoint: Sets ``s3.endpoint`` on the
+            ``cluster_log_conf`` when ``cloud == "aws"``, for S3-compatible
+            endpoints (e.g. MinIO) that satisfy ``S3StorageInfo`` without a
+            region. Leave empty to omit ``endpoint`` entirely; ignored on
+            Azure/GCP.
         spot_availability: Overrides the cloud attributes' ``availability``
             key (e.g. ``aws_attributes.availability``). Leave empty to keep
             the provider's per-cloud spot-with-fallback default
@@ -416,6 +428,8 @@ class DatabricksConfig:
     gpu: bool = False
     cloud: str = "azure"
     aws_instance_profile_arn: str = ""
+    aws_cluster_log_region: str = ""
+    aws_cluster_log_endpoint: str = ""
     spot_availability: str = ""
     aws_spot_bid_price_percent: int | None = None
     azure_spot_bid_max_price: int | float | None = None

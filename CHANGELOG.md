@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.11.1] - 2026-08-27
+## [0.12.0] - 2026-08-27
 
 ### Fixed
 
@@ -19,9 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   provided but neither region nor endpoint is set.`), a distinct bug from
   #86/#90 (fixes #92). `_build_cluster_log_conf` now sets `s3.region` via
   `boto3.Session().region_name` (the standard AWS SDK chain:
-  `AWS_REGION`/`AWS_DEFAULT_REGION` env vars, `~/.aws/config`, etc.), with no
-  hardcoded fallback. An unresolved region flows through as `None` so
-  Databricks rejects it clearly instead of this provider guessing one.
+  `AWS_REGION`/`AWS_DEFAULT_REGION` env vars, `~/.aws/config`, etc.) unless
+  `DatabricksConfig.aws_cluster_log_region` overrides it. No hardcoded
+  fallback: an unresolved region flows through as `None` so Databricks
+  rejects it clearly instead of this provider guessing one. Added
+  `DatabricksConfig.aws_cluster_log_endpoint` too, for S3-compatible
+  destinations that satisfy `S3StorageInfo` via `endpoint` instead of
+  `region`.
 
 ## [0.11.0] - 2026-08-27
 

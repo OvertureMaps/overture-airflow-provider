@@ -57,6 +57,8 @@ SERIALIZABLE_KEYS = (
     "databricks_gpu",
     "databricks_cloud",
     "databricks_aws_instance_profile_arn",
+    "databricks_aws_cluster_log_region",
+    "databricks_aws_cluster_log_endpoint",
     "databricks_spot_availability",
     "databricks_aws_spot_bid_price_percent",
     "databricks_azure_spot_bid_max_price",

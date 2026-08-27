@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-27
+
+### Fixed
+
+- **AWS Databricks clusters set an `s3` `cluster_log_conf` with no `region`,
+  which Databricks' `S3StorageInfo` requires.** Confirmed live against
+  `tf-data-platform`'s AWS Databricks smoke test on top of the #90/v0.10.2
+  instance-profile fix: the cluster now reaches creation but Databricks
+  rejects it (`INVALID_PARAMETER_VALUE: S3 cluster log destination is
+  provided but neither region nor endpoint is set.`), a distinct bug from
+  #86/#90 (fixes #92). `_build_cluster_log_conf` now sets `s3.region` via
+  `boto3.Session().region_name` (the standard AWS SDK chain:
+  `AWS_REGION`/`AWS_DEFAULT_REGION` env vars, `~/.aws/config`, etc.), with no
+  hardcoded fallback. An unresolved region flows through as `None` so
+  Databricks rejects it clearly instead of this provider guessing one.
+
 ## [0.11.0] - 2026-08-27
 
 ### Added

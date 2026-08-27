@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Mapping
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1063,6 +1064,34 @@ class TestDatabricksSetupCluster:
         assert "s3" in cluster_log_conf
         assert "dbfs" not in cluster_log_conf
         assert cluster_log_conf["s3"]["destination"].startswith("s3://test-bucket/")
+
+    def test_aws_cloud_sets_s3_cluster_log_conf_region(self, monkeypatch):
+        # Regression: Databricks' S3StorageInfo requires `region` or `endpoint`
+        # to be set, or cluster creation fails with INVALID_PARAMETER_VALUE
+        # ("S3 cluster log destination is provided but neither region nor
+        # endpoint is set."). `region` is resolved via
+        # `boto3.Session().region_name` (the standard AWS SDK chain).
+        import overture_airflow_provider._databricks as dbx
+
+        monkeypatch.setattr(
+            dbx.boto3,
+            "Session",
+            lambda: SimpleNamespace(region_name="us-west-2"),
+        )
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        handler.setup_info["databricks_cloud"] = "aws"
+        result = handler.setup_cluster(
+            python_packages="overture-spark==1.0",
+            spark_jar_paths="",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+        cluster_log_conf = result["new_cluster"]["cluster_log_conf"]
+        assert cluster_log_conf["s3"]["region"] == "us-west-2"
 
     def test_azure_cloud_keeps_dbfs_cluster_log_conf(self):
         handler = DatabricksPlatformHandler(_databricks_setup_info())

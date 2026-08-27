@@ -215,6 +215,75 @@ class TestDatabricksClusterSizeCloudAttributes:
         assert result["driver_node_type_id"] == "m5d.xlarge"
         assert "aws_attributes" in result
 
+    def test_aws_instance_profile_arn_omitted_by_default(self):
+        # #90: no instance_profile_arn override means no key at all, matching
+        # prior behavior for callers who don't set one.
+        result = DatabricksClusterSize.from_desired_cores(40, cloud="aws")
+        assert "instance_profile_arn" not in result["aws_attributes"]
+
+    def test_aws_instance_profile_arn_set_from_desired_cores(self):
+        result = DatabricksClusterSize.from_desired_cores(
+            40,
+            cloud="aws",
+            aws_instance_profile_arn="arn:aws:iam::123456789012:instance-profile/spark-logs",
+        )
+        assert (
+            result["aws_attributes"]["instance_profile_arn"]
+            == "arn:aws:iam::123456789012:instance-profile/spark-logs"
+        )
+
+    def test_aws_instance_profile_arn_set_from_cluster_size(self):
+        result = DatabricksClusterSize.from_cluster_size(
+            ClusterSize.S,
+            cloud="aws",
+            aws_instance_profile_arn="arn:aws:iam::123456789012:instance-profile/spark-logs",
+        )
+        assert (
+            result["aws_attributes"]["instance_profile_arn"]
+            == "arn:aws:iam::123456789012:instance-profile/spark-logs"
+        )
+
+    def test_aws_instance_profile_arn_ignored_on_non_aws_clouds(self):
+        result = DatabricksClusterSize.from_desired_cores(
+            40,
+            cloud="azure",
+            aws_instance_profile_arn="arn:aws:iam::123456789012:instance-profile/spark-logs",
+        )
+        assert "aws_attributes" not in result
+
+    def test_default_spot_availability_and_bid_price_unchanged(self):
+        # Existing behavior when no overrides are passed.
+        aws_result = DatabricksClusterSize.from_desired_cores(40, cloud="aws")
+        assert aws_result["aws_attributes"]["availability"] == "SPOT_WITH_FALLBACK"
+        assert aws_result["aws_attributes"]["spot_bid_price_percent"] == 100
+
+        azure_result = DatabricksClusterSize.from_desired_cores(40, cloud="azure")
+        assert azure_result["azure_attributes"]["availability"] == "SPOT_WITH_FALLBACK_AZURE"
+        assert azure_result["azure_attributes"]["spot_bid_max_price"] == -1
+
+    def test_availability_override_applies_per_cloud(self):
+        aws_result = DatabricksClusterSize.from_desired_cores(
+            40, cloud="aws", availability="ON_DEMAND"
+        )
+        assert aws_result["aws_attributes"]["availability"] == "ON_DEMAND"
+
+        azure_result = DatabricksClusterSize.from_desired_cores(
+            40, cloud="azure", availability="ON_DEMAND"
+        )
+        assert azure_result["azure_attributes"]["availability"] == "ON_DEMAND"
+
+    def test_aws_spot_bid_price_percent_override(self):
+        result = DatabricksClusterSize.from_cluster_size(
+            ClusterSize.S, cloud="aws", spot_bid_price_percent=50
+        )
+        assert result["aws_attributes"]["spot_bid_price_percent"] == 50
+
+    def test_azure_spot_bid_max_price_override(self):
+        result = DatabricksClusterSize.from_cluster_size(
+            ClusterSize.S, cloud="azure", spot_bid_max_price=25
+        )
+        assert result["azure_attributes"]["spot_bid_max_price"] == 25
+
 
 def test_wherobots_from_desired_cores_all_branches():
     from overture_airflow_provider.cluster_sizing import WherobotsClusterSize

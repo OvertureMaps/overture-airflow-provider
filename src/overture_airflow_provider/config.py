@@ -379,6 +379,27 @@ class DatabricksConfig:
             the workspace connection's host via the ``databricks-sdk`` (no API
             round trip; requires the ``[databricks]`` extra and a reachable
             connection at setup time).
+        aws_instance_profile_arn: AWS instance profile ARN registered with the
+            workspace, threaded into ``aws_attributes.instance_profile_arn``
+            when ``cloud == "aws"``. Databricks requires a per-cluster instance
+            profile for an ``s3`` ``cluster_log_conf`` destination (see
+            OvertureMaps/overture-airflow-provider#90); ignored on Azure/GCP.
+            Leave empty to omit ``instance_profile_arn`` entirely, matching the
+            provider's prior behavior.
+        spot_availability: Overrides the cloud attributes' ``availability``
+            key (e.g. ``aws_attributes.availability``). Leave empty to keep
+            the provider's per-cloud spot-with-fallback default
+            (``"SPOT_WITH_FALLBACK"`` on AWS, ``"SPOT_WITH_FALLBACK_AZURE"`` on
+            Azure, ``"PREEMPTIBLE_WITH_FALLBACK_GCP"`` on GCP). Set to
+            ``"ON_DEMAND"`` to opt a workspace out of spot entirely.
+        aws_spot_bid_price_percent: Overrides
+            ``aws_attributes.spot_bid_price_percent``. AWS only; ignored on
+            other clouds. Defaults to ``100`` (bid at on-demand price) when
+            unset.
+        azure_spot_bid_max_price: Overrides
+            ``azure_attributes.spot_bid_max_price``. Azure only; ignored on
+            other clouds. Defaults to ``-1`` (no max, i.e. bid up to
+            on-demand price) when unset.
     """
 
     cluster_conf: dict[str, Any] = field(default_factory=dict)
@@ -394,6 +415,10 @@ class DatabricksConfig:
     spark_version: str = ""
     gpu: bool = False
     cloud: str = "azure"
+    aws_instance_profile_arn: str = ""
+    spot_availability: str = ""
+    aws_spot_bid_price_percent: int | None = None
+    azure_spot_bid_max_price: int | float | None = None
 
 
 @dataclass

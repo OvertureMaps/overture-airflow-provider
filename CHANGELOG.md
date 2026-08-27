@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-27
+
+### Added
+
+- **`DatabricksConfig.spot_availability`, `aws_spot_bid_price_percent`, and
+  `azure_spot_bid_max_price`.** The provider previously hardcoded
+  spot-with-fallback and its bid price/max price in
+  `DatabricksClusterSize._cloud_attributes`, with no way for a caller to opt a
+  workspace out of spot or tune the bid. These three fields override the
+  `availability`/`spot_bid_price_percent`/`spot_bid_max_price` keys in
+  `aws_attributes`/`azure_attributes` (e.g. set `spot_availability="ON_DEMAND"`
+  to disable spot); left unset, they keep today's hardcoded defaults
+  (`SPOT_WITH_FALLBACK*`, `100`, `-1`) unchanged.
+
+## [0.10.2] - 2026-08-27
+
+### Fixed
+
+- **AWS Databricks clusters had no way to set `aws_attributes.instance_profile_arn`,
+  required for an `s3` `cluster_log_conf` destination.** Confirmed live against
+  `tf-data-platform`'s AWS Databricks smoke test on top of the #86/v0.10.1
+  `cluster_log_conf` fix: the cluster now reaches creation but Databricks
+  rejects it (`INVALID_PARAMETER_VALUE: S3 cluster log destination is
+  provided, but the instance profile arn is not set`), because `s3` log
+  delivery needs a per-cluster instance profile, the AWS analogue of an EC2
+  IAM role, separate from any workspace-level credential the provider already
+  has (fixes #90). Added `DatabricksConfig.aws_instance_profile_arn`, threaded
+  into `DatabricksClusterSize.as_json`/`_cloud_attributes` and set on
+  `aws_attributes.instance_profile_arn` when `cloud == "aws"` and the value is
+  non-empty. Left optional/empty by default, so existing AWS callers who don't
+  set one see no behavior change.
+
 ## [0.10.1] - 2026-08-25
 
 ### Fixed

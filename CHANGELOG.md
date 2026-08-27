@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-08-27
+
 ### Fixed
 
 - **AWS Databricks clusters had no way to set `aws_attributes.instance_profile_arn`,

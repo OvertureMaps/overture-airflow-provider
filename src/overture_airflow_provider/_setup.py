@@ -131,6 +131,8 @@ def setup_spark_job(
         "databricks_gpu": databricks_config.gpu,
         "databricks_cloud": databricks_config.cloud,
         "databricks_aws_instance_profile_arn": databricks_config.aws_instance_profile_arn,
+        "databricks_aws_cluster_log_region": databricks_config.aws_cluster_log_region,
+        "databricks_aws_cluster_log_endpoint": databricks_config.aws_cluster_log_endpoint,
         "databricks_spot_availability": databricks_config.spot_availability,
         "databricks_aws_spot_bid_price_percent": databricks_config.aws_spot_bid_price_percent,
         "databricks_azure_spot_bid_max_price": databricks_config.azure_spot_bid_max_price,

@@ -2,6 +2,8 @@
 
 import json
 
+import boto3
+
 from overture_airflow_provider._retry_guard import record_launched_run
 from overture_airflow_provider.cluster_sizing import DatabricksClusterSize
 from overture_airflow_provider.spark_platform_handlers import _merge_spark_conf
@@ -172,12 +174,22 @@ def _build_cluster_log_conf(cloud: str, setup_info: dict, run_identifier: str) -
     ``dbfs_root_template`` and this branch will be removed in a future major
     version (OvertureMaps/overture-airflow-provider#87). Prefer ``cloud="aws"``
     (or a UC-native destination once one is added) on new setups.
+
+    Databricks' ``S3StorageInfo`` requires ``region`` or ``endpoint``, filled
+    in from ``DatabricksConfig.aws_cluster_log_region``/``aws_cluster_log_endpoint``
+    (region falls back to ``boto3.Session().region_name`` if unset; see
+    those fields' docs for details).
     """
     if cloud == "aws":
         s3_bucket = setup_info["s3_assets_bucket"]
         s3_root = setup_info["s3_assets_root"]
         destination = f"s3://{s3_bucket}/{s3_root}/{run_identifier}/sparkLogs"
-        return {"s3": {"destination": destination}}
+        region = setup_info.get("databricks_aws_cluster_log_region") or boto3.Session().region_name
+        s3_conf = {"destination": destination, "region": region}
+        endpoint = setup_info.get("databricks_aws_cluster_log_endpoint")
+        if endpoint:
+            s3_conf["endpoint"] = endpoint
+        return {"s3": s3_conf}
 
     dbfs_root = setup_info["databricks_dbfs_root_template"].format(
         s3_assets_root=setup_info["s3_assets_root"]

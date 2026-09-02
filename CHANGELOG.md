@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-02
+
+### Fixed
+
+- **`force_pip_packages` only matched a caller's explicitly requested top-level
+  packages, never a transitive pure-Python dependency pulled in by one of
+  them.** A Glue job crashed on startup with `botocore.exceptions.DataNotFoundError:
+  Unable to load data for: endpoints`, because `boto3`/`botocore` (transitive
+  deps of `overture-core`, which no package here declares directly) landed in
+  `--extra-py-files` and ran straight out of a zipped wheel on `sys.path`,
+  where botocore's data loader can't read its bundled `data/endpoints.json`
+  (fixes #96). `download_and_cache_python_packages` now checks every
+  downloaded pure-Python wheel's parsed package name against
+  `force_pip_packages`, the same way it already did for native wheels, and
+  routes a match to `--additional-python-modules` instead of the S3 wheel
+  cache.
+
 ## [0.12.0] - 2026-08-27
 
 ### Fixed

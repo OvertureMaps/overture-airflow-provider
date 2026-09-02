@@ -34,11 +34,12 @@ def _make_s3_mock(existing_keys: set = None):
     return mock_s3
 
 
-def _make_helper(s3_mock, bucket="test-glue-assets"):
+def _make_helper(s3_mock, bucket="test-glue-assets", force_pip_packages=None):
     helper = SparkAgnosticHelper(
         job_name="test.Job",
         run_identifier="test.Job/20240101120000",
         s3_bucket=bucket,
+        force_pip_packages=force_pip_packages,
     )
     helper.s3_client = s3_mock
     return helper
@@ -121,9 +122,10 @@ class TestDownloadAndCachePythonPackages:
         requested_packages,
         existing_s3_keys=None,
         job_runner_wheel_prefix=None,
+        force_pip_packages=None,
     ):
         s3_mock = _make_s3_mock(existing_s3_keys)
-        helper = _make_helper(s3_mock)
+        helper = _make_helper(s3_mock, force_pip_packages=force_pip_packages)
 
         mock_client = MagicMock()
 
@@ -239,6 +241,29 @@ class TestDownloadAndCachePythonPackages:
         assert py_files == ""
         assert native == []
         assert len(s3._uploaded) == 0
+
+    def test_transitive_pure_python_dep_routed_to_pip_when_force_pip_matches(self):
+        """Regression test for #96: boto3/botocore break when run directly out of
+        a zipped wheel on sys.path (can't read their bundled data files), so a
+        transitive pure-Python dep matching force_pip_packages must be routed to
+        --additional-python-modules like an explicitly requested native package,
+        not uploaded to the S3 wheel cache / --extra-py-files."""
+        _, _, _, native, s3 = self._run(
+            wheel_files=["boto3-1.35.0-py3-none-any.whl"],
+            requested_packages=["overture-core"],
+            force_pip_packages=["boto3"],
+        )
+        assert native == ["boto3==1.35.0"]
+        assert len(s3._uploaded) == 0
+
+    def test_transitive_pure_python_dep_not_forced_without_match(self):
+        _, _, _, native, s3 = self._run(
+            wheel_files=["boto3-1.35.0-py3-none-any.whl"],
+            requested_packages=["overture-core"],
+            force_pip_packages=[],
+        )
+        assert native == []
+        assert len(s3._uploaded) == 1
 
 
 class TestDownloadAndCacheJars:

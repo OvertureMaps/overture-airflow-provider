@@ -111,15 +111,20 @@ class SparkAgnosticHelper:
         uploads. Only **explicitly requested** packages (in ``packages``) are
         tracked and returned for install via ``--additional-python-modules``
         on Glue. Transitive native deps that exist in the target environment
-        (e.g. numpy/shapely) are not included.
+        (e.g. numpy/shapely) are not included. Pure-Python wheels, including
+        transitive ones, are additionally routed to ``--additional-python-modules``
+        when their name matches ``force_pip_packages`` (e.g. boto3/botocore,
+        whose data-file loaders can't read from inside a zipped wheel on
+        ``sys.path``).
 
         Returns:
             Tuple of:
               - comma-separated S3 paths of cached pure-Python wheels,
               - job-runner wheel local path (or None),
               - temp folder path (caller cleans up),
-              - list of explicitly requested native package specs
-                (e.g. ``['numba==0.59.0']``).
+              - list of package specs to install via pip (explicitly requested
+                native packages, plus any pure-Python package matching
+                ``force_pip_packages``, e.g. ``['numba==0.59.0']``).
         """
         # Force-install via pip for caller-configured complex packages.
         excluded_native_packages = [pkg for pkg in packages if self._force_pip_install(pkg)]
@@ -163,8 +168,9 @@ class SparkAgnosticHelper:
             if job_runner_wheel_prefix and file.startswith(job_runner_wheel_prefix):
                 job_runner_whl = wheel_path
 
+            pkg_name, version = self._parse_wheel_filename(file)
+
             if self._has_native_dependencies(file):
-                pkg_name, version = self._parse_wheel_filename(file)
                 if pkg_name:
                     if pkg_name.lower() in requested_package_names:
                         if pkg_name not in excluded_native_packages:
@@ -177,6 +183,23 @@ class SparkAgnosticHelper:
                         print(f"Native package (transitive dep, skipping): {file}")
                 else:
                     print(f"Native package (could not parse name): {file}")
+                os.remove(wheel_path)
+                continue
+
+            # Pure-Python wheel, but still route it to --additional-python-modules
+            # if it (or a transitive dep sharing this name, e.g. boto3 pulled in
+            # by overture-core) matches a caller-configured force_pip_packages
+            # substring. Some pure-Python packages (boto3/botocore) ship data
+            # files their loaders can't read from inside a zipped wheel on
+            # sys.path, so they need a real pip install, not --extra-py-files.
+            if pkg_name and self._force_pip_install(pkg_name):
+                pkg_spec = f"{pkg_name}=={version}" if version else pkg_name
+                if pkg_spec not in excluded_native_packages:
+                    excluded_native_packages.append(pkg_spec)
+                    print(
+                        f"Pure-Python package matches force_pip_packages: {file} -> "
+                        f"will install via pip: {pkg_spec}"
+                    )
                 os.remove(wheel_path)
                 continue
 

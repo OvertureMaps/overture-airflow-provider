@@ -69,7 +69,7 @@ SparkPlatformHandler ABC     ← dispatch (factory: get_platform_handler)
 SparkAgnosticHelper          ← shared S3 wheel/JAR cache
         │
         ▼
-python_package_utils         ← CodeArtifact pip/maven HTTP clients
+python_package_utils         ← CodeArtifact pip/maven HTTP clients (overture_core)
 
 links.py                     ← SparkJobLink + ReportIssueLink (extra-links)
 _report_issue.py             ← pluggable issue tracker (IssueTracker ABC, GitHub built in)

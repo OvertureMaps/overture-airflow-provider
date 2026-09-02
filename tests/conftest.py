@@ -1,7 +1,7 @@
 """Conftest for overture_airflow_provider tests.
 
 Installs sys.modules stubs for optional dependencies (databricks SDK,
-wherobots SDK, sh) so the suite runs without them installed. Stubs are
+wherobots SDK) so the suite runs without them installed. Stubs are
 only inserted when the real package cannot be imported, so test runs
 that have the extras installed keep the real implementations.
 
@@ -21,7 +21,6 @@ if not os.environ.get("RUN_E2E"):
     collect_ignore = ["e2e"]
 
 _OPTIONAL_MODULES = (
-    "sh",
     "databricks",
     "databricks.sdk",
     "airflow.providers.databricks",

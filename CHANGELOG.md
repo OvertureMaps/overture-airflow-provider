@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-09-02
+
+### Fixed
+
+- **`CodeArtifactPyPiClient.get_package_versions()` omitted `domainOwner` in
+  the `list_package_versions()` call, so version lookups resolved against the
+  caller's own AWS account instead of the domain's owning account.** Fixed by
+  repointing `CodeArtifactPyPiClient`, `HttpDownloader`, `PyPiDownloader`, and
+  the S3 `upload_directory()` helper at `overture-core>=0.6.0` (fixes #94),
+  which carries this fix. The local `DBFSUploader` (unused in this repo) and
+  `S3Uploader` classes are gone along with the rest of
+  `python_package_utils.py`.
+
 ## [0.12.1] - 2026-09-02
 
 ### Fixed

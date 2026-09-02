@@ -8,6 +8,8 @@ tasks consume via XCom.
 import datetime
 import json
 
+from overture_core.cloud.aws.codeartifact import CodeArtifactPyPiClient
+
 from overture_airflow_provider.config import (
     ArtifactStoreConfig,
     DatabricksConfig,
@@ -15,7 +17,6 @@ from overture_airflow_provider.config import (
     PackageRegistryConfig,
     WherobotsConfig,
 )
-from overture_airflow_provider.python_package_utils import CodeArtifactPyPiClient
 from overture_airflow_provider.spark import SparkImpl, SparkSedona
 
 

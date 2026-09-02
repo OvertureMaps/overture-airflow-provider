@@ -12,12 +12,8 @@ import zipfile
 from urllib.parse import urlparse
 
 import boto3
-
-from overture_airflow_provider.python_package_utils import (
-    HttpDownloader,
-    PyPiDownloader,
-    S3Uploader,
-)
+from overture_core.cloud.aws.object import upload_directory
+from overture_core.pypi import HttpDownloader, PyPiDownloader
 
 
 class SparkAgnosticHelper:
@@ -261,9 +257,7 @@ class SparkAgnosticHelper:
         print(f"Extracted job runner files: {extracted_files}")
 
         if extracted_files:
-            uploaded_scripts = S3Uploader(self.s3_bucket).upload_directory(
-                script_dir, s3_prefix=self.s3_prefix
-            )
+            uploaded_scripts = upload_directory(script_dir, self.s3_bucket, prefix=self.s3_prefix)
             for uploaded_path in uploaded_scripts:
                 for script_name in script_names:
                     if uploaded_path.endswith(script_name):

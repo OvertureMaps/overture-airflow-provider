@@ -43,6 +43,7 @@ from overture_airflow_provider.spark_platform_handlers import get_platform_handl
 
 _GLUE_RUN_ID_RE = re.compile(r"\bjr_[0-9a-f]{16,}\b")
 
+
 def _terminal_run_id(error_text: str) -> str | None:
     """Recover a Glue run id from a trigger error reporting a terminal state.
 

@@ -284,14 +284,12 @@ class GlueConfig:
             stdout, keyed by run id. Defaults to Glue's own
             ``/aws-glue/jobs/output``; override only if your jobs are
             configured to write continuous logging output elsewhere.
-        max_timeout_hours: Job run timeout, in hours. Defaults to ``8``.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
     execution_class: str = "STANDARD"
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
-    max_timeout_hours: int = 8
 
 
 @dataclass
@@ -455,14 +453,12 @@ class WherobotsConfig:
             ``SparkImpl`` declares (Scala 2.12 JARs fail to load on the
             Scala 2.13 preview runtime). Set ``None`` to omit the field from
             the submission entirely.
-        max_timeout_hours: Job run timeout, in hours. Defaults to ``8``.
     """
 
     role_arn: str = ""
     external_id: str = ""
     aws_region: str = "us-east-1"
     version: str | None = "latest"
-    max_timeout_hours: int = 8
 
 
 @dataclass

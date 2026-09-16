@@ -114,12 +114,10 @@ def test_render_glue_max_timeout_hours_defaults_to_eight():
     assert result.submit_payload["create_job_kwargs"]["Timeout"] == 60 * 8
 
 
-def test_render_glue_max_timeout_hours_honors_config_override():
-    from overture_airflow_provider.config import GlueConfig
-
+def test_render_glue_max_timeout_hours_op_kwarg_override():
     result = render_spark_job(
         spark_impl_name="GLUE_v5",
-        glue_config=GlueConfig(max_timeout_hours=2),
+        max_timeout_hours="2",
         **_COMMON_KWARGS,
     )
     assert result.submit_payload["create_job_kwargs"]["Timeout"] == 60 * 2
@@ -132,6 +130,20 @@ def test_render_databricks_emits_submit_payload():
     assert "new_cluster" in payload
     assert payload["new_cluster"]["spark_version"] == "15.4.x-scala2.12"
     assert payload["run_name"].endswith("_render")
+
+
+def test_render_databricks_max_timeout_hours_defaults_to_eight():
+    result = render_spark_job(spark_impl_name="DATABRICKS_v15", **_COMMON_KWARGS)
+    assert result.operator_kwargs["timeout_seconds"] == 3600 * 8
+
+
+def test_render_databricks_max_timeout_hours_op_kwarg_override():
+    result = render_spark_job(
+        spark_impl_name="DATABRICKS_v15",
+        max_timeout_hours="2",
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["timeout_seconds"] == 3600 * 2
 
 
 def test_render_wherobots_skips_region_resolution():
@@ -165,10 +177,10 @@ def test_render_wherobots_max_timeout_hours_defaults_to_eight():
     assert result.operator_kwargs["timeout_seconds"] == 3600 * 8
 
 
-def test_render_wherobots_max_timeout_hours_honors_config_override():
+def test_render_wherobots_max_timeout_hours_op_kwarg_override():
     result = render_spark_job(
         spark_impl_name="WHEROBOTS_v1_5_0",
-        wherobots_config=WherobotsConfig(max_timeout_hours=1),
+        max_timeout_hours="1",
         **_COMMON_KWARGS,
     )
     assert result.operator_kwargs["timeout_seconds"] == 3600 * 1

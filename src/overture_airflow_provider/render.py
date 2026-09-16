@@ -196,7 +196,6 @@ def _build_render_setup_info(
         "wherobots_external_id": wherobots_config.external_id,
         "wherobots_role_arn": wherobots_config.role_arn,
         "wherobots_version": wherobots_config.version,
-        "wherobots_max_timeout_hours": wherobots_config.max_timeout_hours,
         "aws_region": wherobots_config.aws_region,
         "databricks_conf": databricks_config.cluster_conf,
         "databricks_extra_libraries": list(databricks_config.extra_libraries),
@@ -216,7 +215,6 @@ def _build_render_setup_info(
         "glue_execution_class": glue_config.execution_class,
         "glue_verbose": glue_config.verbose,
         "glue_output_log_group": glue_config.output_log_group,
-        "glue_max_timeout_hours": glue_config.max_timeout_hours,
         "iam_role_name": glue_config.iam_role_name,
         "codeartifact_domain_owner": package_registry.domain_owner,
         "codeartifact_domain": package_registry.domain,
@@ -372,6 +370,7 @@ def render_spark_job(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    max_timeout_hours: str = "8",
     task_id: str = "execute_spark_job",
     dag_id: str = "",
     pre_resolved_package_info: dict | None = None,
@@ -438,12 +437,12 @@ def render_spark_job(
             extra_spark_conf=merged_conf,
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
+            max_timeout_hours=max_timeout_hours,
             iam_role_name=glue_config.iam_role_name,
             task_id=task_id,
             dag_id=dag_id,
             execution_class=glue_config.execution_class,
             verbose=glue_config.verbose,
-            max_timeout_hours=glue_config.max_timeout_hours,
         )
         submit_payload = {
             "create_job_kwargs": built["create_job_kwargs"],
@@ -478,6 +477,7 @@ def render_spark_job(
             module_name=module_name,
             class_name=class_name,
             task_id=task_id,
+            max_timeout_hours=max_timeout_hours,
         )
         cli = _databricks_cli()
         return RenderResult(
@@ -517,10 +517,10 @@ def render_spark_job(
             spark_cluster_size=spark_cluster_size,
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
+            max_timeout_hours=max_timeout_hours,
             wherobots_role_arn=wherobots_config.role_arn,
             task_id=task_id,
             resolve_region=False,
-            max_timeout_hours=wherobots_config.max_timeout_hours,
         )
         cli = _wherobots_cli()
         return RenderResult(
@@ -572,6 +572,7 @@ def _cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--spark-cluster-size", default="")
     parser.add_argument("--spark-cluster-desired-worker-cores", default="40")
     parser.add_argument("--spark-cluster-desired-workers", default="")
+    parser.add_argument("--max-timeout-hours", default="8")
     parser.add_argument("--task-id", default="execute_spark_job")
     parser.add_argument("--dag-id", default="")
     parser.add_argument(
@@ -611,6 +612,7 @@ def _cli(argv: list[str] | None = None) -> int:
         spark_cluster_desired_workers=_pick(
             "spark_cluster_desired_workers", args.spark_cluster_desired_workers
         ),
+        max_timeout_hours=_pick("max_timeout_hours", args.max_timeout_hours),
         iceberg_config=_build_config_obj(IcebergConfig, config.get("iceberg")),
         package_registry=_build_config_obj(PackageRegistryConfig, config.get("package_registry")),
         artifact_store=_build_config_obj(ArtifactStoreConfig, config.get("artifact_store")),

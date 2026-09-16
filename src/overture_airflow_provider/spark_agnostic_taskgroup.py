@@ -32,6 +32,7 @@ function, so standard Jinja syntax works without any manual rendering::
         group_id="my_job",
         spark_impl_name="{{ params.SparkImpl }}",
         parameters='{"run_date": "{{ ds }}"}',
+        max_timeout_hours="{{ params.timeout_hours }}",
         ...
     )
 
@@ -112,6 +113,7 @@ def spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    max_timeout_hours: str = "",
     report_issue_config: ReportIssueConfig | None = None,
 ):
     """Create a TaskGroup that runs one Spark job on the platform selected at
@@ -161,6 +163,7 @@ def spark_agnostic_task_group(
             the ``databricks_default`` connection and the default workspace paths.
         wherobots_config: Wherobots execution settings (role ARN, external ID,
             AWS region). Required for Wherobots runs that use Iceberg.
+        max_timeout_hours: Job run timeout, in hours.
 
         report_issue_config: Opt-in "Report Issue" operator link. Off by
             default; when enabled it adds a link on ``execute_spark_job`` that
@@ -195,6 +198,7 @@ def spark_agnostic_task_group(
         glue_config=glue_config,
         databricks_config=databricks_config,
         wherobots_config=wherobots_config,
+        max_timeout_hours=max_timeout_hours,
         report_issue_config=report_issue_config,
     )
 
@@ -262,6 +266,7 @@ def _spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    max_timeout_hours: str = "",
     report_issue_config: ReportIssueConfig | None = None,
 ):
     """Internal task-group implementation. See ``spark_agnostic_task_group``."""
@@ -393,6 +398,7 @@ def _spark_agnostic_task_group(
         spark_cluster_size_name=spark_cluster_size_name,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        max_timeout_hours=max_timeout_hours,
         report_issue_config=report_issue_payload,
         **execute_kwargs,
     )

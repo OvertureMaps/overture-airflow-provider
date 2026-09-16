@@ -15,8 +15,6 @@ from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
 _log = logging.getLogger(__name__)
 
-MAX_TIMEOUT_HOURS = 8
-
 # Keys excluded from the Glue Scala --conf DefaultArgument.
 # spark.jars.packages: Glue can't resolve Maven coords at runtime; JARs are pre-staged via --extra-jars.
 # spark.driver/executor.extraJavaOptions: already set via --driver-java-options / --executor-java-options;
@@ -203,12 +201,12 @@ def build_glue_operator_kwargs(
     extra_spark_conf: dict,
     spark_cluster_desired_worker_cores: str,
     spark_cluster_desired_workers: str,
+    max_timeout_hours: str,
     iam_role_name: str,
     task_id: str,
     dag_id: str = "",
     execution_class: str = "STANDARD",
     verbose: bool = True,
-    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Pure-Python assembly of GlueJobOperator kwargs.
 
@@ -321,7 +319,7 @@ def build_glue_operator_kwargs(
             "Name": "glueetl",
             "ScriptLocation": script_location,
         },
-        "Timeout": 60 * max_timeout_hours,
+        "Timeout": 60 * int(max_timeout_hours),
     }
 
     tags = {
@@ -371,12 +369,12 @@ def submit_glue_job(
     extra_spark_conf: dict,
     spark_cluster_desired_worker_cores: str,
     spark_cluster_desired_workers: str,
+    max_timeout_hours: str,
     iam_role_name: str,
     task_id: str,
     context: dict,
     execution_class: str = "STANDARD",
     verbose: bool = True,
-    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Submit a Glue job (non-blocking) and return a trigger to defer on.
 
@@ -427,12 +425,12 @@ def submit_glue_job(
         extra_spark_conf=extra_spark_conf,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        max_timeout_hours=max_timeout_hours,
         iam_role_name=iam_role_name,
         task_id=task_id,
         dag_id=context["dag"].dag_id if "dag" in context else "",
         execution_class=execution_class,
         verbose=verbose,
-        max_timeout_hours=max_timeout_hours,
     )
 
     platform_operator = GlueJobOperator(**built["operator_kwargs"])

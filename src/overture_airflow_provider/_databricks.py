@@ -432,6 +432,7 @@ def build_databricks_operator_kwargs(
     module_name: str,
     class_name: str,
     task_id: str,
+    max_timeout_hours: str,
 ) -> dict:
     """Pure-Python assembly of DatabricksSubmitRunOperator kwargs.
 
@@ -475,6 +476,7 @@ def build_databricks_operator_kwargs(
         "spark_jar_task": spark_jar_task,
         "libraries": cluster_info["libraries"],
         "run_name": setup_info["run_identifier"],
+        "timeout_seconds": 3600 * int(max_timeout_hours),
         "deferrable": True,
         # Required for the deferrable path: the operator only defers when
         # wait_for_termination is True (otherwise it submits and returns without
@@ -488,6 +490,7 @@ def build_databricks_operator_kwargs(
         "run_name": setup_info["run_identifier"],
         "new_cluster": cluster_info["new_cluster"],
         "libraries": cluster_info["libraries"],
+        "timeout_seconds": 3600 * int(max_timeout_hours),
     }
     if notebook_task is not None:
         submit_payload["notebook_task"] = notebook_task
@@ -510,6 +513,7 @@ def submit_databricks_job(
     parameters: str,
     task_id: str,
     context,
+    max_timeout_hours: str,
 ) -> dict:
     """Submit a Databricks run (non-blocking) and return a trigger to defer on.
 
@@ -536,6 +540,7 @@ def submit_databricks_job(
         module_name=module_name,
         class_name=class_name,
         task_id=task_id,
+        max_timeout_hours=max_timeout_hours,
     )
 
     print(f"Databricks cluster config: {cluster_info['new_cluster']}")

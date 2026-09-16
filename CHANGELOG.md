@@ -11,11 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`GlueConfig.max_timeout_hours`**, so a caller can override the previously
-  hardcoded 8-hour Glue job run timeout instead of being stuck with it.
-- **`WherobotsConfig.max_timeout_hours`**, so a caller can override the
-  previously hardcoded 8-hour Wherobots job run timeout instead of being
-  stuck with it.
+- **`spark_agnostic_task_group(max_timeout_hours=...)` overrides the
+  previously hardcoded 8-hour job run timeout.** A Jinja-templatable string
+  (`"{{ params.timeout_hours }}"`); leave empty to keep the 8-hour default.
+  Maps to Glue's `Timeout` and to Databricks'/Wherobots' `timeout_seconds`.
 
 ## [0.12.2] - 2026-09-02
 

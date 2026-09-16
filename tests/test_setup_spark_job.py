@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from overture_airflow_provider._setup import setup_spark_job
-from overture_airflow_provider.config import GlueConfig, WherobotsConfig
 from overture_airflow_provider.spark import SparkFamily, SparkImpl
 
 _GLUE_V5 = "GLUE_v5"
@@ -137,27 +136,6 @@ class TestJarPathSplitting:
         assert result["spark_jar_paths"] == ["s3://bucket/a.jar", "s3://bucket/b.jar"]
 
 
-class TestMaxTimeoutHours:
-    def test_glue_default_is_eight_hours(self):
-        result = _run(spark_impl_name="GLUE_v5")
-        assert result["glue_max_timeout_hours"] == 8
-
-    def test_glue_config_override_flows_through(self):
-        result = _run(spark_impl_name="GLUE_v5", glue_config=GlueConfig(max_timeout_hours=12))
-        assert result["glue_max_timeout_hours"] == 12
-
-    def test_wherobots_default_is_eight_hours(self):
-        result = _run(spark_impl_name="WHEROBOTS_v1_5_0")
-        assert result["wherobots_max_timeout_hours"] == 8
-
-    def test_wherobots_config_override_flows_through(self):
-        result = _run(
-            spark_impl_name="WHEROBOTS_v1_5_0",
-            wherobots_config=WherobotsConfig(max_timeout_hours=3),
-        )
-        assert result["wherobots_max_timeout_hours"] == 3
-
-
 class TestRunIdentifier:
     def test_run_identifier_contains_job_name(self):
         result = _run(module_name="mod", class_name="Cls")
@@ -176,7 +154,7 @@ class TestRunIdentifier:
 def test_execution_logic_resolves_known_symbol():
     import overture_airflow_provider.spark_execution_logic as sel
 
-    assert sel.MAX_TIMEOUT_HOURS == 8  # re-exported from _glue
+    assert sel.WHEROBOTS_PROVIDER  # re-exported from _wherobots
 
 
 def test_execution_logic_raises_for_unknown_symbol():

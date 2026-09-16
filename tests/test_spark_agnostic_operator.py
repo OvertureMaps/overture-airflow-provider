@@ -19,8 +19,8 @@ _SETUP_INFO = {
 _FULL = {**_SETUP_INFO, "spark_family": SparkFamily.GLUE}
 
 
-def _make_operator():
-    return SparkAgnosticExecuteOperator(
+def _make_operator(**overrides):
+    kwargs = dict(
         task_id="execute_spark_job",
         setup_info=_SETUP_INFO,
         package_info={},
@@ -30,6 +30,8 @@ def _make_operator():
         class_name="MyClass",
         parameters="{}",
     )
+    kwargs.update(overrides)
+    return SparkAgnosticExecuteOperator(**kwargs)
 
 
 def test_execute_defers_when_trigger_returned():
@@ -50,6 +52,42 @@ def test_execute_defers_when_trigger_returned():
 
     assert exc.value.trigger is trigger
     assert exc.value.method_name == "execute_complete"
+
+
+def test_max_timeout_hours_is_int_or_none_converted_and_forwarded():
+    op = _make_operator(max_timeout_hours="4")
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(TaskDeferred):
+            op.execute({"ti": MagicMock()})
+
+    assert handler.submit_job.call_args.kwargs["max_timeout_hours"] == 4
+
+
+def test_default_max_timeout_hours_forwards_none():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(TaskDeferred):
+            op.execute({"ti": MagicMock()})
+
+    assert handler.submit_job.call_args.kwargs["max_timeout_hours"] is None
 
 
 def test_execute_returns_synchronously_for_wherobots():

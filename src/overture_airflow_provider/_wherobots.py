@@ -18,7 +18,6 @@ try:
 except ImportError:
     WHEROBOTS_AVAILABLE = False
 
-MAX_TIMEOUT_HOURS = 8
 WHEROBOTS_PROVIDER = "com.wherobots.awssdk.auth.WherobotsAssumeRoleCredentialsProvider"
 _API_SUBDOMAIN_PREFIX = "api."
 
@@ -273,10 +272,10 @@ def build_wherobots_operator_kwargs(
     spark_cluster_size: str,
     spark_cluster_desired_worker_cores: str,
     spark_cluster_desired_workers: str,
+    max_timeout_hours: str,
     wherobots_role_arn: str,
     task_id: str,
     resolve_region: bool = True,
-    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Pure-Python assembly of WherobotsRunOperator kwargs.
 
@@ -396,7 +395,7 @@ def build_wherobots_operator_kwargs(
         "runtime": runtime_name,
         "poll_logs": poll_logs,
         "polling_interval": polling_interval,
-        "timeout_seconds": (3600 * max_timeout_hours),
+        "timeout_seconds": (3600 * int(max_timeout_hours)),
         "region": region_val,
         "environment": environment,
     }
@@ -437,10 +436,10 @@ def execute_wherobots_job(
     spark_cluster_size: str,
     spark_cluster_desired_worker_cores: str,
     spark_cluster_desired_workers: str,
+    max_timeout_hours: str,
     wherobots_role_arn: str,
     task_id: str,
     context,
-    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Submit and wait for a Wherobots job.
 
@@ -460,10 +459,10 @@ def execute_wherobots_job(
         spark_cluster_size=spark_cluster_size,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        max_timeout_hours=max_timeout_hours,
         wherobots_role_arn=wherobots_role_arn,
         task_id=task_id,
         resolve_region=True,
-        max_timeout_hours=max_timeout_hours,
     )
 
     platform_operator = WherobotsRunOperator(**built["operator_kwargs"])

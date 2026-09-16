@@ -227,6 +227,7 @@ class SparkPlatformHandler(ABC):
         spark_cluster_size_name: str,
         spark_cluster_desired_worker_cores: int | None,
         spark_cluster_desired_workers: int | None,
+        max_timeout_hours: int | None,
         iam_role_name: str,
         wherobots_role_arn: str,
         task_id: str,
@@ -342,12 +343,13 @@ class GluePlatformHandler(SparkPlatformHandler):
         spark_cluster_size_name: str,
         spark_cluster_desired_worker_cores: int | None,
         spark_cluster_desired_workers: int | None,
+        max_timeout_hours: int | None,
         iam_role_name: str,
         wherobots_role_arn: str,
         task_id: str,
         context: dict,
     ) -> dict:
-        from overture_airflow_provider._glue import MAX_TIMEOUT_HOURS, submit_glue_job
+        from overture_airflow_provider._glue import submit_glue_job
 
         submitted = submit_glue_job(
             setup_info=self.setup_info,
@@ -358,12 +360,12 @@ class GluePlatformHandler(SparkPlatformHandler):
             extra_spark_conf=extra_spark_conf,
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
+            max_timeout_hours=max_timeout_hours,
             iam_role_name=iam_role_name,
             task_id=task_id,
             context=context,
             execution_class=self.setup_info.get("glue_execution_class", "STANDARD"),
             verbose=self.setup_info.get("glue_verbose", True),
-            max_timeout_hours=self.setup_info.get("glue_max_timeout_hours", MAX_TIMEOUT_HOURS),
         )
         return {"trigger": submitted["trigger"], "run_id": submitted["run_id"]}
 
@@ -483,6 +485,7 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
         spark_cluster_size_name: str,
         spark_cluster_desired_worker_cores: int | None,
         spark_cluster_desired_workers: int | None,
+        max_timeout_hours: int | None,
         iam_role_name: str,
         wherobots_role_arn: str,
         task_id: str,
@@ -498,6 +501,7 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
             parameters=parameters,
             task_id=task_id,
             context=context,
+            max_timeout_hours=max_timeout_hours,
         )
         return {
             "trigger": submitted["trigger"],
@@ -592,12 +596,13 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
         spark_cluster_size_name: str,
         spark_cluster_desired_worker_cores: int | None,
         spark_cluster_desired_workers: int | None,
+        max_timeout_hours: int | None,
         iam_role_name: str,
         wherobots_role_arn: str,
         task_id: str,
         context: dict,
     ) -> dict:
-        from overture_airflow_provider._wherobots import MAX_TIMEOUT_HOURS, execute_wherobots_job
+        from overture_airflow_provider._wherobots import execute_wherobots_job
 
         # Wherobots has no upstream Airflow trigger, so it runs synchronously and
         # returns the final result with no deferral. The runtime ``version``
@@ -612,10 +617,10 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
             spark_cluster_size=spark_cluster_size_name,
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
+            max_timeout_hours=max_timeout_hours,
             wherobots_role_arn=wherobots_role_arn,
             task_id=task_id,
             context=context,
-            max_timeout_hours=self.setup_info.get("wherobots_max_timeout_hours", MAX_TIMEOUT_HOURS),
         )
         return {"trigger": None, "result": result}
 

@@ -440,6 +440,7 @@ def execute_wherobots_job(
     wherobots_role_arn: str,
     task_id: str,
     context,
+    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Submit and wait for a Wherobots job.
 
@@ -462,7 +463,7 @@ def execute_wherobots_job(
         wherobots_role_arn=wherobots_role_arn,
         task_id=task_id,
         resolve_region=True,
-        max_timeout_hours=setup_info.get("wherobots_max_timeout_hours", MAX_TIMEOUT_HOURS),
+        max_timeout_hours=max_timeout_hours,
     )
 
     platform_operator = WherobotsRunOperator(**built["operator_kwargs"])

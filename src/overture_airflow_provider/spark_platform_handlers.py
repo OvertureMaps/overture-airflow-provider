@@ -597,7 +597,7 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
         task_id: str,
         context: dict,
     ) -> dict:
-        from overture_airflow_provider._wherobots import execute_wherobots_job
+        from overture_airflow_provider._wherobots import MAX_TIMEOUT_HOURS, execute_wherobots_job
 
         # Wherobots has no upstream Airflow trigger, so it runs synchronously and
         # returns the final result with no deferral. The runtime ``version``
@@ -615,6 +615,7 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
             wherobots_role_arn=wherobots_role_arn,
             task_id=task_id,
             context=context,
+            max_timeout_hours=self.setup_info.get("wherobots_max_timeout_hours", MAX_TIMEOUT_HOURS),
         )
         return {"trigger": None, "result": result}
 

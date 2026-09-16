@@ -196,6 +196,7 @@ def _build_render_setup_info(
         "wherobots_external_id": wherobots_config.external_id,
         "wherobots_role_arn": wherobots_config.role_arn,
         "wherobots_version": wherobots_config.version,
+        "wherobots_max_timeout_hours": wherobots_config.max_timeout_hours,
         "aws_region": wherobots_config.aws_region,
         "databricks_conf": databricks_config.cluster_conf,
         "databricks_extra_libraries": list(databricks_config.extra_libraries),
@@ -215,6 +216,7 @@ def _build_render_setup_info(
         "glue_execution_class": glue_config.execution_class,
         "glue_verbose": glue_config.verbose,
         "glue_output_log_group": glue_config.output_log_group,
+        "glue_max_timeout_hours": glue_config.max_timeout_hours,
         "iam_role_name": glue_config.iam_role_name,
         "codeartifact_domain_owner": package_registry.domain_owner,
         "codeartifact_domain": package_registry.domain,
@@ -441,6 +443,7 @@ def render_spark_job(
             dag_id=dag_id,
             execution_class=glue_config.execution_class,
             verbose=glue_config.verbose,
+            max_timeout_hours=glue_config.max_timeout_hours,
         )
         submit_payload = {
             "create_job_kwargs": built["create_job_kwargs"],
@@ -517,6 +520,7 @@ def render_spark_job(
             wherobots_role_arn=wherobots_config.role_arn,
             task_id=task_id,
             resolve_region=False,
+            max_timeout_hours=wherobots_config.max_timeout_hours,
         )
         cli = _wherobots_cli()
         return RenderResult(

@@ -403,6 +403,41 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["GlueVersion"] == "5.0"
 
+    def test_timeout_defaults_to_eight_hours(self):
+        _, captured = self._run_glue()
+        create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
+        assert create_kwargs["Timeout"] == 60 * 8
+
+    def test_timeout_honors_setup_info_override(self):
+        from overture_airflow_provider._glue import build_glue_operator_kwargs
+
+        setup_info = {**_glue_setup_info(), "glue_max_timeout_hours": 2}
+        built = build_glue_operator_kwargs(
+            setup_info=setup_info,
+            package_info={
+                "py_files": "s3://bucket/pkg.whl",
+                "script_location": "s3://bucket/job_runner_glue.py",
+                "scala_script_location": "s3://bucket/job_runner_glue.scala",
+                "s3_bucket": "test-bucket",
+                "s3_prefix": "overture-airflow-operator/test.Job/20240101",
+                "native_packages": [],
+            },
+            jar_info={
+                "jars_s3": "s3://bucket/sedona.jar",
+                "sedona_packages": "org.apache.sedona:sedona-spark-shaded-3.5_2.12:1.7.0",
+                "sedona_module": "apache-sedona==1.7.0",
+            },
+            module_name="my_module",
+            class_name="MyClass",
+            extra_spark_conf={},
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iam_role_name="AWSGlueServiceRole",
+            task_id="execute_spark_job",
+            max_timeout_hours=setup_info["glue_max_timeout_hours"],
+        )
+        assert built["create_job_kwargs"]["Timeout"] == 60 * 2
+
     def test_operator_kwargs_include_deferrable_true(self):
         _, captured = self._run_glue()
         assert captured["call_kwargs"]["deferrable"] is True
@@ -1810,6 +1845,14 @@ class TestWherobotsRunVersion:
         built = self._build(setup_info=setup_info)
         assert "version" not in built["operator_kwargs"]
         assert "version" not in built["submit_payload"]
+
+    def test_timeout_defaults_to_eight_hours(self):
+        built = self._build()
+        assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 8
+
+    def test_timeout_honors_max_timeout_hours_override(self):
+        built = self._build(max_timeout_hours=1)
+        assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 1
 
 
 class TestSparkJobLink:

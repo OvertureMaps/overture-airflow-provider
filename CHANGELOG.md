@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-15
+
+### Added
+
+- **`GlueConfig.max_timeout_hours`**, so a caller can override the previously
+  hardcoded 8-hour Glue job run timeout instead of being stuck with it.
+- **`WherobotsConfig.max_timeout_hours`**, so a caller can override the
+  previously hardcoded 8-hour Wherobots job run timeout instead of being
+  stuck with it.
+
 ## [0.12.2] - 2026-09-02
 
 ### Fixed

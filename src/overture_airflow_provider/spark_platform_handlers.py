@@ -347,7 +347,7 @@ class GluePlatformHandler(SparkPlatformHandler):
         task_id: str,
         context: dict,
     ) -> dict:
-        from overture_airflow_provider._glue import submit_glue_job
+        from overture_airflow_provider._glue import MAX_TIMEOUT_HOURS, submit_glue_job
 
         submitted = submit_glue_job(
             setup_info=self.setup_info,
@@ -363,6 +363,7 @@ class GluePlatformHandler(SparkPlatformHandler):
             context=context,
             execution_class=self.setup_info.get("glue_execution_class", "STANDARD"),
             verbose=self.setup_info.get("glue_verbose", True),
+            max_timeout_hours=self.setup_info.get("glue_max_timeout_hours", MAX_TIMEOUT_HOURS),
         )
         return {"trigger": submitted["trigger"], "run_id": submitted["run_id"]}
 

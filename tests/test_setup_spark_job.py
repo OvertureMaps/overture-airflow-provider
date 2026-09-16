@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from overture_airflow_provider._setup import setup_spark_job
+from overture_airflow_provider.config import GlueConfig, WherobotsConfig
 from overture_airflow_provider.spark import SparkFamily, SparkImpl
 
 _GLUE_V5 = "GLUE_v5"
@@ -20,6 +21,8 @@ def _run(
     job_name="",
     parameters="{}",
     spark_jar_paths="",
+    glue_config=None,
+    wherobots_config=None,
 ):
     with patch(
         "overture_airflow_provider._setup.CodeArtifactPyPiClient",
@@ -33,6 +36,8 @@ def _run(
             job_name=job_name,
             parameters=parameters,
             spark_jar_paths=spark_jar_paths,
+            glue_config=glue_config,
+            wherobots_config=wherobots_config,
         )
 
 
@@ -130,6 +135,27 @@ class TestJarPathSplitting:
     def test_multiple_jars_comma_separated(self):
         result = _run(spark_jar_paths="s3://bucket/a.jar,s3://bucket/b.jar")
         assert result["spark_jar_paths"] == ["s3://bucket/a.jar", "s3://bucket/b.jar"]
+
+
+class TestMaxTimeoutHours:
+    def test_glue_default_is_eight_hours(self):
+        result = _run(spark_impl_name="GLUE_v5")
+        assert result["glue_max_timeout_hours"] == 8
+
+    def test_glue_config_override_flows_through(self):
+        result = _run(spark_impl_name="GLUE_v5", glue_config=GlueConfig(max_timeout_hours=12))
+        assert result["glue_max_timeout_hours"] == 12
+
+    def test_wherobots_default_is_eight_hours(self):
+        result = _run(spark_impl_name="WHEROBOTS_v1_5_0")
+        assert result["wherobots_max_timeout_hours"] == 8
+
+    def test_wherobots_config_override_flows_through(self):
+        result = _run(
+            spark_impl_name="WHEROBOTS_v1_5_0",
+            wherobots_config=WherobotsConfig(max_timeout_hours=3),
+        )
+        assert result["wherobots_max_timeout_hours"] == 3
 
 
 class TestRunIdentifier:

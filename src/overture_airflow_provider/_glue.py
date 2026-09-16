@@ -208,6 +208,7 @@ def build_glue_operator_kwargs(
     dag_id: str = "",
     execution_class: str = "STANDARD",
     verbose: bool = True,
+    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Pure-Python assembly of GlueJobOperator kwargs.
 
@@ -320,7 +321,7 @@ def build_glue_operator_kwargs(
             "Name": "glueetl",
             "ScriptLocation": script_location,
         },
-        "Timeout": 60 * MAX_TIMEOUT_HOURS,
+        "Timeout": 60 * max_timeout_hours,
     }
 
     tags = {
@@ -375,6 +376,7 @@ def submit_glue_job(
     context: dict,
     execution_class: str = "STANDARD",
     verbose: bool = True,
+    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Submit a Glue job (non-blocking) and return a trigger to defer on.
 
@@ -430,6 +432,7 @@ def submit_glue_job(
         dag_id=context["dag"].dag_id if "dag" in context else "",
         execution_class=execution_class,
         verbose=verbose,
+        max_timeout_hours=max_timeout_hours,
     )
 
     platform_operator = GlueJobOperator(**built["operator_kwargs"])

@@ -115,6 +115,7 @@ def setup_spark_job(
         "wherobots_external_id": wherobots_config.external_id,
         "wherobots_role_arn": wherobots_config.role_arn,
         "wherobots_version": wherobots_config.version,
+        "wherobots_max_timeout_hours": wherobots_config.max_timeout_hours,
         "aws_region": wherobots_config.aws_region,
         "databricks_conf": databricks_config.cluster_conf,
         "databricks_extra_libraries": list(databricks_config.extra_libraries),
@@ -140,6 +141,7 @@ def setup_spark_job(
         "glue_execution_class": glue_config.execution_class,
         "glue_verbose": glue_config.verbose,
         "glue_output_log_group": glue_config.output_log_group,
+        "glue_max_timeout_hours": glue_config.max_timeout_hours,
         "iam_role_name": glue_config.iam_role_name,
         # Registry params stored for client reconstruction after XCom round-trip
         "codeartifact_domain_owner": package_registry.domain_owner,

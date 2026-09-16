@@ -276,6 +276,7 @@ def build_wherobots_operator_kwargs(
     wherobots_role_arn: str,
     task_id: str,
     resolve_region: bool = True,
+    max_timeout_hours: int = MAX_TIMEOUT_HOURS,
 ) -> dict:
     """Pure-Python assembly of WherobotsRunOperator kwargs.
 
@@ -395,7 +396,7 @@ def build_wherobots_operator_kwargs(
         "runtime": runtime_name,
         "poll_logs": poll_logs,
         "polling_interval": polling_interval,
-        "timeout_seconds": (3600 * MAX_TIMEOUT_HOURS),
+        "timeout_seconds": (3600 * max_timeout_hours),
         "region": region_val,
         "environment": environment,
     }
@@ -461,6 +462,7 @@ def execute_wherobots_job(
         wherobots_role_arn=wherobots_role_arn,
         task_id=task_id,
         resolve_region=True,
+        max_timeout_hours=setup_info.get("wherobots_max_timeout_hours", MAX_TIMEOUT_HOURS),
     )
 
     platform_operator = WherobotsRunOperator(**built["operator_kwargs"])

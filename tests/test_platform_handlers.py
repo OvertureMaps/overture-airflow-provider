@@ -408,12 +408,11 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["Timeout"] == 60 * 8
 
-    def test_timeout_honors_setup_info_override(self):
+    def test_timeout_honors_override(self):
         from overture_airflow_provider._glue import build_glue_operator_kwargs
 
-        setup_info = {**_glue_setup_info(), "glue_max_timeout_hours": 2}
         built = build_glue_operator_kwargs(
-            setup_info=setup_info,
+            setup_info=_glue_setup_info(),
             package_info={
                 "py_files": "s3://bucket/pkg.whl",
                 "script_location": "s3://bucket/job_runner_glue.py",
@@ -434,7 +433,7 @@ class TestGlueExecuteJob:
             spark_cluster_desired_workers="",
             iam_role_name="AWSGlueServiceRole",
             task_id="execute_spark_job",
-            max_timeout_hours=setup_info["glue_max_timeout_hours"],
+            max_timeout_hours=2,
         )
         assert built["create_job_kwargs"]["Timeout"] == 60 * 2
 
@@ -1850,7 +1849,7 @@ class TestWherobotsRunVersion:
         built = self._build()
         assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 8
 
-    def test_timeout_honors_max_timeout_hours_override(self):
+    def test_timeout_honors_override(self):
         built = self._build(max_timeout_hours=1)
         assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 1
 

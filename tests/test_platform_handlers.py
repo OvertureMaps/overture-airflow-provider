@@ -234,6 +234,51 @@ class TestGetPlatformHandler:
             get_platform_handler(SparkFamily.SYNAPSE, _glue_setup_info())
 
 
+class TestHandlerSubmitJobMaxTimeoutHours:
+    def _submit_job_kwargs(self, **overrides):
+        base = dict(
+            package_info={},
+            jar_info={},
+            cluster_info=None,
+            module_name="my_module",
+            class_name="MyClass",
+            parameters="{}",
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_size_name="",
+            spark_cluster_desired_worker_cores=None,
+            spark_cluster_desired_workers=None,
+            max_timeout_hours=8,
+            iam_role_name="AWSGlueServiceRole",
+            wherobots_role_arn="",
+            task_id="execute_spark_job",
+            context={},
+        )
+        base.update(overrides)
+        return base
+
+    def test_glue_forwards_max_timeout_hours(self):
+        handler = GluePlatformHandler(_glue_setup_info())
+        with patch("overture_airflow_provider._glue.submit_glue_job") as mock_submit:
+            mock_submit.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+            handler.submit_job(**self._submit_job_kwargs(max_timeout_hours=3))
+        assert mock_submit.call_args.kwargs["max_timeout_hours"] == 3
+
+    def test_wherobots_forwards_max_timeout_hours(self):
+        handler = WherobotsPlatformHandler(_wherobots_setup_info())
+        with patch("overture_airflow_provider._wherobots.execute_wherobots_job") as mock_execute:
+            mock_execute.return_value = {"job_url": "https://wherobots/run/1"}
+            handler.submit_job(**self._submit_job_kwargs(max_timeout_hours=2))
+        assert mock_execute.call_args.kwargs["max_timeout_hours"] == 2
+
+    def test_databricks_forwards_max_timeout_hours(self):
+        handler = DatabricksPlatformHandler(_databricks_setup_info())
+        with patch("overture_airflow_provider._databricks.submit_databricks_job") as mock_submit:
+            mock_submit.return_value = {"trigger": MagicMock(), "run_id": "run_1"}
+            handler.submit_job(**self._submit_job_kwargs(max_timeout_hours=1))
+        assert mock_submit.call_args.kwargs["max_timeout_hours"] == 1
+
+
 class TestGlueSetupCluster:
     def _run(self, extra_spark_conf=None, iceberg_spark_config=None):
         handler = GluePlatformHandler(_glue_setup_info())
@@ -293,6 +338,7 @@ class TestGlueExecuteJob:
         extra_spark_conf=None,
         desired_worker_cores="40",
         desired_workers="",
+        max_timeout_hours="8",
         iam_role_name="AWSGlueServiceRole",
         simulate_submit=False,
         mapping_context=False,
@@ -352,6 +398,7 @@ class TestGlueExecuteJob:
                 extra_spark_conf=extra_spark_conf or {},
                 spark_cluster_desired_worker_cores=desired_worker_cores,
                 spark_cluster_desired_workers=desired_workers,
+                max_timeout_hours=max_timeout_hours,
                 iam_role_name=iam_role_name,
                 task_id="execute_spark_job",
                 context=context,
@@ -402,6 +449,40 @@ class TestGlueExecuteJob:
         _, captured = self._run_glue()
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["GlueVersion"] == "5.0"
+
+    def test_timeout_defaults_to_eight_hours(self):
+        _, captured = self._run_glue()
+        create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
+        assert create_kwargs["Timeout"] == 60 * 8
+
+    def test_timeout_honors_override(self):
+        from overture_airflow_provider._glue import build_glue_operator_kwargs
+
+        built = build_glue_operator_kwargs(
+            setup_info=_glue_setup_info(),
+            package_info={
+                "py_files": "s3://bucket/pkg.whl",
+                "script_location": "s3://bucket/job_runner_glue.py",
+                "scala_script_location": "s3://bucket/job_runner_glue.scala",
+                "s3_bucket": "test-bucket",
+                "s3_prefix": "overture-airflow-operator/test.Job/20240101",
+                "native_packages": [],
+            },
+            jar_info={
+                "jars_s3": "s3://bucket/sedona.jar",
+                "sedona_packages": "org.apache.sedona:sedona-spark-shaded-3.5_2.12:1.7.0",
+                "sedona_module": "apache-sedona==1.7.0",
+            },
+            module_name="my_module",
+            class_name="MyClass",
+            extra_spark_conf={},
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iam_role_name="AWSGlueServiceRole",
+            task_id="execute_spark_job",
+            max_timeout_hours="2",
+        )
+        assert built["create_job_kwargs"]["Timeout"] == 60 * 2
 
     def test_operator_kwargs_include_deferrable_true(self):
         _, captured = self._run_glue()
@@ -1227,6 +1308,7 @@ class TestDatabricksSubmitJob:
                 parameters='{"key":"value"}',
                 task_id="execute_spark_job",
                 context=context,
+                max_timeout_hours="8",
             )
         return result
 
@@ -1264,6 +1346,7 @@ class TestDatabricksSubmitJob:
             module_name="my_module",
             class_name="MyClass",
             task_id="execute_spark_job",
+            max_timeout_hours="8",
         )
         assert result["operator_kwargs"]["deferrable"] is True
         # Databricks only defers when wait_for_termination is True.
@@ -1301,6 +1384,7 @@ class TestDatabricksSubmitJob:
                 parameters='{"key":"value"}',
                 task_id="execute_spark_job",
                 context={"ti": MagicMock()},
+                max_timeout_hours="8",
             )
 
         assert result["trigger"] is None
@@ -1449,6 +1533,7 @@ class TestWherobotsExecuteJob:
         extra_spark_conf=None,
         spark_cluster_size="",
         desired_cores="40",
+        max_timeout_hours="8",
         package_info=None,
         jar_info=None,
         parameters='{"key": "value"}',
@@ -1518,6 +1603,7 @@ class TestWherobotsExecuteJob:
                 spark_cluster_size=spark_cluster_size,
                 spark_cluster_desired_worker_cores=desired_cores,
                 spark_cluster_desired_workers="",
+                max_timeout_hours=max_timeout_hours,
                 wherobots_role_arn="arn:aws:iam::123456789012:role/wherobots-access",
                 task_id="execute_spark_job",
                 context=context,
@@ -1704,6 +1790,7 @@ class TestWherobotsExecuteJob:
                     spark_cluster_size="",
                     spark_cluster_desired_worker_cores="40",
                     spark_cluster_desired_workers="",
+                    max_timeout_hours="8",
                     wherobots_role_arn="arn:aws:iam::123456789012:role/test",
                     task_id="t",
                     context={},
@@ -1771,6 +1858,7 @@ class TestWherobotsRunVersion:
             spark_cluster_size="",
             spark_cluster_desired_worker_cores="40",
             spark_cluster_desired_workers="",
+            max_timeout_hours="8",
             wherobots_role_arn="arn:aws:iam::123456789012:role/test",
             task_id="execute_spark_job",
             resolve_region=False,
@@ -1810,6 +1898,14 @@ class TestWherobotsRunVersion:
         built = self._build(setup_info=setup_info)
         assert "version" not in built["operator_kwargs"]
         assert "version" not in built["submit_payload"]
+
+    def test_timeout_defaults_to_eight_hours(self):
+        built = self._build()
+        assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 8
+
+    def test_timeout_honors_override(self):
+        built = self._build(max_timeout_hours="1")
+        assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 1
 
 
 class TestSparkJobLink:

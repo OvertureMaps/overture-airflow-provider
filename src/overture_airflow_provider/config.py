@@ -45,6 +45,8 @@ from overture_airflow_provider._report_issue import (
     get_tracker,
 )
 
+DEFAULT_MAX_TIMEOUT_HOURS = "8"
+
 
 def _require_non_empty(cls_name: str, **fields: str) -> None:
     """Raise ``ValueError`` for any required string field that is empty/blank.

@@ -50,3 +50,18 @@ def test_max_timeout_hours_jinja_renders_at_execution():
 def test_default_max_timeout_hours_is_empty_string():
     _, op = _build_execute_op("")
     assert op.max_timeout_hours == ""
+
+
+def test_omitted_max_timeout_hours_defaults_to_eight():
+    with DAG(
+        dag_id="max_timeout_hours_omitted_probe",
+        schedule=None,
+        start_date=datetime.datetime(2026, 1, 1),
+    ) as dag:
+        spark_agnostic_task_group(
+            group_id="grp",
+            spark_impl_name="GLUE_v5",
+            sedona_version="1.7.0",
+        )
+    op = dag.get_task("grp.execute_spark_job")
+    assert op.max_timeout_hours == "8"

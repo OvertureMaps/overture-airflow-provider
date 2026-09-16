@@ -33,6 +33,7 @@ from overture_airflow_provider._airflow_compat import (
 from overture_airflow_provider._failures import format_failure
 from overture_airflow_provider._report_issue import REPORT_ISSUE_XCOM_KEY
 from overture_airflow_provider._retry_guard import read_recorded_run
+from overture_airflow_provider.config import DEFAULT_MAX_TIMEOUT_HOURS
 from overture_airflow_provider.links import (
     SPARK_AGNOSTIC_XCOM_KEY,
     ReportIssueLink,
@@ -41,7 +42,6 @@ from overture_airflow_provider.setup_info import rehydrate
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
 
 _GLUE_RUN_ID_RE = re.compile(r"\bjr_[0-9a-f]{16,}\b")
-
 
 def _terminal_run_id(error_text: str) -> str | None:
     """Recover a Glue run id from a trigger error reporting a terminal state.
@@ -80,6 +80,11 @@ def _build_agnostic_xcom(setup_info: dict, result: dict) -> dict:
 
 def _int_or_none(value: str):
     return int(value) if value else None
+
+
+def _max_timeout_hours_or_default(value: str) -> int:
+    """Empty (unset, or a Jinja template that rendered blank) keeps the documented default."""
+    return int(value) if value else int(DEFAULT_MAX_TIMEOUT_HOURS)
 
 
 class SparkAgnosticExecuteOperator(BaseOperator):
@@ -162,7 +167,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                     self.spark_cluster_desired_worker_cores
                 ),
                 spark_cluster_desired_workers=_int_or_none(self.spark_cluster_desired_workers),
-                max_timeout_hours=_int_or_none(self.max_timeout_hours),
+                max_timeout_hours=_max_timeout_hours_or_default(self.max_timeout_hours),
                 iam_role_name=self.setup_info.get("iam_role_name", "AWSGlueServiceRole"),
                 wherobots_role_arn=self.setup_info.get("wherobots_role_arn", ""),
                 task_id=self.task_id,

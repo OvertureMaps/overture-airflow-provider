@@ -51,6 +51,7 @@ from overture_airflow_provider._airflow_compat import task, task_group
 from overture_airflow_provider._operator import SparkAgnosticExecuteOperator
 from overture_airflow_provider._setup import setup_spark_job
 from overture_airflow_provider.config import (
+    DEFAULT_MAX_TIMEOUT_HOURS,
     ArtifactStoreConfig,
     DatabricksConfig,
     GlueConfig,
@@ -113,7 +114,7 @@ def spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
-    max_timeout_hours: str = "",
+    max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     report_issue_config: ReportIssueConfig | None = None,
 ):
     """Create a TaskGroup that runs one Spark job on the platform selected at
@@ -163,7 +164,7 @@ def spark_agnostic_task_group(
             the ``databricks_default`` connection and the default workspace paths.
         wherobots_config: Wherobots execution settings (role ARN, external ID,
             AWS region). Required for Wherobots runs that use Iceberg.
-        max_timeout_hours: Job run timeout, in hours.
+        max_timeout_hours: Job run timeout, in hours. Defaults to ``"8"``.
 
         report_issue_config: Opt-in "Report Issue" operator link. Off by
             default; when enabled it adds a link on ``execute_spark_job`` that
@@ -266,7 +267,7 @@ def _spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
-    max_timeout_hours: str = "",
+    max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     report_issue_config: ReportIssueConfig | None = None,
 ):
     """Internal task-group implementation. See ``spark_agnostic_task_group``."""

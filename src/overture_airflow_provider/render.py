@@ -35,6 +35,7 @@ from overture_airflow_provider._databricks import (
 from overture_airflow_provider._glue import build_glue_operator_kwargs
 from overture_airflow_provider._wherobots import build_wherobots_operator_kwargs
 from overture_airflow_provider.config import (
+    DEFAULT_MAX_TIMEOUT_HOURS,
     ArtifactStoreConfig,
     DatabricksConfig,
     GlueConfig,
@@ -370,7 +371,7 @@ def render_spark_job(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
-    max_timeout_hours: str = "8",
+    max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     task_id: str = "execute_spark_job",
     dag_id: str = "",
     pre_resolved_package_info: dict | None = None,
@@ -572,7 +573,7 @@ def _cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--spark-cluster-size", default="")
     parser.add_argument("--spark-cluster-desired-worker-cores", default="40")
     parser.add_argument("--spark-cluster-desired-workers", default="")
-    parser.add_argument("--max-timeout-hours", default="8")
+    parser.add_argument("--max-timeout-hours", default=DEFAULT_MAX_TIMEOUT_HOURS)
     parser.add_argument("--task-id", default="execute_spark_job")
     parser.add_argument("--dag-id", default="")
     parser.add_argument(

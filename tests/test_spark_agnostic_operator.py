@@ -54,7 +54,7 @@ def test_execute_defers_when_trigger_returned():
     assert exc.value.method_name == "execute_complete"
 
 
-def test_max_timeout_hours_is_int_or_none_converted_and_forwarded():
+def test_max_timeout_hours_is_converted_to_int_and_forwarded():
     op = _make_operator(max_timeout_hours="4")
     handler = MagicMock()
     handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
@@ -72,7 +72,7 @@ def test_max_timeout_hours_is_int_or_none_converted_and_forwarded():
     assert handler.submit_job.call_args.kwargs["max_timeout_hours"] == 4
 
 
-def test_default_max_timeout_hours_forwards_none():
+def test_default_max_timeout_hours_resolves_to_documented_default():
     op = _make_operator()
     handler = MagicMock()
     handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
@@ -87,7 +87,26 @@ def test_default_max_timeout_hours_forwards_none():
         with pytest.raises(TaskDeferred):
             op.execute({"ti": MagicMock()})
 
-    assert handler.submit_job.call_args.kwargs["max_timeout_hours"] is None
+    assert handler.submit_job.call_args.kwargs["max_timeout_hours"] == 8
+
+
+def test_explicit_empty_max_timeout_hours_also_resolves_to_documented_default():
+    # e.g. a Jinja template like "{{ params.timeout_hours }}" that rendered blank.
+    op = _make_operator(max_timeout_hours="")
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(TaskDeferred):
+            op.execute({"ti": MagicMock()})
+
+    assert handler.submit_job.call_args.kwargs["max_timeout_hours"] == 8
 
 
 def test_execute_returns_synchronously_for_wherobots():

@@ -8,6 +8,7 @@ dead worker. These tests exercise that hand-off against a ``MagicMock`` ti,
 with no real Airflow XCom backend involved.
 """
 
+import hashlib
 import json
 from unittest.mock import MagicMock
 
@@ -80,16 +81,40 @@ def _ti(dag_id="dag", task_id="grp.execute_spark_job", run_id="manual__2026-01-0
     return ti
 
 
+def _digest(dag_id, task_id, run_id, map_index):
+    canonical = json.dumps([dag_id, task_id, run_id, map_index], separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class TestTaskInstanceKey:
-    def test_joins_dag_task_run_and_map_index(self):
+    def test_is_sha256_of_canonical_json_identity(self):
         key = _retry_guard.task_instance_key({"ti": _ti()})
-        assert key == "dag__grp.execute_spark_job__manual__2026-01-01__-1"
+        assert key == _digest("dag", "grp.execute_spark_job", "manual__2026-01-01", -1)
+        assert len(key) == 64 and key == key.lower()
+
+    def test_no_delimiter_collision_between_task_and_run_ids(self):
+        # Airflow allows "_" in task ids and arbitrary custom run ids, so a
+        # joined "a__b__c" form is ambiguous. Both split points below must
+        # yield distinct keys, or the scan could stop another TI's run.
+        first = _retry_guard.task_instance_key({"ti": _ti(task_id="a", run_id="b__c")})
+        second = _retry_guard.task_instance_key({"ti": _ti(task_id="a__b", run_id="c")})
+        assert first != second
 
     def test_mapped_index_distinguishes_expansions(self):
         first = _retry_guard.task_instance_key({"ti": _ti(map_index=0)})
         second = _retry_guard.task_instance_key({"ti": _ti(map_index=1)})
         assert first != second
-        assert first.endswith("__0") and second.endswith("__1")
+        assert first == _digest("dag", "grp.execute_spark_job", "manual__2026-01-01", 0)
+
+    def test_map_index_is_hashed_as_int_not_str(self):
+        # "1" and 1 must not collide with each other in some other position,
+        # and the canonical form is what a future reader must reproduce.
+        assert (
+            _retry_guard.task_instance_key({"ti": _ti(map_index=1)})
+            != hashlib.sha256(
+                json.dumps(["dag", "grp.execute_spark_job", "manual__2026-01-01", "1"]).encode()
+            ).hexdigest()
+        )
 
     def test_excludes_try_number(self):
         ti = _ti()
@@ -104,12 +129,14 @@ class TestTaskInstanceKey:
         dag_run = MagicMock()
         dag_run.run_id = "scheduled__2026-01-02"
         key = _retry_guard.task_instance_key({"ti": ti, "dag_run": dag_run})
-        assert key == "dag__grp.execute_spark_job__scheduled__2026-01-02__-1"
+        assert key == _digest("dag", "grp.execute_spark_job", "scheduled__2026-01-02", -1)
 
     def test_missing_map_index_defaults_to_unmapped(self):
         ti = _ti()
         ti.map_index = None
-        assert _retry_guard.task_instance_key({"ti": ti}).endswith("__-1")
+        assert _retry_guard.task_instance_key({"ti": ti}) == _retry_guard.task_instance_key(
+            {"ti": _ti(map_index=-1)}
+        )
 
     def test_works_with_non_dict_mapping_context(self):
         from collections.abc import Mapping
@@ -144,3 +171,13 @@ class TestTaskInstanceKey:
                 raise RuntimeError("boom")
 
         assert _retry_guard.task_instance_key({"ti": _Explodes()}) is None
+
+
+class TestTaskInstanceLabel:
+    def test_human_readable_form(self):
+        label = _retry_guard.task_instance_label({"ti": _ti(map_index=2)})
+        assert label == "dag/grp.execute_spark_job/manual__2026-01-01[2]"
+
+    def test_none_under_same_conditions_as_key(self):
+        assert _retry_guard.task_instance_label({}) is None
+        assert _retry_guard.task_instance_label({"ti": MagicMock()}) is None

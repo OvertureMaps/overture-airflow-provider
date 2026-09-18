@@ -21,8 +21,9 @@ Three layers cover those paths:
    already gone -- see apache/airflow#65400). So the operator's
    ``on_failure_callback`` and ``on_kill`` can still read the run id this try
    pushed and cancel it, before Airflow clears it for the next try.
-2. ``task_instance_key`` -- a stable identity for the task instance across
-   all its tries. Glue stamps it onto every run's ``Arguments``, and
+2. ``task_instance_key`` -- a stable, collision-free identity (a digest of
+   ``dag_id``/``task_id``/``run_id``/``map_index``) for the task instance
+   across all its tries. Glue stamps it onto every run's ``Arguments``, and
    ``_glue.stop_stale_glue_runs`` scans for still-active runs carrying it
    right before submitting a new one. That's what catches the clear of a
    deferred task, where no callback fires and the XCom from (1) is already
@@ -32,6 +33,7 @@ Three layers cover those paths:
 Neither layer needs a global store like an Airflow ``Variable``.
 """
 
+import hashlib
 import json
 import logging
 
@@ -40,18 +42,12 @@ log = logging.getLogger(__name__)
 _XCOM_KEY = "_overture_spark_agnostic_launched_run"
 
 
-def task_instance_key(context) -> str | None:
-    """Stable identity of this task instance across all of its tries.
+def _task_instance_identity(context) -> tuple[str, str, str, int] | None:
+    """``(dag_id, task_id, run_id, map_index)`` of the task instance in ``context``.
 
-    ``{dag_id}__{task_id}__{run_id}__{map_index}``, deliberately excluding
-    ``try_number`` so a retry or a cleared-and-rerun try shares the key with
-    the try whose run it must supersede. Two different DAG runs of the same
-    task get different keys, even when they write the same output; that
-    coordination stays with the caller.
-
-    Returns ``None`` when the context carries no task instance (e.g. the
-    Airflow-free ``render`` preview), so callers can skip the guard rather
-    than stamp a bogus marker. Never raises.
+    ``None`` when the context carries no task instance (e.g. the Airflow-free
+    ``render`` preview) or its identity fields aren't the expected types (a
+    bare ``MagicMock`` ti). Never raises.
     """
     ti = context.get("ti") if hasattr(context, "get") else None
     if ti is None:
@@ -70,10 +66,53 @@ def task_instance_key(context) -> str | None:
             return None
         if not isinstance(map_index, int):
             return None
-        return f"{dag_id}__{task_id}__{run_id}__{map_index}"
+        return dag_id, task_id, run_id, map_index
     except Exception:
         log.warning("Could not build task-instance key for stale-run guard", exc_info=True)
         return None
+
+
+def task_instance_key(context) -> str | None:
+    """Stable, collision-free identity of this task instance across its tries.
+
+    The SHA-256 hex digest of the canonical JSON encoding of
+    ``[dag_id, task_id, run_id, map_index]``. It deliberately excludes
+    ``try_number`` so a retry or a cleared-and-rerun try shares the key with
+    the try whose run it must supersede. Two different DAG runs of the same
+    task get different keys, even when they write the same output; that
+    coordination stays with the caller.
+
+    Hashing (rather than joining the fields with a delimiter) matters because
+    Airflow allows ``_`` in task ids and arbitrary characters in custom run
+    ids, so no delimiter is safe: ``("a", "b__c")`` and ``("a__b", "c")``
+    must not collide, or the stale-run scan could stop another task
+    instance's run. A fixed 64-char digest also fits any argument-length
+    limit and is safe to pass on a Glue command line. Use
+    ``task_instance_label`` for a human-readable form in logs.
+
+    Returns ``None`` when the context carries no task instance (e.g. the
+    Airflow-free ``render`` preview), so callers can skip the guard rather
+    than stamp a bogus marker. Never raises.
+    """
+    identity = _task_instance_identity(context)
+    if identity is None:
+        return None
+    canonical = json.dumps(list(identity), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def task_instance_label(context) -> str | None:
+    """Human-readable ``dag_id/task_id/run_id[map_index]`` for logging.
+
+    Companion to ``task_instance_key``: the key is an opaque digest, so
+    callers log this next to it to make a marker traceable back to its task
+    instance. ``None`` under the same conditions as ``task_instance_key``.
+    """
+    identity = _task_instance_identity(context)
+    if identity is None:
+        return None
+    dag_id, task_id, run_id, map_index = identity
+    return f"{dag_id}/{task_id}/{run_id}[{map_index}]"
 
 
 def record_launched_run(context, *, platform: str, run_id: str, extra: dict | None = None) -> None:

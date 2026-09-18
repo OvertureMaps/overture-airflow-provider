@@ -9,19 +9,26 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from overture_airflow_provider._retry_guard import record_launched_run, task_instance_key
+from overture_airflow_provider._retry_guard import (
+    record_launched_run,
+    task_instance_key,
+    task_instance_label,
+)
 from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize
 from overture_airflow_provider.spark import SparkSedona
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
 _log = logging.getLogger(__name__)
 
-#: Per-run Glue argument stamped with ``_retry_guard.task_instance_key`` so a
-#: later try of the same task instance can find (and stop) this run via
-#: ``get_job_runs``. Unknown ``--`` arguments are harmless to both runners:
-#: ``getResolvedOptions`` parses with ``parse_known_args``, and Glue already
-#: hands its own system arguments to a Scala ``main`` unfiltered.
+#: Per-run Glue argument stamped with ``_retry_guard.task_instance_key`` (an
+#: opaque SHA-256 digest of the task instance's identity) so a later try of
+#: the same task instance can find (and stop) this run via ``get_job_runs``.
+#: Unknown ``--`` arguments are harmless to both runners: ``getResolvedOptions``
+#: parses with ``parse_known_args``, and Glue already hands its own system
+#: arguments to a Scala ``main`` unfiltered.
 TASK_INSTANCE_ARG = "--airflow_task_instance"
+#: ``BatchStopJobRun`` rejects requests with more than this many run ids.
+_BATCH_STOP_MAX_RUN_IDS = 25
 
 #: Glue ``JobRunState`` values that mean a run is (or may still become) a
 #: live writer. ``WAITING`` is a queued run (``JobRunQueuingEnabled``);
@@ -509,8 +516,9 @@ def stop_stale_glue_runs(
     )
 
     to_stop = [run["Id"] for run in active if run.get("JobRunState") != "STOPPING"]
-    if to_stop:
-        response = glue_client.batch_stop_job_run(JobName=job_name, JobRunIds=to_stop)
+    for start in range(0, len(to_stop), _BATCH_STOP_MAX_RUN_IDS):
+        batch = to_stop[start : start + _BATCH_STOP_MAX_RUN_IDS]
+        response = glue_client.batch_stop_job_run(JobName=job_name, JobRunIds=batch)
         for error in response.get("Errors") or []:
             run_id = error.get("JobRunId")
             # A run can finish between the scan and the stop; only a still-active
@@ -589,6 +597,13 @@ def submit_glue_job(
     from overture_airflow_provider._airflow_compat import TaskDeferred
 
     ti_key = task_instance_key(context)
+    if ti_key:
+        _log.info(
+            "Stamping Glue run with task-instance marker %s=%s (%s)",
+            TASK_INSTANCE_ARG,
+            ti_key,
+            task_instance_label(context),
+        )
 
     if not module_name:
         # Scala job: ensure placeholder script exists.

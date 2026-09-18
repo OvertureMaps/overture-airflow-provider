@@ -220,11 +220,16 @@ cover the ways a try can end (`_retry_guard.py`):
    whole job for the synchronous Wherobots path.
 3. **Glue stale-run scan** – a *deferred* task has no worker process, a clear
    is not a failure, and Airflow wipes the TI's XCom before the next try, so
-   neither of the above sees it. Every Glue run therefore carries a
-   `--airflow_task_instance=<dag_id>__<task_id>__<run_id>__<map_index>`
-   marker (no `try_number`) in its run `Arguments`, and `submit_glue_job`
-   walks `get_job_runs` right before submitting, `batch_stop_job_run`s any
-   still-active run with this marker, and waits for it to go terminal. Glue's
+   neither of the above sees it. Every Glue run therefore carries an
+   `--airflow_task_instance=<sha256 of canonical JSON
+   [dag_id, task_id, run_id, map_index]>` marker (no `try_number`; hashed
+   rather than `__`-joined because task ids and custom run ids may contain
+   any delimiter, and the digest fits Glue's argument limits) in its run
+   `Arguments`. The readable `dag_id/task_id/run_id[map_index]` is logged
+   next to it at submit time. `submit_glue_job` walks `get_job_runs` right
+   before submitting, `batch_stop_job_run`s any still-active run with this
+   marker (in batches of 25, the API's cap), and waits for it to go
+   terminal. Glue's
    own run list is the only state that survives a clear. If a stale run can't
    be stopped the try fails as `submit/config` (retryable). The scan is
    bounded (lookback = the job's `max_timeout_hours` + 16h — every run is

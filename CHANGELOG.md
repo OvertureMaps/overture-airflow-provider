@@ -21,11 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Airflow wipes the task instance's XCom before the next try starts, so the
   recorded run id was already gone when `execute()` ran again (fixes #104).
   Every Glue run the provider submits now carries a stable per-task-instance
-  marker (`--airflow_task_instance=<dag_id>__<task_id>__<run_id>__<map_index>`,
-  no `try_number`) in its run `Arguments`, and `submit_glue_job` walks
-  `get_job_runs` right before submitting, stops any `STARTING`/`RUNNING`/
-  `WAITING`/`STOPPING` run carrying this task instance's marker via
-  `batch_stop_job_run`, and waits for Glue to report it terminal before the
+  marker in its run `Arguments`: `--airflow_task_instance=<sha256 hex of the
+  canonical JSON [dag_id, task_id, run_id, map_index]>` (no `try_number`;
+  a digest rather than a `__`-joined string so task ids and custom run ids
+  containing the delimiter can't collide, and so it fits Glue's argument
+  limits — the readable `dag_id/task_id/run_id[map_index]` is logged next to
+  it). `submit_glue_job` walks `get_job_runs` right before submitting, stops
+  any `STARTING`/`RUNNING`/`WAITING`/`STOPPING` run carrying this task
+  instance's marker via `batch_stop_job_run` (in batches of 25, the API's
+  cap), and waits for Glue to report it terminal before the
   new run starts. Glue's own run list is the only state that survives a
   clear, so there's no new Airflow `Variable` or S3 marker. If a stale run
   can't be stopped or doesn't stop in time the try fails as never-launched

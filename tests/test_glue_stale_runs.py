@@ -154,6 +154,32 @@ class TestStopStaleGlueRuns:
         # jr_1 needed two extra polls; each waits poll_interval between them.
         assert sleep.call_args_list == [call(7), call(7)]
 
+    def test_batches_stop_requests_at_the_api_limit(self):
+        # BatchStopJobRun rejects >25 run ids outright; 26+ stale runs must be
+        # split, and an error in a later batch still has to be examined.
+        ids = [f"jr_{i:02d}" for i in range(_glue._BATCH_STOP_MAX_RUN_IDS + 2)]
+        client = _client([[_run(i) for i in ids]], states={ids[-1]: ["SUCCEEDED"]})
+        client.batch_stop_job_run.side_effect = [
+            {"SuccessfulSubmissions": [], "Errors": []},
+            {
+                "SuccessfulSubmissions": [],
+                "Errors": [
+                    {
+                        "JobRunId": ids[-1],
+                        "ErrorDetail": {"ErrorCode": "X", "ErrorMessage": "finished"},
+                    }
+                ],
+            },
+        ]
+        stopped = _glue.stop_stale_glue_runs(
+            client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock()
+        )
+        assert stopped == ids
+        assert client.batch_stop_job_run.call_args_list == [
+            call(JobName=JOB, JobRunIds=ids[:25]),
+            call(JobName=JOB, JobRunIds=ids[25:]),
+        ]
+
     def test_does_not_re_stop_a_run_already_stopping(self):
         client = _client([[_run("jr_stopping", state="STOPPING"), _run("jr_running")]])
         _glue.stop_stale_glue_runs(client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock())

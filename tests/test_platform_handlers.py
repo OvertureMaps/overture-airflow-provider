@@ -1,5 +1,6 @@
 """Tests for SparkPlatformHandler subclasses."""
 
+import hashlib
 import json
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -472,7 +473,11 @@ class TestGlueExecuteJob:
 
     # -- stale-run guard (issue #104) -------------------------------------
 
-    _TI_KEY = "test_dag__execute_spark_job__manual__2026-01-01__-1"
+    # sha256 of canonical JSON ["test_dag","execute_spark_job","manual__2026-01-01",-1];
+    # mirrors the real_ti identity in _make_context.
+    _TI_KEY = hashlib.sha256(
+        b'["test_dag","execute_spark_job","manual__2026-01-01",-1]'
+    ).hexdigest()
 
     def test_stamps_task_instance_marker_on_run_arguments(self):
         from overture_airflow_provider._glue import TASK_INSTANCE_ARG

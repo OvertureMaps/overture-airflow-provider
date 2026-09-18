@@ -5,10 +5,11 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from overture_airflow_provider._retry_guard import record_launched_run
+from overture_airflow_provider._retry_guard import record_launched_run, task_instance_key
 from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize
 from overture_airflow_provider.spark import SparkSedona
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
@@ -16,6 +17,28 @@ from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 _log = logging.getLogger(__name__)
 
 MAX_TIMEOUT_HOURS = 8
+
+#: Per-run Glue argument stamped with ``_retry_guard.task_instance_key`` so a
+#: later try of the same task instance can find (and stop) this run via
+#: ``get_job_runs``. Unknown ``--`` arguments are harmless to both runners:
+#: ``getResolvedOptions`` parses with ``parse_known_args``, and Glue already
+#: hands its own system arguments to a Scala ``main`` unfiltered.
+TASK_INSTANCE_ARG = "--airflow_task_instance"
+
+#: Glue ``JobRunState`` values that mean a run is (or may still become) a
+#: live writer. ``WAITING`` is a queued run (``JobRunQueuingEnabled``);
+#: ``STOPPING`` is already on its way out but must still be waited on.
+_ACTIVE_GLUE_RUN_STATES = frozenset({"STARTING", "RUNNING", "STOPPING", "WAITING"})
+#: How far back the pre-submit scan walks a job's run history. Every job the
+#: provider creates carries an 8h ``Timeout`` (``MAX_TIMEOUT_HOURS``), so a run
+#: older than this is necessarily terminal; the slack covers queued waits.
+_STALE_RUN_LOOKBACK = timedelta(hours=MAX_TIMEOUT_HOURS + 16)
+#: Hard cap on ``get_job_runs`` pages (200 runs each) per scan.
+_STALE_RUN_MAX_PAGES = 10
+#: Bounds on how long ``stop_stale_glue_runs`` waits for a stopped run to
+#: actually reach a terminal state before the new run is submitted.
+_STALE_RUN_STOP_TIMEOUT_SECONDS = 15 * 60
+_STALE_RUN_POLL_INTERVAL_SECONDS = 10
 
 # Keys excluded from the Glue Scala --conf DefaultArgument.
 # spark.jars.packages: Glue can't resolve Maven coords at runtime; JARs are pre-staged via --extra-jars.
@@ -208,6 +231,7 @@ def build_glue_operator_kwargs(
     dag_id: str = "",
     execution_class: str = "STANDARD",
     verbose: bool = True,
+    task_instance_key: str | None = None,
 ) -> dict:
     """Pure-Python assembly of GlueJobOperator kwargs.
 
@@ -217,6 +241,12 @@ def build_glue_operator_kwargs(
     Side-effect-free: does NOT instantiate any operator, call boto3, or
     invoke ``.execute()``. Used by both ``submit_glue_job`` (real submit)
     and ``overture_airflow_provider.render`` (Airflow-free preview).
+
+    ``task_instance_key`` (see ``_retry_guard.task_instance_key``), when
+    given, is stamped onto the per-run ``script_args`` as ``TASK_INSTANCE_ARG``
+    so ``stop_stale_glue_runs`` can later recognise this run as belonging to
+    the same task instance. It goes on the run ``Arguments``, not the job's
+    ``DefaultArguments``: ``get_job_runs`` only reports the former per run.
     """
     if module_name:
         script_location = package_info["script_location"]
@@ -304,6 +334,9 @@ def build_glue_operator_kwargs(
             "--user-jars-first": "true",
         }
 
+    if task_instance_key:
+        script_args[TASK_INSTANCE_ARG] = task_instance_key
+
     cluster_size_kwargs = AwsGlueClusterSize.from_desired_cores(
         int(spark_cluster_desired_worker_cores),
         int(spark_cluster_desired_workers) if spark_cluster_desired_workers else 1,
@@ -361,6 +394,143 @@ def _glue_console_url(region: str, job_name: str, run_id: str) -> str:
     )
 
 
+def _run_started_on(run: dict) -> datetime | None:
+    started = run.get("StartedOn")
+    if not isinstance(started, datetime):
+        return None
+    return started if started.tzinfo else started.replace(tzinfo=UTC)
+
+
+def find_active_glue_runs(
+    glue_client,
+    job_name: str,
+    task_instance_key: str,
+    *,
+    now: datetime | None = None,
+    lookback: timedelta = _STALE_RUN_LOOKBACK,
+    max_pages: int = _STALE_RUN_MAX_PAGES,
+) -> list[dict]:
+    """Return this task instance's still-active runs of ``job_name``.
+
+    Walks ``get_job_runs`` (newest first) and keeps runs whose ``Arguments``
+    carry ``task_instance_key`` under ``TASK_INSTANCE_ARG`` and whose state is
+    in ``_ACTIVE_GLUE_RUN_STATES``. Stops once it reaches a run that started
+    before ``now - lookback`` (anything older is past the job's own
+    ``Timeout``) or after ``max_pages`` pages, whichever comes first.
+    """
+    now = now or datetime.now(UTC)
+    cutoff = now - lookback
+    matches: list[dict] = []
+    next_token: str | None = None
+    for _ in range(max_pages):
+        kwargs = {"JobName": job_name, "MaxResults": 200}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        response = glue_client.get_job_runs(**kwargs)
+        runs = response.get("JobRuns") or []
+        for run in runs:
+            started = _run_started_on(run)
+            if started is not None and started < cutoff:
+                return matches
+            if run.get("JobRunState") not in _ACTIVE_GLUE_RUN_STATES:
+                continue
+            if (run.get("Arguments") or {}).get(TASK_INSTANCE_ARG) != task_instance_key:
+                continue
+            matches.append(run)
+        next_token = response.get("NextToken")
+        if not isinstance(next_token, str) or not next_token:
+            return matches
+    _log.warning(
+        "Stale-run scan for Glue job %s stopped after %d pages without reaching the "
+        "%s lookback boundary; an older run of this task instance could be missed.",
+        job_name,
+        max_pages,
+        lookback,
+    )
+    return matches
+
+
+def stop_stale_glue_runs(
+    glue_client,
+    job_name: str,
+    task_instance_key: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout_seconds: float = _STALE_RUN_STOP_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = _STALE_RUN_POLL_INTERVAL_SECONDS,
+) -> list[str]:
+    """Stop any still-active run this task instance launched earlier, and wait.
+
+    Called right before a new run is submitted. Any match here can only be a
+    leftover from an earlier try -- a zombie kill, or a *clear* of a deferred
+    task, where no callback ever fired and the XCom-recorded run id is already
+    gone -- so it's stopped via ``batch_stop_job_run`` and then polled until
+    Glue reports a terminal state. Submitting before that would put two
+    writers on the same output, which is exactly the race this prevents.
+
+    Returns the ids of the runs that were stopped. Raises ``AirflowException``
+    if a run can't be stopped or doesn't reach a terminal state within
+    ``timeout_seconds``; the caller hasn't launched anything yet at that
+    point, so the failure classifies as never-launched and stays retryable.
+    """
+    from overture_airflow_provider._airflow_compat import AirflowException
+
+    active = find_active_glue_runs(glue_client, job_name, task_instance_key)
+    if not active:
+        return []
+
+    run_ids = [run["Id"] for run in active]
+    _log.warning(
+        "Found %d still-active Glue run(s) of job %s launched by an earlier try of "
+        "this task instance (%s); stopping before submitting a new run: %s",
+        len(run_ids),
+        job_name,
+        task_instance_key,
+        ", ".join(run_ids),
+    )
+
+    to_stop = [run["Id"] for run in active if run.get("JobRunState") != "STOPPING"]
+    if to_stop:
+        response = glue_client.batch_stop_job_run(JobName=job_name, JobRunIds=to_stop)
+        for error in response.get("Errors") or []:
+            run_id = error.get("JobRunId")
+            # A run can finish between the scan and the stop; only a still-active
+            # one that refused to stop is a problem.
+            state = glue_client.get_job_run(JobName=job_name, RunId=run_id)["JobRun"].get(
+                "JobRunState"
+            )
+            if state in _ACTIVE_GLUE_RUN_STATES:
+                detail = error.get("ErrorDetail") or {}
+                raise AirflowException(
+                    f"Could not stop still-active Glue run {run_id} of job {job_name} left "
+                    f"over from an earlier try of this task instance ({state}): "
+                    f"{detail.get('ErrorCode')}: {detail.get('ErrorMessage')}. Refusing to "
+                    "submit a second run against the same output."
+                )
+
+    pending = set(run_ids)
+    deadline = time.monotonic() + timeout_seconds
+    while pending:
+        for run_id in sorted(pending):
+            state = glue_client.get_job_run(JobName=job_name, RunId=run_id)["JobRun"].get(
+                "JobRunState"
+            )
+            if state not in _ACTIVE_GLUE_RUN_STATES:
+                _log.info("Stale Glue run %s of job %s is now %s", run_id, job_name, state)
+                pending.discard(run_id)
+        if not pending:
+            break
+        if time.monotonic() >= deadline:
+            raise AirflowException(
+                f"Glue run(s) {', '.join(sorted(pending))} of job {job_name} left over from "
+                f"an earlier try of this task instance did not stop within "
+                f"{int(timeout_seconds)}s. Refusing to submit a second run against the same "
+                "output."
+            )
+        sleep(poll_interval_seconds)
+    return run_ids
+
+
 def submit_glue_job(
     setup_info: dict,
     package_info: dict,
@@ -387,10 +557,18 @@ def submit_glue_job(
     ``execute_complete`` instead of the inner operator's. The early
     ``spark_agnostic`` XCom is pushed here so ``SparkJobLink`` works while the
     task is deferred.
+
+    Before submitting, any still-active run an earlier try of this same task
+    instance launched is stopped and waited on (``stop_stale_glue_runs``), so
+    a cleared or zombie-killed try can't keep writing alongside the new run.
+    The new run is stamped with the task instance's key so the next try can
+    do the same.
     """
     from airflow.providers.amazon.aws.operators.glue import GlueJobOperator
 
     from overture_airflow_provider._airflow_compat import TaskDeferred
+
+    ti_key = task_instance_key(context)
 
     if not module_name:
         # Scala job: ensure placeholder script exists.
@@ -430,6 +608,7 @@ def submit_glue_job(
         dag_id=context["dag"].dag_id if "dag" in context else "",
         execution_class=execution_class,
         verbose=verbose,
+        task_instance_key=ti_key,
     )
 
     platform_operator = GlueJobOperator(**built["operator_kwargs"])
@@ -443,6 +622,11 @@ def submit_glue_job(
             **built["create_job_kwargs"],
             "Tags": built["tags"],
         }
+    else:
+        # The job exists, so an earlier try of this task instance may have left
+        # a run of it going. A brand-new job has no runs to check.
+        if ti_key:
+            stop_stale_glue_runs(glue_client, setup_info["job_name"], ti_key)
 
     # deferrable=True -> execute() submits the run, then raises TaskDeferred with
     # the provider's own GlueJobCompleteTrigger. We reuse that trigger.
@@ -484,7 +668,7 @@ def submit_glue_job(
 
 
 def cancel_glue_run(run_id: str, extra: dict | None = None) -> None:
-    """Best-effort stop of a Glue job run left over from a zombie-killed try."""
+    """Best-effort stop of a Glue job run left over from a killed or zombie try."""
     extra = extra or {}
     glue_client = boto3.client("glue", region_name=extra.get("region"))
     glue_client.batch_stop_job_run(JobName=extra.get("job_name"), JobRunIds=[run_id])

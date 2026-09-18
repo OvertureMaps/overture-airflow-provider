@@ -646,3 +646,95 @@ def test_execute_no_longer_calls_cancel_before_submit():
             op.execute(context)
 
     mock_read.assert_not_called()
+
+
+# --- on_kill ------------------------------------------------------------------
+#
+# Airflow calls on_kill (with no context) on SIGTERM while the task is still on
+# the worker -- a clear or "mark failed" mid-run, or execution_timeout. That
+# moves a cleared task to up_for_retry via on_retry_callback, *not*
+# on_failure_callback, so the wrapped failure callback never sees it. on_kill
+# reads the same recorded run id and cancels it. A deferred task has no
+# process to signal, so on_kill can't cover that; the Glue submit path's
+# stale-run scan does (see test_platform_handlers / test_glue_stale_runs).
+
+
+def _execute_and_capture_context(op, handler, context):
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(TaskDeferred):
+            op.execute(context)
+
+
+def test_on_kill_cancels_run_recorded_by_this_try():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+    context = {"ti": MagicMock()}
+    recorded = {"platform": "glue", "run_id": "jr_1", "extra": {"job_name": "job"}}
+    _execute_and_capture_context(op, handler, context)
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=recorded) as rd,
+    ):
+        op.on_kill()
+
+    rd.assert_called_once_with(context)
+    handler.cancel_run.assert_called_once_with("jr_1", {"job_name": "job"})
+
+
+def test_on_kill_noop_when_nothing_recorded():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+    _execute_and_capture_context(op, handler, {"ti": MagicMock()})
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=None),
+    ):
+        op.on_kill()
+
+    handler.cancel_run.assert_not_called()
+
+
+def test_on_kill_noop_before_execute():
+    # e.g. killed while still rendering templates, or on the fresh operator
+    # instance Airflow builds to resume a deferred task.
+    op = _make_operator()
+    with patch("overture_airflow_provider._operator.read_recorded_run") as rd:
+        op.on_kill()
+    rd.assert_not_called()
+
+
+def test_on_kill_never_raises():
+    op = _make_operator()
+    handler = MagicMock()
+    handler.submit_job.return_value = {"trigger": MagicMock(), "run_id": "jr_1"}
+    handler.cancel_run.side_effect = RuntimeError("platform unreachable")
+    _execute_and_capture_context(op, handler, {"ti": MagicMock()})
+    recorded = {"platform": "glue", "run_id": "jr_1", "extra": {}}
+
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=recorded),
+    ):
+        op.on_kill()  # must not raise

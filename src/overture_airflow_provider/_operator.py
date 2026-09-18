@@ -14,6 +14,13 @@ Flow:
   synchronous result (Wherobots).
 - ``execute_complete`` resolves the deferred run into the final result and
   pushes the cross-platform ``spark_agnostic`` XCom that ``SparkJobLink`` reads.
+- ``on_kill`` and the wrapped ``on_failure_callback`` cancel the run this try
+  recorded (see ``_retry_guard``) when the try is torn down from the worker
+  (SIGTERM, ``execution_timeout``) or failed externally (zombie kill), so a
+  retry doesn't race it. A *clear* of a deferred task hits neither -- there's
+  no process to signal and nothing failed -- which is why the Glue submit path
+  additionally scans for and stops still-active runs of this task instance
+  right before it submits a new one.
 
 The worker slot is released the moment the job is submitted; the Triggerer
 polls via asyncio until completion, so long Spark jobs no longer pin a Celery
@@ -134,11 +141,15 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         self.report_issue_config = report_issue_config or None
         self._user_on_failure_callback = user_on_failure_callback
         self.on_failure_callback = self._cancel_run_then_delegate
+        # Kept from execute() so on_kill (which Airflow calls without a
+        # context) can still find this try's recorded run.
+        self._execute_context = None
         # Opt-in: only surface the "Report Issue" link when a target is configured.
         if self.report_issue_config and self.report_issue_config.get("target"):
             self.operator_extra_links = (ReportIssueLink(),)
 
     def execute(self, context):
+        self._execute_context = context
         self._push_report_issue_config(context)
         full = rehydrate(self.setup_info)
         merged_spark_conf = (self.cluster_info or {}).get("merged_spark_conf", {})
@@ -260,6 +271,50 @@ class SparkAgnosticExecuteOperator(BaseOperator):
             raise AirflowFailException(format_failure(info)) from None
         return super().resume_execution(next_method, next_kwargs, context)
 
+    def on_kill(self) -> None:
+        """Cancel the run this try recorded when the worker is told to stop.
+
+        Airflow calls ``on_kill`` on SIGTERM (a clear or "mark failed" while
+        the task is still *running* on the worker) and on ``execution_timeout``.
+        For Glue/Databricks that window is short -- submit until deferral --
+        but Wherobots runs synchronously, so its whole job lives in it. Not
+        called for a task that's deferred (no process to signal); the Glue
+        submit path's stale-run scan covers that case on the next try.
+        Best-effort: never raises.
+        """
+        context = self._execute_context
+        if context is None:
+            return
+        self._cancel_recorded_run(context, "this killed try")
+
+    def _cancel_recorded_run(self, context, origin: str) -> None:
+        """Best-effort cancel of the run recorded by this task instance's try.
+
+        Shared by ``on_kill`` and the wrapped ``on_failure_callback``. Nothing
+        here should ever propagate: it's a safety net around the caller's own
+        teardown, not part of the job.
+        """
+        try:
+            full = rehydrate(self.setup_info)
+            handler = get_platform_handler(full["spark_family"], full)
+            recorded = read_recorded_run(context)
+            if recorded and recorded.get("run_id"):
+                handler.cancel_run(recorded["run_id"], recorded.get("extra"))
+                self.log.warning(
+                    "Cancelled %s run %s left over from %s, so a retry doesn't race "
+                    "it while writing the same output.",
+                    recorded.get("platform"),
+                    recorded["run_id"],
+                    origin,
+                )
+        except Exception:
+            self.log.warning(
+                "Could not cancel a run left over from %s; it may still be writing "
+                "output concurrently with a retry.",
+                origin,
+                exc_info=True,
+            )
+
     def _cancel_run_then_delegate(self, context) -> None:
         """Cancel a run this task instance recorded, then run the caller's
         own ``on_failure_callback`` (if any) unchanged.
@@ -274,24 +329,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         concurrently. Best-effort throughout: nothing here should ever stop
         the caller's own callback from running.
         """
-        try:
-            full = rehydrate(self.setup_info)
-            handler = get_platform_handler(full["spark_family"], full)
-            recorded = read_recorded_run(context)
-            if recorded and recorded.get("run_id"):
-                handler.cancel_run(recorded["run_id"], recorded.get("extra"))
-                self.log.warning(
-                    "Cancelled %s run %s left over from this failed try, so a "
-                    "retry doesn't race it while writing the same output.",
-                    recorded.get("platform"),
-                    recorded["run_id"],
-                )
-        except Exception:
-            self.log.warning(
-                "Could not cancel a run left over from this failed try; it "
-                "may still be writing output concurrently with a retry.",
-                exc_info=True,
-            )
+        self._cancel_recorded_run(context, "this failed try")
 
         callbacks = self._user_on_failure_callback
         if not callbacks:

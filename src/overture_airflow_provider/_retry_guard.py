@@ -1,21 +1,35 @@
-"""Best-effort cancellation of a run left behind by a failed try, before a
-retry resubmits.
+"""Guards against a fresh try racing a remote run left behind by an earlier
+try of the same task instance.
 
-A zombie-killed try can leave a Glue/Databricks/Wherobots run alive: the
-scheduler fails the task instance externally (stale heartbeat), so the
-operator's own exception handling and ``on_kill`` never run, and the launched
-remote run keeps writing. A retry then submits a second run against the same
-output path, and both write concurrently.
+A try can leave a Glue/Databricks/Wherobots run alive in several ways: a
+zombie kill (the scheduler fails the task instance externally on a stale
+heartbeat, so the operator's own exception handling never runs), a SIGTERM
+while still on the worker, or -- for a *deferred* task -- a plain clear, which
+isn't a failure at all: there's no worker process to signal, the trigger is
+simply dropped, and the task instance goes back to ``None``. In every case a
+retry or re-run then submits a second run against the same output path, and
+both write concurrently.
 
-This doesn't need any state to survive past the failure, so it doesn't need
-a global store like an Airflow ``Variable``: Airflow only clears a task
-instance's XCom right before that instance's *next* run starts, not at
-failure time, and it invokes ``on_failure_callback`` at failure-detection
-time for a zombie kill too (that's a documented scheduler-side path,
-distinct from ``on_kill``, precisely because the worker process is already
-gone -- see apache/airflow#65400). So the callback can still read the run id
-this task instance pushed to its own XCom before it died, and cancel it
-there, before Airflow ever clears it for the next try.
+Three layers cover those paths:
+
+1. ``record_launched_run`` / ``read_recorded_run`` -- the run id is pushed to
+   this task instance's own XCom the moment it's known. Airflow only clears a
+   task instance's XCom right before that instance's *next* run starts, not
+   at failure time, and it invokes ``on_failure_callback`` at
+   failure-detection time for a zombie kill too (a scheduler-side path,
+   distinct from ``on_kill``, precisely because the worker process is
+   already gone -- see apache/airflow#65400). So the operator's
+   ``on_failure_callback`` and ``on_kill`` can still read the run id this try
+   pushed and cancel it, before Airflow clears it for the next try.
+2. ``task_instance_key`` -- a stable identity for the task instance across
+   all its tries. Glue stamps it onto every run's ``Arguments``, and
+   ``_glue.stop_stale_glue_runs`` scans for still-active runs carrying it
+   right before submitting a new one. That's what catches the clear of a
+   deferred task, where no callback fires and the XCom from (1) is already
+   gone by the time the fresh try starts; the platform's own run list is the
+   only state that survives.
+
+Neither layer needs a global store like an Airflow ``Variable``.
 """
 
 import json
@@ -24,6 +38,42 @@ import logging
 log = logging.getLogger(__name__)
 
 _XCOM_KEY = "_overture_spark_agnostic_launched_run"
+
+
+def task_instance_key(context) -> str | None:
+    """Stable identity of this task instance across all of its tries.
+
+    ``{dag_id}__{task_id}__{run_id}__{map_index}``, deliberately excluding
+    ``try_number`` so a retry or a cleared-and-rerun try shares the key with
+    the try whose run it must supersede. Two different DAG runs of the same
+    task get different keys, even when they write the same output; that
+    coordination stays with the caller.
+
+    Returns ``None`` when the context carries no task instance (e.g. the
+    Airflow-free ``render`` preview), so callers can skip the guard rather
+    than stamp a bogus marker. Never raises.
+    """
+    ti = context.get("ti") if hasattr(context, "get") else None
+    if ti is None:
+        return None
+    try:
+        dag_id = getattr(ti, "dag_id", None)
+        task_id = getattr(ti, "task_id", None)
+        run_id = getattr(ti, "run_id", None)
+        map_index = getattr(ti, "map_index", None)
+        if run_id is None:
+            dag_run = context.get("dag_run")
+            run_id = getattr(dag_run, "run_id", None) or context.get("run_id")
+        if map_index is None:
+            map_index = -1
+        if not (isinstance(dag_id, str) and isinstance(task_id, str) and isinstance(run_id, str)):
+            return None
+        if not isinstance(map_index, int):
+            return None
+        return f"{dag_id}__{task_id}__{run_id}__{map_index}"
+    except Exception:
+        log.warning("Could not build task-instance key for stale-run guard", exc_info=True)
+        return None
 
 
 def record_launched_run(context, *, platform: str, run_id: str, extra: dict | None = None) -> None:
@@ -54,9 +104,9 @@ def record_launched_run(context, *, platform: str, run_id: str, extra: dict | No
 def read_recorded_run(context) -> dict | None:
     """Read the run this task instance recorded, if any.
 
-    Meant to be called from an ``on_failure_callback`` at failure-detection
-    time, before Airflow clears this task instance's XCom ahead of the next
-    try. Never raises.
+    Meant to be called from the operator's ``on_failure_callback`` (at
+    failure-detection time) or ``on_kill`` (on SIGTERM), both before Airflow
+    clears this task instance's XCom ahead of the next try. Never raises.
     """
     ti = context.get("ti") if hasattr(context, "get") else None
     if ti is None or not callable(getattr(ti, "xcom_pull", None)):

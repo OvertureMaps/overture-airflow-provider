@@ -262,13 +262,15 @@ class SparkPlatformHandler(ABC):
 
     @abstractmethod
     def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
-        """Best-effort stop of a remote run left over from a failed try.
+        """Best-effort stop of a remote run left over from a torn-down try.
 
-        Called from the operator's ``on_failure_callback`` when this task
-        instance recorded a run id but never reached a terminal state itself
-        (e.g. the scheduler failed it externally as a zombie). Implementations
-        should raise on failure -- the caller treats this as best-effort and
-        logs a warning, never lets it block the caller's own failure handling.
+        Called from the operator's ``on_failure_callback`` (e.g. the scheduler
+        failed the task instance externally as a zombie) and ``on_kill``
+        (SIGTERM / ``execution_timeout`` while still on the worker) when this
+        task instance recorded a run id but never reached a terminal state
+        itself. Implementations should raise on failure -- the caller treats
+        this as best-effort and logs a warning, never lets it block the
+        caller's own failure handling.
         """
 
 

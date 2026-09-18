@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-18
+
+### Fixed
+
+- **Clearing a deferred `execute_spark_job` left its Glue run alive, and the
+  next try submitted a second run against the same output while the first
+  kept writing.** The #83/#84 guard cancels a recorded run from
+  `on_failure_callback`, but a clear isn't a failure: a deferred task has no
+  worker process for `on_kill`, its state goes to `None` rather than
+  `failed` (clearing a *running* task fires `on_retry_callback` instead), the
+  dropped `GlueJobCompleteTrigger` has no `cleanup()` that stops the run, and
+  Airflow wipes the task instance's XCom before the next try starts, so the
+  recorded run id was already gone when `execute()` ran again (fixes #104).
+  Every Glue run the provider submits now carries a stable per-task-instance
+  marker in its run `Arguments`: `--airflow_task_instance=<sha256 hex of the
+  canonical JSON [dag_id, task_id, run_id, map_index]>` (no `try_number`;
+  a digest rather than a `__`-joined string so task ids and custom run ids
+  containing the delimiter can't collide, and so it fits Glue's argument
+  limits — the readable `dag_id/task_id/run_id[map_index]` is logged next to
+  it). `submit_glue_job` walks `get_job_runs` right before submitting, stops
+  any `STARTING`/`RUNNING`/`WAITING`/`STOPPING` run carrying this task
+  instance's marker via `batch_stop_job_run` (in batches of 25, the API's
+  cap), and waits for Glue to report it terminal before the
+  new run starts. Glue's own run list is the only state that survives a
+  clear, so there's no new Airflow `Variable` or S3 marker. If a stale run
+  can't be stopped or doesn't stop in time the try fails as never-launched
+  (retryable) instead of knowingly racing. The scan is bounded by a lookback
+  of the job's configured `max_timeout_hours` plus 16h (every run is capped
+  by the job's `Timeout`, so anything older is necessarily terminal) and a
+  10-page cap. This also implements the preemptive scan proposed in #85.
+
+- **`SparkAgnosticExecuteOperator` had no `on_kill`, so a SIGTERM while the
+  task was still on the worker (clear or "mark failed" mid-run,
+  `execution_timeout`) left the remote run going.** It now cancels the run
+  this try recorded, via the same `handler.cancel_run` seam the failure
+  callback uses. The window is short for Glue/Databricks (submit until
+  deferral) but covers the whole job for the synchronous Wherobots path.
+
 ## [0.13.0] - 2026-09-15
 
 ### Added

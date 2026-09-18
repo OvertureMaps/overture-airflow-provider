@@ -227,9 +227,10 @@ cover the ways a try can end (`_retry_guard.py`):
    still-active run with this marker, and waits for it to go terminal. Glue's
    own run list is the only state that survives a clear. If a stale run can't
    be stopped the try fails as `submit/config` (retryable). The scan is
-   bounded (24h lookback — every provider-created job has an 8h `Timeout` —
-   and a page cap), and is skipped for brand-new jobs and when the context has
-   no task-instance identity (render preview).
+   bounded (lookback = the job's `max_timeout_hours` + 16h — every run is
+   capped by the job's `Timeout` — and a page cap), and is skipped for
+   brand-new jobs and when the context has no task-instance identity (render
+   preview).
 
 Databricks and Wherobots rely on layers 1–2 only; a per-run marker scan for
 them is future work.

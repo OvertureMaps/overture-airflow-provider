@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.12.3] - 2026-09-18
+## [0.13.1] - 2026-09-18
 
 ### Fixed
 
@@ -29,10 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   new run starts. Glue's own run list is the only state that survives a
   clear, so there's no new Airflow `Variable` or S3 marker. If a stale run
   can't be stopped or doesn't stop in time the try fails as never-launched
-  (retryable) instead of knowingly racing. The scan is bounded by a 24h
-  lookback (every provider-created job carries an 8h `Timeout`, so older
-  runs are necessarily terminal) and a 10-page cap. This also implements the
-  preemptive scan proposed in #85.
+  (retryable) instead of knowingly racing. The scan is bounded by a lookback
+  of the job's configured `max_timeout_hours` plus 16h (every run is capped
+  by the job's `Timeout`, so anything older is necessarily terminal) and a
+  10-page cap. This also implements the preemptive scan proposed in #85.
 
 - **`SparkAgnosticExecuteOperator` had no `on_kill`, so a SIGTERM while the
   task was still on the worker (clear or "mark failed" mid-run,
@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   this try recorded, via the same `handler.cancel_run` seam the failure
   callback uses. The window is short for Glue/Databricks (submit until
   deferral) but covers the whole job for the synchronous Wherobots path.
+
+## [0.13.0] - 2026-09-15
+
+### Added
+
+- **`spark_agnostic_task_group(max_timeout_hours=...)` overrides the
+  previously hardcoded 8-hour job run timeout.** A Jinja-templatable string
+  (`"{{ params.timeout_hours }}"`); leave empty to keep the 8-hour default.
+  Maps to Glue's `Timeout` and to Databricks'/Wherobots' `timeout_seconds`.
 
 ## [0.12.2] - 2026-09-02
 

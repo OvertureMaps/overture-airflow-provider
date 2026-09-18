@@ -16,8 +16,6 @@ from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
 _log = logging.getLogger(__name__)
 
-MAX_TIMEOUT_HOURS = 8
-
 #: Per-run Glue argument stamped with ``_retry_guard.task_instance_key`` so a
 #: later try of the same task instance can find (and stop) this run via
 #: ``get_job_runs``. Unknown ``--`` arguments are harmless to both runners:
@@ -29,10 +27,10 @@ TASK_INSTANCE_ARG = "--airflow_task_instance"
 #: live writer. ``WAITING`` is a queued run (``JobRunQueuingEnabled``);
 #: ``STOPPING`` is already on its way out but must still be waited on.
 _ACTIVE_GLUE_RUN_STATES = frozenset({"STARTING", "RUNNING", "STOPPING", "WAITING"})
-#: How far back the pre-submit scan walks a job's run history. Every job the
-#: provider creates carries an 8h ``Timeout`` (``MAX_TIMEOUT_HOURS``), so a run
-#: older than this is necessarily terminal; the slack covers queued waits.
-_STALE_RUN_LOOKBACK = timedelta(hours=MAX_TIMEOUT_HOURS + 16)
+#: Slack added to the job's own ``Timeout`` to bound how far back the
+#: pre-submit scan walks a job's run history; covers queued waits and a
+#: timeout that was lowered between tries. See ``_stale_run_lookback``.
+_STALE_RUN_LOOKBACK_SLACK = timedelta(hours=16)
 #: Hard cap on ``get_job_runs`` pages (200 runs each) per scan.
 _STALE_RUN_MAX_PAGES = 10
 #: Bounds on how long ``stop_stale_glue_runs`` waits for a stopped run to
@@ -226,6 +224,7 @@ def build_glue_operator_kwargs(
     extra_spark_conf: dict,
     spark_cluster_desired_worker_cores: str,
     spark_cluster_desired_workers: str,
+    max_timeout_hours: str,
     iam_role_name: str,
     task_id: str,
     dag_id: str = "",
@@ -353,7 +352,7 @@ def build_glue_operator_kwargs(
             "Name": "glueetl",
             "ScriptLocation": script_location,
         },
-        "Timeout": 60 * MAX_TIMEOUT_HOURS,
+        "Timeout": 60 * int(max_timeout_hours),
     }
 
     tags = {
@@ -401,13 +400,23 @@ def _run_started_on(run: dict) -> datetime | None:
     return started if started.tzinfo else started.replace(tzinfo=UTC)
 
 
+def _stale_run_lookback(max_timeout_hours: int | str) -> timedelta:
+    """How far back the pre-submit scan walks ``job_name``'s run history.
+
+    Every run the provider starts is capped by the job's ``Timeout``
+    (``60 * max_timeout_hours`` minutes), so a run that started more than
+    that plus ``_STALE_RUN_LOOKBACK_SLACK`` ago is necessarily terminal.
+    """
+    return timedelta(hours=int(max_timeout_hours)) + _STALE_RUN_LOOKBACK_SLACK
+
+
 def find_active_glue_runs(
     glue_client,
     job_name: str,
     task_instance_key: str,
     *,
+    lookback: timedelta,
     now: datetime | None = None,
-    lookback: timedelta = _STALE_RUN_LOOKBACK,
     max_pages: int = _STALE_RUN_MAX_PAGES,
 ) -> list[dict]:
     """Return this task instance's still-active runs of ``job_name``.
@@ -415,8 +424,9 @@ def find_active_glue_runs(
     Walks ``get_job_runs`` (newest first) and keeps runs whose ``Arguments``
     carry ``task_instance_key`` under ``TASK_INSTANCE_ARG`` and whose state is
     in ``_ACTIVE_GLUE_RUN_STATES``. Stops once it reaches a run that started
-    before ``now - lookback`` (anything older is past the job's own
-    ``Timeout``) or after ``max_pages`` pages, whichever comes first.
+    before ``now - lookback`` (see ``_stale_run_lookback``: anything older is
+    past the job's own ``Timeout``) or after ``max_pages`` pages, whichever
+    comes first.
     """
     now = now or datetime.now(UTC)
     cutoff = now - lookback
@@ -455,6 +465,7 @@ def stop_stale_glue_runs(
     job_name: str,
     task_instance_key: str,
     *,
+    max_timeout_hours: int | str,
     sleep: Callable[[float], None] = time.sleep,
     timeout_seconds: float = _STALE_RUN_STOP_TIMEOUT_SECONDS,
     poll_interval_seconds: float = _STALE_RUN_POLL_INTERVAL_SECONDS,
@@ -468,6 +479,9 @@ def stop_stale_glue_runs(
     Glue reports a terminal state. Submitting before that would put two
     writers on the same output, which is exactly the race this prevents.
 
+    ``max_timeout_hours`` is the job's configured run timeout; it bounds how
+    far back the run history is scanned (``_stale_run_lookback``).
+
     Returns the ids of the runs that were stopped. Raises ``AirflowException``
     if a run can't be stopped or doesn't reach a terminal state within
     ``timeout_seconds``; the caller hasn't launched anything yet at that
@@ -475,7 +489,12 @@ def stop_stale_glue_runs(
     """
     from overture_airflow_provider._airflow_compat import AirflowException
 
-    active = find_active_glue_runs(glue_client, job_name, task_instance_key)
+    active = find_active_glue_runs(
+        glue_client,
+        job_name,
+        task_instance_key,
+        lookback=_stale_run_lookback(max_timeout_hours),
+    )
     if not active:
         return []
 
@@ -540,6 +559,7 @@ def submit_glue_job(
     extra_spark_conf: dict,
     spark_cluster_desired_worker_cores: str,
     spark_cluster_desired_workers: str,
+    max_timeout_hours: str,
     iam_role_name: str,
     task_id: str,
     context: dict,
@@ -603,6 +623,7 @@ def submit_glue_job(
         extra_spark_conf=extra_spark_conf,
         spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
         spark_cluster_desired_workers=spark_cluster_desired_workers,
+        max_timeout_hours=max_timeout_hours,
         iam_role_name=iam_role_name,
         task_id=task_id,
         dag_id=context["dag"].dag_id if "dag" in context else "",
@@ -626,7 +647,12 @@ def submit_glue_job(
         # The job exists, so an earlier try of this task instance may have left
         # a run of it going. A brand-new job has no runs to check.
         if ti_key:
-            stop_stale_glue_runs(glue_client, setup_info["job_name"], ti_key)
+            stop_stale_glue_runs(
+                glue_client,
+                setup_info["job_name"],
+                ti_key,
+                max_timeout_hours=max_timeout_hours,
+            )
 
     # deferrable=True -> execute() submits the run, then raises TaskDeferred with
     # the provider's own GlueJobCompleteTrigger. We reuse that trigger.

@@ -40,6 +40,7 @@ from overture_airflow_provider._airflow_compat import (
 from overture_airflow_provider._failures import format_failure
 from overture_airflow_provider._report_issue import REPORT_ISSUE_XCOM_KEY
 from overture_airflow_provider._retry_guard import read_recorded_run
+from overture_airflow_provider.config import DEFAULT_MAX_TIMEOUT_HOURS
 from overture_airflow_provider.links import (
     SPARK_AGNOSTIC_XCOM_KEY,
     ReportIssueLink,
@@ -89,6 +90,11 @@ def _int_or_none(value: str):
     return int(value) if value else None
 
 
+def _max_timeout_hours_or_default(value: str) -> int:
+    """Empty (unset, or a Jinja template that rendered blank) keeps the documented default."""
+    return int(value) if value else int(DEFAULT_MAX_TIMEOUT_HOURS)
+
+
 class SparkAgnosticExecuteOperator(BaseOperator):
     """Submit a Spark job to the resolved platform and defer until it finishes."""
 
@@ -104,6 +110,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         "spark_cluster_size_name",
         "spark_cluster_desired_worker_cores",
         "spark_cluster_desired_workers",
+        "max_timeout_hours",
     )
 
     def __init__(
@@ -120,6 +127,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         spark_cluster_size_name: str = "",
         spark_cluster_desired_worker_cores: str = "",
         spark_cluster_desired_workers: str = "",
+        max_timeout_hours: str = "",
         report_issue_config=None,
         **kwargs,
     ):
@@ -138,6 +146,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         self.spark_cluster_size_name = spark_cluster_size_name
         self.spark_cluster_desired_worker_cores = spark_cluster_desired_worker_cores
         self.spark_cluster_desired_workers = spark_cluster_desired_workers
+        self.max_timeout_hours = max_timeout_hours
         self.report_issue_config = report_issue_config or None
         self._user_on_failure_callback = user_on_failure_callback
         self.on_failure_callback = self._cancel_run_then_delegate
@@ -170,6 +179,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                     self.spark_cluster_desired_worker_cores
                 ),
                 spark_cluster_desired_workers=_int_or_none(self.spark_cluster_desired_workers),
+                max_timeout_hours=_max_timeout_hours_or_default(self.max_timeout_hours),
                 iam_role_name=self.setup_info.get("iam_role_name", "AWSGlueServiceRole"),
                 wherobots_role_arn=self.setup_info.get("wherobots_role_arn", ""),
                 task_id=self.task_id,

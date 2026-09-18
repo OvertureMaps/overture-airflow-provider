@@ -109,6 +109,20 @@ def test_render_glue_verbose_toggle_off():
     assert result.operator_kwargs["verbose"] is False
 
 
+def test_render_glue_max_timeout_hours_defaults_to_eight():
+    result = render_spark_job(spark_impl_name="GLUE_v5", **_COMMON_KWARGS)
+    assert result.submit_payload["create_job_kwargs"]["Timeout"] == 60 * 8
+
+
+def test_render_glue_max_timeout_hours_op_kwarg_override():
+    result = render_spark_job(
+        spark_impl_name="GLUE_v5",
+        max_timeout_hours="2",
+        **_COMMON_KWARGS,
+    )
+    assert result.submit_payload["create_job_kwargs"]["Timeout"] == 60 * 2
+
+
 def test_render_databricks_emits_submit_payload():
     result = render_spark_job(spark_impl_name="DATABRICKS_v15", **_COMMON_KWARGS)
 
@@ -116,6 +130,20 @@ def test_render_databricks_emits_submit_payload():
     assert "new_cluster" in payload
     assert payload["new_cluster"]["spark_version"] == "15.4.x-scala2.12"
     assert payload["run_name"].endswith("_render")
+
+
+def test_render_databricks_max_timeout_hours_defaults_to_eight():
+    result = render_spark_job(spark_impl_name="DATABRICKS_v15", **_COMMON_KWARGS)
+    assert result.operator_kwargs["timeout_seconds"] == 3600 * 8
+
+
+def test_render_databricks_max_timeout_hours_op_kwarg_override():
+    result = render_spark_job(
+        spark_impl_name="DATABRICKS_v15",
+        max_timeout_hours="2",
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["timeout_seconds"] == 3600 * 2
 
 
 def test_render_wherobots_skips_region_resolution():
@@ -142,6 +170,20 @@ def test_render_wherobots_honors_config_version_override():
     )
     assert result.operator_kwargs["version"] == "preview"
     assert result.submit_payload["version"] == "preview"
+
+
+def test_render_wherobots_max_timeout_hours_defaults_to_eight():
+    result = render_spark_job(spark_impl_name="WHEROBOTS_v1_5_0", **_COMMON_KWARGS)
+    assert result.operator_kwargs["timeout_seconds"] == 3600 * 8
+
+
+def test_render_wherobots_max_timeout_hours_op_kwarg_override():
+    result = render_spark_job(
+        spark_impl_name="WHEROBOTS_v1_5_0",
+        max_timeout_hours="1",
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["timeout_seconds"] == 3600 * 1
 
 
 _WHEROBOTS_CONFIG_WITH_ROLE = WherobotsConfig(role_arn="arn:aws:iam::123456789012:role/wb-access")

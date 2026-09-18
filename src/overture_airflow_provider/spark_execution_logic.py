@@ -17,7 +17,6 @@ from typing import Any
 
 # name -> (submodule, attribute)
 _LAZY_IMPORTS = {
-    "MAX_TIMEOUT_HOURS": ("_glue", "MAX_TIMEOUT_HOURS"),
     "WHEROBOTS_AVAILABLE": ("_wherobots", "WHEROBOTS_AVAILABLE"),
     "WHEROBOTS_PROVIDER": ("_wherobots", "WHEROBOTS_PROVIDER"),
     "_resolve_wherobots_region": ("_wherobots", "_resolve_wherobots_region"),

@@ -27,7 +27,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
@@ -125,6 +125,6 @@ jobs:
     needs: [pytest, pytest-airflow2, e2e, node-test]
     if: always()
     steps:
-      - uses: lowlydba/are-we-good@f506ed6324f55ec5e4ff5d92204a72c7f1c2b4f8 # v1.0.5
+      - uses: lowlydba/are-we-good@0f90ea9fa5e47188fcb69d9306fb8b3abb656018 # v1.2.0
         with:
           jobs: ${{ toJson(needs) }}

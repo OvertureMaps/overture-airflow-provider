@@ -20,6 +20,8 @@ def _run(
     job_name="",
     parameters="{}",
     spark_jar_paths="",
+    glue_config=None,
+    wherobots_config=None,
 ):
     with patch(
         "overture_airflow_provider._setup.CodeArtifactPyPiClient",
@@ -33,6 +35,8 @@ def _run(
             job_name=job_name,
             parameters=parameters,
             spark_jar_paths=spark_jar_paths,
+            glue_config=glue_config,
+            wherobots_config=wherobots_config,
         )
 
 
@@ -150,7 +154,7 @@ class TestRunIdentifier:
 def test_execution_logic_resolves_known_symbol():
     import overture_airflow_provider.spark_execution_logic as sel
 
-    assert sel.MAX_TIMEOUT_HOURS == 8  # re-exported from _glue
+    assert sel.WHEROBOTS_PROVIDER  # re-exported from _wherobots
 
 
 def test_execution_logic_raises_for_unknown_symbol():

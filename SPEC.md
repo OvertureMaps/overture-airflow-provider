@@ -204,6 +204,42 @@ retry of a job that actually ran and failed.
 `_failures.py` has no Airflow or platform SDK imports; it works purely from
 stdlib so it is testable and importable without any runtime dependencies.
 
+## Retry / clear guard
+
+A retry or clear of `execute_spark_job` must never leave the previous try's
+remote run writing to the same output while the new run starts. Three layers
+cover the ways a try can end (`_retry_guard.py`):
+
+1. **`on_failure_callback`** – the operator records the launched run id in
+   XCom (`record_launched_run`) and wraps the user's `on_failure_callback` so
+   that, at failure-detection time (including scheduler-side zombie kills), it
+   reads that record and calls `handler.cancel_run` before delegating.
+2. **`on_kill`** – a SIGTERM while the task is still on the worker (clear or
+   "mark failed" mid-run, `execution_timeout`) cancels the run this try
+   recorded. Short window for Glue/Databricks (submit → deferral); covers the
+   whole job for the synchronous Wherobots path.
+3. **Glue stale-run scan** – a *deferred* task has no worker process, a clear
+   is not a failure, and Airflow wipes the TI's XCom before the next try, so
+   neither of the above sees it. Every Glue run therefore carries an
+   `--airflow_task_instance=<sha256 of canonical JSON
+   [dag_id, task_id, run_id, map_index]>` marker (no `try_number`; hashed
+   rather than `__`-joined because task ids and custom run ids may contain
+   any delimiter, and the digest fits Glue's argument limits) in its run
+   `Arguments`. The readable `dag_id/task_id/run_id[map_index]` is logged
+   next to it at submit time. `submit_glue_job` walks `get_job_runs` right
+   before submitting, `batch_stop_job_run`s any still-active run with this
+   marker (in batches of 25, the API's cap), and waits for it to go
+   terminal. Glue's
+   own run list is the only state that survives a clear. If a stale run can't
+   be stopped the try fails as `submit/config` (retryable). The scan is
+   bounded (lookback = the job's `max_timeout_hours` + 16h — every run is
+   capped by the job's `Timeout` — and a page cap), and is skipped for
+   brand-new jobs and when the context has no task-instance identity (render
+   preview).
+
+Databricks and Wherobots rely on layers 1–2 only; a per-run marker scan for
+them is future work.
+
 ## Report Issue link
 
 `ReportIssueConfig(enabled=True, target="owner/repo")` wires a "Report Issue"

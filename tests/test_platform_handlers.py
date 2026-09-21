@@ -1,5 +1,6 @@
 """Tests for SparkPlatformHandler subclasses."""
 
+import hashlib
 import json
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -323,12 +324,18 @@ class TestGlueSetupCluster:
 
 
 class TestGlueExecuteJob:
-    def _make_context(self, mapping=False):
+    def _make_context(self, mapping=False, real_ti=False):
         data = {
             "ti": MagicMock(),
             "dag": MagicMock(dag_id="test_dag"),
         }
         data["ti"].task_id = "execute_spark_job"
+        if real_ti:
+            # String identity so _retry_guard.task_instance_key yields a key
+            # (a bare MagicMock ti opts the stale-run guard out).
+            data["ti"].dag_id = "test_dag"
+            data["ti"].run_id = "manual__2026-01-01"
+            data["ti"].map_index = -1
         return _AirflowContext(data) if mapping else data
 
     def _run_glue(
@@ -342,6 +349,8 @@ class TestGlueExecuteJob:
         iam_role_name="AWSGlueServiceRole",
         simulate_submit=False,
         mapping_context=False,
+        real_ti=False,
+        job_exists=True,
     ):
         from overture_airflow_provider._glue import submit_glue_job
 
@@ -365,17 +374,32 @@ class TestGlueExecuteJob:
         from overture_airflow_provider._airflow_compat import TaskDeferred
 
         # deferrable=True -> GlueJobOperator.execute() submits then raises
-        # TaskDeferred carrying its own trigger.
+        # TaskDeferred carrying its own trigger. Recorded in ``calls`` so tests
+        # can assert the stale-run stop lands *before* the submit.
         mock_trigger = MagicMock(name="GlueJobCompleteTrigger", run_id="jr_early123")
+        calls = []
+
+        def _execute(ctx):
+            calls.append("execute")
+            raise TaskDeferred(trigger=mock_trigger, method_name="execute_complete")
 
         mock_operator = MagicMock()
         mock_operator._job_run_id = "jr_early123"
         mock_operator.aws_conn_id = "aws_default"
-        mock_operator.execute.side_effect = TaskDeferred(
-            trigger=mock_trigger, method_name="execute_complete"
-        )
+        mock_operator.execute.side_effect = _execute
+
+        class _EntityNotFound(Exception):
+            pass
 
         mock_glue_client = MagicMock()
+        mock_glue_client.exceptions.EntityNotFoundException = _EntityNotFound
+        if not job_exists:
+            mock_glue_client.get_job.side_effect = _EntityNotFound("no such job")
+
+        def _stop(client, job_name, key, *, max_timeout_hours):
+            calls.append(("stop_stale", job_name, key))
+            captured["stop_max_timeout_hours"] = max_timeout_hours
+            return []
 
         with (
             patch(
@@ -387,8 +411,9 @@ class TestGlueExecuteJob:
                 return_value=mock_glue_client,
             ),
             patch("overture_airflow_provider._glue.record_launched_run"),
+            patch("overture_airflow_provider._glue.stop_stale_glue_runs", side_effect=_stop),
         ):
-            context = self._make_context(mapping=mapping_context)
+            context = self._make_context(mapping=mapping_context, real_ti=real_ti)
             result = submit_glue_job(
                 setup_info=setup_info,
                 package_info=package_info,
@@ -405,6 +430,7 @@ class TestGlueExecuteJob:
             )
             captured["call_kwargs"] = MockOperator.call_args[1]
             captured["context"] = context
+            captured["calls"] = calls
 
         return result, captured
 
@@ -444,6 +470,98 @@ class TestGlueExecuteJob:
         default_args = captured["call_kwargs"]["create_job_kwargs"]["DefaultArguments"]
         assert "--extra-jars" in default_args
         assert "sedona.jar" in default_args["--extra-jars"]
+
+    # -- stale-run guard (issue #104) -------------------------------------
+
+    # sha256 of canonical JSON ["test_dag","execute_spark_job","manual__2026-01-01",-1];
+    # mirrors the real_ti identity in _make_context.
+    _TI_KEY = hashlib.sha256(
+        b'["test_dag","execute_spark_job","manual__2026-01-01",-1]'
+    ).hexdigest()
+
+    def test_stamps_task_instance_marker_on_run_arguments(self):
+        from overture_airflow_provider._glue import TASK_INSTANCE_ARG
+
+        _, captured = self._run_glue(real_ti=True)
+        assert captured["call_kwargs"]["script_args"][TASK_INSTANCE_ARG] == self._TI_KEY
+
+    def test_stamps_marker_on_scala_run_arguments_too(self):
+        from overture_airflow_provider._glue import TASK_INSTANCE_ARG
+
+        _, captured = self._run_glue(module_name="", class_name="com.example.Main", real_ti=True)
+        assert captured["call_kwargs"]["script_args"][TASK_INSTANCE_ARG] == self._TI_KEY
+
+    def test_stops_stale_runs_before_submitting(self):
+        _, captured = self._run_glue(real_ti=True)
+        assert captured["calls"] == [("stop_stale", "test.Job", self._TI_KEY), "execute"]
+
+    def test_stale_run_scan_uses_this_jobs_timeout(self):
+        # The lookback is derived from the job's own Timeout, so the scan must
+        # see the same max_timeout_hours the job is being created/updated with.
+        _, captured = self._run_glue(real_ti=True, max_timeout_hours="3")
+        assert captured["stop_max_timeout_hours"] == "3"
+
+    def test_stale_run_scan_works_with_mapping_context(self):
+        _, captured = self._run_glue(real_ti=True, mapping_context=True)
+        assert captured["calls"][0] == ("stop_stale", "test.Job", self._TI_KEY)
+
+    def test_skips_stale_run_scan_without_task_instance_identity(self):
+        from overture_airflow_provider._glue import TASK_INSTANCE_ARG
+
+        _, captured = self._run_glue(real_ti=False)
+        assert captured["calls"] == ["execute"]
+        assert TASK_INSTANCE_ARG not in captured["call_kwargs"]["script_args"]
+
+    def test_skips_stale_run_scan_for_brand_new_job(self):
+        # No job definition yet -> nothing could be running; the submit path
+        # only sets Tags for creation and goes straight to execute.
+        _, captured = self._run_glue(real_ti=True, job_exists=False)
+        assert captured["calls"] == ["execute"]
+
+    def test_stale_run_failure_aborts_before_submit(self):
+        from overture_airflow_provider._airflow_compat import AirflowException
+        from overture_airflow_provider._glue import submit_glue_job
+
+        mock_operator = MagicMock()
+        mock_glue_client = MagicMock()
+        with (
+            patch(
+                "airflow.providers.amazon.aws.operators.glue.GlueJobOperator",
+                return_value=mock_operator,
+            ),
+            patch("overture_airflow_provider._glue.boto3.client", return_value=mock_glue_client),
+            patch(
+                "overture_airflow_provider._glue.stop_stale_glue_runs",
+                side_effect=AirflowException("did not stop"),
+            ),
+            pytest.raises(AirflowException, match="did not stop"),
+        ):
+            submit_glue_job(
+                setup_info=_glue_setup_info(),
+                package_info={
+                    "py_files": "s3://bucket/pkg.whl",
+                    "script_location": "s3://bucket/job_runner_glue.py",
+                    "scala_script_location": "s3://bucket/job_runner_glue.scala",
+                    "s3_bucket": "test-bucket",
+                    "s3_prefix": "p",
+                    "native_packages": [],
+                },
+                jar_info={
+                    "jars_s3": "s3://bucket/a.jar",
+                    "sedona_packages": "x",
+                    "sedona_module": "m",
+                },
+                module_name="my_module",
+                class_name="MyClass",
+                extra_spark_conf={},
+                spark_cluster_desired_worker_cores="40",
+                spark_cluster_desired_workers="",
+                max_timeout_hours="8",
+                iam_role_name="AWSGlueServiceRole",
+                task_id="execute_spark_job",
+                context=self._make_context(real_ti=True),
+            )
+        mock_operator.execute.assert_not_called()
 
     def test_glue_version_set_from_impl(self):
         _, captured = self._run_glue()

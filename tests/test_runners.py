@@ -8,10 +8,12 @@ import pytest
 from overture_airflow_provider.runner_assets import (
     _RUNNER_FILES,
     _file_sha256,
+    get_databricks_init_script_path,
     get_runner_path,
+    upload_databricks_init_script_to_workspace,
     upload_runners_to_s3,
 )
-from overture_airflow_provider.runners import SCALA_RUNNER_SOURCE
+from overture_airflow_provider.runners import DATABRICKS_INIT_SCRIPT_SOURCE, SCALA_RUNNER_SOURCE
 
 # ---------------------------------------------------------------------------
 # get_runner_path
@@ -136,6 +138,61 @@ def test_scala_runner_source_is_comment_only_stub():
 
 def test_scala_runner_source_documents_aws_reference():
     assert "https://docs.aws.amazon.com/glue/" in SCALA_RUNNER_SOURCE
+
+
+# ---------------------------------------------------------------------------
+# DATABRICKS_INIT_SCRIPT_SOURCE / get_databricks_init_script_path
+# ---------------------------------------------------------------------------
+
+
+def test_databricks_init_script_source_is_bash():
+    assert DATABRICKS_INIT_SCRIPT_SOURCE.startswith("#!/bin/bash")
+    assert "SEDONA_VERSION" in DATABRICKS_INIT_SCRIPT_SOURCE
+    assert "GEOTOOLS_VERSION" in DATABRICKS_INIT_SCRIPT_SOURCE
+    assert "/databricks/jars" in DATABRICKS_INIT_SCRIPT_SOURCE
+
+
+def test_databricks_init_script_source_is_overture_free():
+    # No Overture-specific business logic (buckets, roles, catalogs, job
+    # wiring) — only generic comments referencing the provider module that
+    # deploys and consumes it are expected.
+    assert "overture_spark" not in DATABRICKS_INIT_SCRIPT_SOURCE.lower()
+    assert "s3://" not in DATABRICKS_INIT_SCRIPT_SOURCE
+
+
+def test_get_databricks_init_script_path():
+    p = get_databricks_init_script_path()
+    try:
+        assert p.exists()
+        assert p.name.endswith("agnostic_operator_cluster_init_databricks.sh")
+        assert p.read_text(encoding="utf-8") == DATABRICKS_INIT_SCRIPT_SOURCE
+    finally:
+        p.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# upload_databricks_init_script_to_workspace
+# ---------------------------------------------------------------------------
+
+
+def test_upload_databricks_init_script_to_workspace(mocker):
+    mock_post = mocker.patch("requests.post")
+    mock_post.return_value.raise_for_status.return_value = None
+
+    upload_databricks_init_script_to_workspace(
+        "https://my-workspace.azuredatabricks.net",
+        "dapi-token",
+        "/Shared/my-app/agnostic_operator_cluster_init_databricks.sh",
+    )
+
+    mock_post.assert_called_once()
+    args, kwargs = mock_post.call_args
+    assert args[0] == "https://my-workspace.azuredatabricks.net/api/2.0/workspace/import"
+    assert kwargs["headers"]["Authorization"] == "Bearer dapi-token"
+    assert kwargs["json"]["format"] == "RAW"
+    assert kwargs["json"]["path"] == "/Shared/my-app/agnostic_operator_cluster_init_databricks.sh"
+    assert kwargs["json"]["overwrite"] is True
+    assert "language" not in kwargs["json"]
 
 
 # ---------------------------------------------------------------------------

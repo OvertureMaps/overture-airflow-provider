@@ -322,7 +322,12 @@ class DatabricksConfig:
             prefix: the Workspace REST and Jobs APIs address objects by bare path.
             A leading ``/Workspace`` is stripped automatically if supplied.
         cluster_init_script_name: Filename of the cluster init script located
-            under ``workspace_scripts_path_template``.
+            under ``workspace_scripts_path_template``. The default matches the
+            provider's bundled, Overture-free init script (source embedded as
+            ``overture_airflow_provider.runners.DATABRICKS_INIT_SCRIPT_SOURCE``);
+            deploy it to the workspace via
+            ``runner_assets.upload_databricks_init_script_to_workspace`` or your
+            own CI/CD, mirroring the bundled Databricks runner notebook.
         custom_tags: Cluster ``custom_tags`` dict applied to every cluster the
             provider launches.
         spark_conf: Extra entries written into the Databricks cluster's

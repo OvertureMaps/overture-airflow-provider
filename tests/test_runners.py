@@ -13,7 +13,7 @@ from overture_airflow_provider.runner_assets import (
     upload_databricks_init_script_to_workspace,
     upload_runners_to_s3,
 )
-from overture_airflow_provider.runners import DATABRICKS_INIT_SCRIPT_SOURCE, SCALA_RUNNER_SOURCE
+from overture_airflow_provider.runners import SCALA_RUNNER_SOURCE
 
 # ---------------------------------------------------------------------------
 # get_runner_path
@@ -141,33 +141,28 @@ def test_scala_runner_source_documents_aws_reference():
 
 
 # ---------------------------------------------------------------------------
-# DATABRICKS_INIT_SCRIPT_SOURCE / get_databricks_init_script_path
+# get_databricks_init_script_path
 # ---------------------------------------------------------------------------
-
-
-def test_databricks_init_script_source_is_bash():
-    assert DATABRICKS_INIT_SCRIPT_SOURCE.startswith("#!/bin/bash")
-    assert "SEDONA_VERSION" in DATABRICKS_INIT_SCRIPT_SOURCE
-    assert "GEOTOOLS_VERSION" in DATABRICKS_INIT_SCRIPT_SOURCE
-    assert "/databricks/jars" in DATABRICKS_INIT_SCRIPT_SOURCE
-
-
-def test_databricks_init_script_source_is_overture_free():
-    # No Overture-specific business logic (buckets, roles, catalogs, job
-    # wiring) — only generic comments referencing the provider module that
-    # deploys and consumes it are expected.
-    assert "overture_spark" not in DATABRICKS_INIT_SCRIPT_SOURCE.lower()
-    assert "s3://" not in DATABRICKS_INIT_SCRIPT_SOURCE
 
 
 def test_get_databricks_init_script_path():
     p = get_databricks_init_script_path()
-    try:
-        assert p.exists()
-        assert p.name.endswith("agnostic_operator_cluster_init_databricks.sh")
-        assert p.read_text(encoding="utf-8") == DATABRICKS_INIT_SCRIPT_SOURCE
-    finally:
-        p.unlink(missing_ok=True)
+    assert p.exists()
+    assert p.name == "agnostic_operator_cluster_init_databricks.sh"
+    source = p.read_text(encoding="utf-8")
+    assert source.startswith("#!/bin/bash")
+    assert "SEDONA_VERSION" in source
+    assert "GEOTOOLS_VERSION" in source
+    assert "/databricks/jars" in source
+
+
+def test_databricks_init_script_is_overture_free():
+    # No Overture-specific business logic (buckets, roles, catalogs, job
+    # wiring) — only generic comments referencing the provider module that
+    # deploys and consumes it are expected.
+    source = get_databricks_init_script_path().read_text(encoding="utf-8")
+    assert "overture_spark" not in source.lower()
+    assert "s3://" not in source
 
 
 # ---------------------------------------------------------------------------

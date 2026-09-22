@@ -14,14 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Bundled the Databricks cluster init script as an Overture-free provider
   asset, mirroring the existing runner split.** The Sedona/GeoTools JAR
   download logic behind `DatabricksConfig.cluster_init_script_name`'s default
-  (`agnostic_operator_cluster_init_databricks.sh`) is now embedded as
-  `overture_airflow_provider.runners.DATABRICKS_INIT_SCRIPT_SOURCE`, keyed off
-  the same `SEDONA_VERSION`/`SPARK_VERSION`/`SCALA_VERSION` cluster env vars
-  the provider already sets. `runner_assets.get_databricks_init_script_path()`
+  (`agnostic_operator_cluster_init_databricks.sh`) now ships as a plain file
+  under `overture_airflow_provider.runners`, keyed off the same
+  `SEDONA_VERSION`/`SPARK_VERSION`/`SCALA_VERSION` cluster env vars the
+  provider already sets. `runner_assets.get_databricks_init_script_path()`
   and `runner_assets.upload_databricks_init_script_to_workspace()` resolve or
   deploy it, the same way the bundled Databricks runner notebook already
   works. Callers previously had to hand-maintain and deploy this script
-  themselves (fixes #106).
+  themselves (fixes #106, fixes OvertureMaps/ops-team#538).
 
 ## [0.13.1] - 2026-09-18
 

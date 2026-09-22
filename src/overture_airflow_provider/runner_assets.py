@@ -23,7 +23,7 @@ import pathlib
 import tempfile
 from typing import Any
 
-from overture_airflow_provider.runners import DATABRICKS_INIT_SCRIPT_SOURCE, SCALA_RUNNER_SOURCE
+from overture_airflow_provider.runners import SCALA_RUNNER_SOURCE
 
 _RUNNER_FILES: dict[str, str] = {
     "glue": "job_runner_glue.py",
@@ -198,25 +198,20 @@ def upload_databricks_runner_to_workspace(
 
 
 def get_databricks_init_script_path() -> pathlib.Path:
-    """Materialise the bundled Databricks cluster init script to a temp file.
+    """Return the local filesystem path to the bundled Databricks cluster
+    init script.
 
-    Mirrors ``get_runner_path("glue_scala")``: the source is embedded as
-    ``DATABRICKS_INIT_SCRIPT_SOURCE`` (see ``runners/__init__.py``) rather than
-    shipped as a physical ``.sh`` file, for the same build-backend package-data
-    reason. The caller is responsible for deleting the returned file.
+    Mirrors :func:`get_runner_path` for the job runners: the script ships as a
+    plain file under ``overture_airflow_provider.runners`` and is resolved via
+    :mod:`importlib.resources`.
 
     Returns:
-        Path to a freshly written temp file containing the init script.
+        Absolute :class:`pathlib.Path` to the init script.
     """
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=f"-{_DATABRICKS_INIT_SCRIPT_NAME}",
-        delete=False,
-        encoding="utf-8",
+    pkg_path = importlib.resources.files("overture_airflow_provider.runners").joinpath(
+        _DATABRICKS_INIT_SCRIPT_NAME
     )
-    tmp.write(DATABRICKS_INIT_SCRIPT_SOURCE)
-    tmp.close()
-    return pathlib.Path(tmp.name)
+    return pathlib.Path(str(pkg_path))
 
 
 def upload_databricks_init_script_to_workspace(
@@ -245,11 +240,7 @@ def upload_databricks_init_script_to_workspace(
 
     import requests
 
-    script_path = get_databricks_init_script_path()
-    try:
-        source = script_path.read_text(encoding="utf-8")
-    finally:
-        script_path.unlink(missing_ok=True)
+    source = get_databricks_init_script_path().read_text(encoding="utf-8")
     encoded = base64.b64encode(source.encode()).decode()
 
     url = databricks_host.rstrip("/") + "/api/2.0/workspace/import"

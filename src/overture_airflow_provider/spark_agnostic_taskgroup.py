@@ -77,6 +77,10 @@ All string args are Jinja-rendered by Airflow before this function runs
 _SETUP_CLUSTER_TASK_DOC = """\
 Compute merged Spark config and (for Databricks) the cluster spec.
 
+On Databricks this task also stages the bundled runner notebook and cluster
+init script to content-hash-keyed workspace paths (unless
+`DatabricksConfig.stage_workspace_assets=False`).
+
 The four `iceberg_*_config` JSON strings are the `IcebergConfig` fields
 passed as `op_kwargs` (not the dataclass itself), so Airflow renders any
 Jinja in them before this task runs. They are reassembled into an

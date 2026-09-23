@@ -7,14 +7,18 @@ Two canonical operations:
 - :func:`upload_runners_to_s3` — content-hash-keyed idempotent S3 upload for
   Glue and Wherobots runner scripts.
 
-**Databricks runner:** The Databricks runner is a Workspace Notebook and must
-be deployed to the Databricks workspace separately from S3. Use
-:func:`get_runner_path` to obtain the source file and deploy it via your CI/CD
-pipeline or the :func:`upload_databricks_runner_to_workspace` helper.
+**Databricks runner and cluster init script:** Both live in the Databricks
+workspace, not S3. By default the provider stages them at submission time via
+:func:`upload_databricks_assets_to_workspace`, which mirrors the S3 model:
+content-hash-keyed paths (``{scripts_path}/runners/{sha256[:12]}-{name}``)
+with an existence check, so repeated calls are idempotent and a new provider
+version never overwrites a file an in-flight cluster still uses.
 
-**Databricks cluster init script:** Likewise deployed to the workspace, not
-S3. Use :func:`get_databricks_init_script_path` to obtain the source file or
-:func:`upload_databricks_init_script_to_workspace` to deploy it directly.
+Callers that pre-deploy the assets themselves (``DatabricksConfig(
+stage_workspace_assets=False)``) can still use :func:`get_runner_path`,
+:func:`get_databricks_init_script_path`,
+:func:`upload_databricks_runner_to_workspace`, and
+:func:`upload_databricks_init_script_to_workspace`.
 """
 
 import hashlib
@@ -257,3 +261,122 @@ def upload_databricks_init_script_to_workspace(
     )
     resp.raise_for_status()
     print(f"Databricks cluster init script uploaded to workspace: {workspace_path}")
+
+
+# Workspace asset name -> (local source resolver, workspace object name). The
+# runner is imported as a notebook, so its workspace name drops the ``.py``.
+_DATABRICKS_WORKSPACE_ASSETS: dict[str, tuple[Any, str]] = {
+    "notebook": (lambda: get_runner_path("databricks"), "job_runner_databricks"),
+    "init_script": (get_databricks_init_script_path, _DATABRICKS_INIT_SCRIPT_NAME),
+}
+
+
+def databricks_workspace_asset_path(asset: str, scripts_path: str) -> str:
+    """Return the content-hash-keyed workspace path for a bundled Databricks asset.
+
+    Pure (no workspace call): hashes the bundled file and returns
+    ``{scripts_path}/runners/{sha256[:12]}-{name}``, the same key shape
+    :func:`upload_runners_to_s3` uses for S3.
+
+    Args:
+        asset: ``"notebook"`` (the runner notebook) or ``"init_script"``.
+        scripts_path: Bare workspace folder, e.g. ``"/Shared/my-app"``.
+
+    Raises:
+        KeyError: For unrecognised asset names.
+    """
+    if asset not in _DATABRICKS_WORKSPACE_ASSETS:
+        raise KeyError(
+            f"Unknown Databricks asset {asset!r}. Valid: {sorted(_DATABRICKS_WORKSPACE_ASSETS)}"
+        )
+    resolve, name = _DATABRICKS_WORKSPACE_ASSETS[asset]
+    sha = _file_sha256(resolve())[:12]
+    return f"{scripts_path.rstrip('/')}/runners/{sha}-{name}"
+
+
+def _is_databricks_error(exc: BaseException, class_names: set[str], codes: set[str]) -> bool:
+    # Match by class name / error_code rather than importing databricks.sdk.errors,
+    # so this works with the optional SDK absent (stubbed) as well as present.
+    if getattr(exc, "error_code", None) in codes:
+        return True
+    return any(cls.__name__ in class_names for cls in type(exc).__mro__)
+
+
+def _workspace_object_exists(client: Any, path: str) -> bool:
+    try:
+        client.workspace.get_status(path)
+    except Exception as exc:
+        if _is_databricks_error(
+            exc, {"NotFound", "ResourceDoesNotExist"}, {"RESOURCE_DOES_NOT_EXIST", "NOT_FOUND"}
+        ):
+            return False
+        raise
+    return True
+
+
+def _workspace_import_enums() -> tuple[Any, Any]:
+    """Return ``(ImportFormat, Language)`` from the optional ``databricks-sdk``."""
+    from databricks.sdk.service.workspace import ImportFormat, Language
+
+    return ImportFormat, Language
+
+
+def upload_databricks_assets_to_workspace(
+    client: Any,
+    scripts_path: str,
+    *,
+    assets: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, str]:
+    """Stage bundled Databricks assets to content-hash-keyed workspace paths.
+
+    For each asset, ``workspace.get_status`` is checked first and the upload is
+    skipped when the object already exists. Otherwise the parent folder is
+    created and the file imported with ``overwrite=False``, so an existing file
+    is never clobbered. A concurrent upload of the same hash (another task won
+    the race) surfaces as ``RESOURCE_ALREADY_EXISTS`` and is treated as
+    success: the path is content-addressed, so the winner's bytes are identical.
+
+    Args:
+        client: A ``databricks.sdk.WorkspaceClient`` (for example from
+            :meth:`overture_airflow_provider.hooks.DatabricksSdkHook.get_workspace_client`).
+            Its identity needs write access to ``{scripts_path}/runners``.
+        scripts_path: Bare workspace folder, e.g. ``"/Shared/my-app"``.
+        assets: Subset of ``"notebook"`` / ``"init_script"``. Defaults to both.
+
+    Returns:
+        Dict mapping asset name to its workspace path.
+    """
+    import base64
+
+    assets = list(assets) if assets is not None else list(_DATABRICKS_WORKSPACE_ASSETS)
+    import_format, language = _workspace_import_enums()
+    result: dict[str, str] = {}
+
+    for asset in assets:
+        path = databricks_workspace_asset_path(asset, scripts_path)
+        result[asset] = path
+
+        if _workspace_object_exists(client, path):
+            print(f"Databricks {asset} already staged in workspace, skipping upload: {path}")
+            continue
+
+        resolve, _name = _DATABRICKS_WORKSPACE_ASSETS[asset]
+        content = base64.b64encode(resolve().read_bytes()).decode()
+        if asset == "notebook":
+            import_kwargs = {"format": import_format.SOURCE, "language": language.PYTHON}
+        else:
+            import_kwargs = {"format": import_format.RAW}
+
+        client.workspace.mkdirs(path.rsplit("/", 1)[0])
+        try:
+            client.workspace.import_(path, content=content, overwrite=False, **import_kwargs)
+        except Exception as exc:
+            if not _is_databricks_error(
+                exc, {"ResourceAlreadyExists"}, {"RESOURCE_ALREADY_EXISTS"}
+            ):
+                raise
+            print(f"Databricks {asset} staged concurrently by another task: {path}")
+            continue
+        print(f"Databricks {asset} uploaded to workspace: {path}")
+
+    return result

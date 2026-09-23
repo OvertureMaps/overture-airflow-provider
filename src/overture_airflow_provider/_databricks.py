@@ -56,6 +56,62 @@ def _normalize_workspace_path(path: str) -> str:
     return path
 
 
+def _resolve_databricks_workspace_assets(setup_info: dict, scripts_path: str) -> dict:
+    """Resolve the runner notebook / init script paths a run should reference.
+
+    Pure (no workspace call), so ``render`` shows the same paths a real run
+    uses. With ``stage_workspace_assets`` on (the default), bundled assets
+    resolve to content-hash-keyed paths under ``{scripts_path}/runners/`` and
+    are listed in ``staged_assets`` for :func:`stage_databricks_workspace_assets`
+    to upload. A non-default ``cluster_init_script_name`` means the caller
+    ships their own init script, so it keeps the fixed pre-deployed path and is
+    not staged. With staging off, both assets use the fixed legacy paths.
+    """
+    from overture_airflow_provider.runner_assets import (
+        _DATABRICKS_INIT_SCRIPT_NAME,
+        databricks_workspace_asset_path,
+    )
+
+    init_script_name = setup_info["databricks_cluster_init_script_name"]
+    notebook_path = f"{scripts_path}/job_runner_databricks"
+    init_script_path = f"{scripts_path}/{init_script_name}"
+    staged_assets = []
+
+    if setup_info.get("databricks_stage_workspace_assets", True):
+        notebook_path = databricks_workspace_asset_path("notebook", scripts_path)
+        staged_assets.append("notebook")
+        if init_script_name == _DATABRICKS_INIT_SCRIPT_NAME:
+            init_script_path = databricks_workspace_asset_path("init_script", scripts_path)
+            staged_assets.append("init_script")
+
+    return {
+        "notebook_path": notebook_path,
+        "init_script_path": init_script_path,
+        "staged_assets": staged_assets,
+    }
+
+
+def stage_databricks_workspace_assets(setup_info: dict, cluster_info: dict) -> dict[str, str]:
+    """Upload the bundled assets ``cluster_info`` references, if any.
+
+    Runs on the worker inside the ``setup_cluster`` task (never at DAG parse
+    time), through the same Airflow connection the submit path uses. A no-op
+    when staging is disabled or every asset is caller-provided.
+    """
+    assets = cluster_info.get("databricks_staged_assets") or []
+    if not assets:
+        return {}
+
+    from overture_airflow_provider.hooks import DatabricksSdkHook
+    from overture_airflow_provider.runner_assets import upload_databricks_assets_to_workspace
+
+    conn_id = setup_info["databricks_conf"].get("databricks_conn_id", "databricks_default")
+    with DatabricksSdkHook(conn_id).get_workspace_client() as client:
+        return upload_databricks_assets_to_workspace(
+            client, cluster_info["databricks_deployed_scripts_path"], assets=assets
+        )
+
+
 def discover_gpu_cluster_options(
     databricks_conn_id: str, *, need_nodes: bool = True, need_runtime: bool = True
 ) -> dict:
@@ -346,7 +402,9 @@ def setup_databricks_cluster(
             s3_assets_root=setup_info["s3_assets_root"]
         )
     )
-    cluster_init_script_name = setup_info["databricks_cluster_init_script_name"]
+    workspace_assets = _resolve_databricks_workspace_assets(
+        setup_info, databricks_deployed_scripts_path
+    )
     custom_tags = dict(setup_info.get("databricks_custom_tags", {}) or {})
 
     print(f"spark_jar_paths: {spark_jar_paths}")
@@ -405,15 +463,7 @@ def setup_databricks_cluster(
         },
         "runtime_engine": "STANDARD",
         "data_security_mode": "NONE",
-        "init_scripts": [
-            {
-                "workspace": {
-                    "destination": (
-                        f"{databricks_deployed_scripts_path}/{cluster_init_script_name}"
-                    ),
-                }
-            }
-        ],
+        "init_scripts": [{"workspace": {"destination": workspace_assets["init_script_path"]}}],
         "cluster_log_conf": cluster_log_conf,
         "custom_tags": custom_tags,
     }
@@ -423,6 +473,8 @@ def setup_databricks_cluster(
         "libraries": libraries,
         "databricks_conf": databricks_conf,
         "databricks_deployed_scripts_path": databricks_deployed_scripts_path,
+        "databricks_notebook_path": workspace_assets["notebook_path"],
+        "databricks_staged_assets": workspace_assets["staged_assets"],
     }
 
 
@@ -444,9 +496,9 @@ def build_databricks_operator_kwargs(
 
     if module_name:
         notebook_task = {
-            "notebook_path": (
-                f"{cluster_info['databricks_deployed_scripts_path']}/job_runner_databricks"
-            ),
+            # Fallback covers cluster_info produced before notebook_path was added.
+            "notebook_path": cluster_info.get("databricks_notebook_path")
+            or f"{cluster_info['databricks_deployed_scripts_path']}/job_runner_databricks",
             "base_parameters": {
                 "module_name": module_name,
                 "class_name": class_name,

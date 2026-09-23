@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-23
+
+### Added
+
+- **The `setup_cluster` task stages the bundled Databricks runner notebook and cluster init script into the workspace, so Databricks runs need no manual deploy step.** Glue and Wherobots runners were already staged to content-hash-keyed S3 keys at execute time. Databricks runs instead pointed at `{scripts_path}/job_runner_databricks` and `{scripts_path}/{cluster_init_script_name}` and relied on someone uploading both by hand. `DatabricksConfig.stage_workspace_assets` (default `True`) now uploads each asset on the worker to `{scripts_path}/runners/{sha256[:12]}-{name}`, through `DatabricksSdkHook` on `cluster_conf["databricks_conn_id"]`. It skips paths that already exist (`workspace get-status`), treats a concurrent same-hash upload as success, and points `notebook_path` and `init_scripts` at the hashed paths. `runner_assets.upload_databricks_assets_to_workspace()` and `runner_assets.databricks_workspace_asset_path()` expose the same behavior to callers (fixes OvertureMaps/overture-airflow-provider#108).
+
+### Changed
+
+- **Operational: with the default `stage_workspace_assets=True`, the Databricks connection's identity needs write access to `{scripts_path}/runners`.** The default `/Shared/{s3_assets_root}` path already has it, since Databricks grants every workspace user `CAN MANAGE` on `/Shared`; a custom path outside `/Shared` needs an explicit grant. Set `stage_workspace_assets=False` to keep the fixed pre-deployed paths and the previous no-write behavior. A non-default `cluster_init_script_name` is treated as a caller-supplied script and never staged.
+
 ## [0.14.0] - 2026-09-22
 
 ### Added

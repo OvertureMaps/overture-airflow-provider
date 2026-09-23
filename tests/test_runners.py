@@ -1,5 +1,6 @@
 """Tests for runner_assets and bundled runner scripts."""
 
+import base64
 import pathlib
 from unittest.mock import MagicMock
 
@@ -8,8 +9,10 @@ import pytest
 from overture_airflow_provider.runner_assets import (
     _RUNNER_FILES,
     _file_sha256,
+    databricks_workspace_asset_path,
     get_databricks_init_script_path,
     get_runner_path,
+    upload_databricks_assets_to_workspace,
     upload_databricks_init_script_to_workspace,
     upload_runners_to_s3,
 )
@@ -296,3 +299,107 @@ def test_upload_runners_content_hash_in_key():
     sha_part, name_part = filename.split("-", 1)
     assert len(sha_part) == 12
     assert name_part == "job_runner_glue.py"
+
+
+# ---------------------------------------------------------------------------
+# upload_databricks_assets_to_workspace — idempotent, hash-keyed workspace upload
+# ---------------------------------------------------------------------------
+
+
+class _FakeDatabricksError(Exception):
+    def __init__(self, error_code):
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
+class ResourceAlreadyExists(Exception):
+    """Mirrors the databricks-sdk class name; matched by name, not import."""
+
+
+def _workspace_client(*, exists=False, import_error=None):
+    client = MagicMock()
+    if not exists:
+        client.workspace.get_status.side_effect = _FakeDatabricksError("RESOURCE_DOES_NOT_EXIST")
+    if import_error is not None:
+        client.workspace.import_.side_effect = import_error
+    return client
+
+
+@pytest.fixture
+def _fake_import_enums(mocker):
+    enums = (MagicMock(name="ImportFormat"), MagicMock(name="Language"))
+    mocker.patch(
+        "overture_airflow_provider.runner_assets._workspace_import_enums", return_value=enums
+    )
+    return enums
+
+
+def test_databricks_workspace_asset_path_is_content_hashed():
+    notebook = databricks_workspace_asset_path("notebook", "/Shared/app/")
+    init = databricks_workspace_asset_path("init_script", "/Shared/app")
+    nb_sha = _file_sha256(get_runner_path("databricks"))[:12]
+    init_sha = _file_sha256(get_databricks_init_script_path())[:12]
+    assert notebook == f"/Shared/app/runners/{nb_sha}-job_runner_databricks"
+    assert init == f"/Shared/app/runners/{init_sha}-agnostic_operator_cluster_init_databricks.sh"
+
+
+def test_databricks_workspace_asset_path_unknown():
+    with pytest.raises(KeyError, match="Unknown Databricks asset"):
+        databricks_workspace_asset_path("wheel", "/Shared/app")
+
+
+def test_upload_databricks_assets_skips_when_present(_fake_import_enums):
+    client = _workspace_client(exists=True)
+    result = upload_databricks_assets_to_workspace(client, "/Shared/app")
+    assert set(result) == {"notebook", "init_script"}
+    assert client.workspace.get_status.call_count == 2
+    client.workspace.import_.assert_not_called()
+    client.workspace.mkdirs.assert_not_called()
+
+
+def test_upload_databricks_assets_uploads_when_absent(_fake_import_enums):
+    import_format, language = _fake_import_enums
+    client = _workspace_client()
+    result = upload_databricks_assets_to_workspace(client, "/Shared/app")
+
+    client.workspace.mkdirs.assert_called_with("/Shared/app/runners")
+    calls = {c.args[0]: c.kwargs for c in client.workspace.import_.call_args_list}
+    assert set(calls) == {result["notebook"], result["init_script"]}
+
+    nb = calls[result["notebook"]]
+    assert nb["format"] is import_format.SOURCE
+    assert nb["language"] is language.PYTHON
+    assert nb["overwrite"] is False
+    decoded = base64.b64decode(nb["content"])
+    assert decoded == get_runner_path("databricks").read_bytes()
+
+    init = calls[result["init_script"]]
+    assert init["format"] is import_format.RAW
+    assert "language" not in init
+    assert init["overwrite"] is False
+    assert base64.b64decode(init["content"]) == get_databricks_init_script_path().read_bytes()
+
+
+@pytest.mark.parametrize(
+    "race_error",
+    [_FakeDatabricksError("RESOURCE_ALREADY_EXISTS"), ResourceAlreadyExists("exists")],
+)
+def test_upload_databricks_assets_tolerates_concurrent_upload(_fake_import_enums, race_error):
+    client = _workspace_client(import_error=race_error)
+    result = upload_databricks_assets_to_workspace(client, "/Shared/app", assets=["notebook"])
+    assert result == {"notebook": databricks_workspace_asset_path("notebook", "/Shared/app")}
+    client.workspace.import_.assert_called_once()
+
+
+def test_upload_databricks_assets_reraises_other_import_errors(_fake_import_enums):
+    client = _workspace_client(import_error=_FakeDatabricksError("PERMISSION_DENIED"))
+    with pytest.raises(_FakeDatabricksError):
+        upload_databricks_assets_to_workspace(client, "/Shared/app", assets=["init_script"])
+
+
+def test_upload_databricks_assets_reraises_other_status_errors(_fake_import_enums):
+    client = MagicMock()
+    client.workspace.get_status.side_effect = _FakeDatabricksError("PERMISSION_DENIED")
+    with pytest.raises(_FakeDatabricksError):
+        upload_databricks_assets_to_workspace(client, "/Shared/app")
+    client.workspace.import_.assert_not_called()

@@ -48,6 +48,8 @@ _DEFAULT_PROVIDER_KEYS = {
     "databricks_dbfs_root_template": "dbfs:/FileStore/deploy/{s3_assets_root}",
     "databricks_workspace_scripts_path_template": "/Workspace/Shared/{s3_assets_root}",
     "databricks_cluster_init_script_name": "agnostic_operator_cluster_init_databricks.sh",
+    # Opt-out keeps setup_cluster offline; staging has its own tests.
+    "databricks_stage_workspace_assets": False,
     "databricks_custom_tags": {},
     "databricks_spark_conf": {},
     "databricks_spark_env_vars": {},
@@ -2212,3 +2214,143 @@ class TestCancelRun:
         mock_cancel.assert_called_once_with(
             "wb_run_123", {"wherobots_conn_id": "wherobots_default"}
         )
+
+
+class TestDatabricksWorkspaceAssetStaging:
+    """setup_cluster stages bundled assets to hashed paths and references them."""
+
+    _SCRIPTS = "/Shared/spark-agnostic-operator"
+
+    def _run(self, *, stage=True, init_script_name=None, uploader=None):
+        from overture_airflow_provider._databricks import build_databricks_operator_kwargs
+
+        info = _databricks_setup_info()
+        info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        info["databricks_stage_workspace_assets"] = stage
+        info["databricks_conf"] = {"databricks_conn_id": "dbx_conn"}
+        if init_script_name:
+            info["databricks_cluster_init_script_name"] = init_script_name
+        handler = DatabricksPlatformHandler(info)
+
+        hook_cls = MagicMock(name="DatabricksSdkHook")
+        client = hook_cls.return_value.get_workspace_client.return_value.__enter__.return_value
+        uploader = uploader or MagicMock(name="upload_databricks_assets_to_workspace")
+        with (
+            patch("overture_airflow_provider.hooks.DatabricksSdkHook", hook_cls),
+            patch(
+                "overture_airflow_provider.runner_assets.upload_databricks_assets_to_workspace",
+                uploader,
+            ),
+        ):
+            cluster_info = handler.setup_cluster(
+                python_packages="",
+                spark_jar_paths="",
+                extra_spark_conf={},
+                extra_spark_env_vars="{}",
+                spark_cluster_desired_worker_cores="40",
+                spark_cluster_desired_workers="",
+                iceberg_spark_config=_mock_iceberg_rest(),
+            )
+        built = build_databricks_operator_kwargs(
+            setup_info=info,
+            cluster_info=cluster_info,
+            module_name="my.module",
+            class_name="MyJob",
+            task_id="execute_spark_job",
+            max_timeout_hours="1",
+        )
+        init_dest = cluster_info["new_cluster"]["init_scripts"][0]["workspace"]["destination"]
+        return {
+            "cluster_info": cluster_info,
+            "notebook_path": built["notebook_task"]["notebook_path"],
+            "init_dest": init_dest,
+            "hook_cls": hook_cls,
+            "client": client,
+            "uploader": uploader,
+        }
+
+    def test_default_stages_both_assets_via_submit_connection(self):
+        out = self._run()
+        out["hook_cls"].assert_called_once_with("dbx_conn")
+        out["uploader"].assert_called_once_with(
+            out["client"], self._SCRIPTS, assets=["notebook", "init_script"]
+        )
+
+    def test_default_references_hashed_paths(self):
+        from overture_airflow_provider.runner_assets import databricks_workspace_asset_path
+
+        out = self._run()
+        assert out["notebook_path"] == databricks_workspace_asset_path("notebook", self._SCRIPTS)
+        assert out["init_dest"] == databricks_workspace_asset_path("init_script", self._SCRIPTS)
+        assert out["notebook_path"].startswith(f"{self._SCRIPTS}/runners/")
+        assert out["notebook_path"].endswith("-job_runner_databricks")
+        assert out["init_dest"].endswith("-agnostic_operator_cluster_init_databricks.sh")
+
+    def test_referenced_paths_match_uploaded_paths(self, mocker):
+        from overture_airflow_provider.runner_assets import (
+            upload_databricks_assets_to_workspace as real_upload,
+        )
+
+        mocker.patch(
+            "overture_airflow_provider.runner_assets._workspace_import_enums",
+            return_value=(MagicMock(), MagicMock()),
+        )
+        captured = {}
+
+        def _upload(client, scripts_path, *, assets):
+            captured.update(real_upload(client, scripts_path, assets=assets))
+            return captured
+
+        out = self._run(uploader=_upload)
+        assert captured == {"notebook": out["notebook_path"], "init_script": out["init_dest"]}
+
+    def test_opt_out_uses_fixed_paths_without_workspace_calls(self):
+        out = self._run(stage=False)
+        out["hook_cls"].assert_not_called()
+        out["uploader"].assert_not_called()
+        assert out["notebook_path"] == f"{self._SCRIPTS}/job_runner_databricks"
+        assert out["init_dest"] == (f"{self._SCRIPTS}/agnostic_operator_cluster_init_databricks.sh")
+
+    def test_custom_init_script_name_is_not_staged(self):
+        out = self._run(init_script_name="my_init.sh")
+        out["uploader"].assert_called_once_with(out["client"], self._SCRIPTS, assets=["notebook"])
+        assert out["init_dest"] == f"{self._SCRIPTS}/my_init.sh"
+        assert "/runners/" in out["notebook_path"]
+
+    def test_render_path_never_uploads(self):
+        from overture_airflow_provider._databricks import setup_databricks_cluster
+
+        info = _databricks_setup_info()
+        info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        info["databricks_stage_workspace_assets"] = True
+        with patch("overture_airflow_provider.hooks.DatabricksSdkHook") as hook_cls:
+            cluster_info = setup_databricks_cluster(
+                setup_info=info,
+                python_packages="",
+                spark_jar_paths="",
+                extra_spark_conf={},
+                extra_spark_env_vars="{}",
+                spark_cluster_desired_worker_cores="40",
+                spark_cluster_desired_workers="",
+            )
+        hook_cls.assert_not_called()
+        assert cluster_info["databricks_staged_assets"] == ["notebook", "init_script"]
+        assert "/runners/" in cluster_info["databricks_notebook_path"]
+
+    def test_legacy_cluster_info_without_notebook_path(self):
+        from overture_airflow_provider._databricks import build_databricks_operator_kwargs
+
+        built = build_databricks_operator_kwargs(
+            setup_info=_databricks_setup_info(),
+            cluster_info={
+                "new_cluster": {},
+                "libraries": [],
+                "databricks_conf": {"databricks_conn_id": "dbx_conn"},
+                "databricks_deployed_scripts_path": self._SCRIPTS,
+            },
+            module_name="my.module",
+            class_name="MyJob",
+            task_id="execute_spark_job",
+            max_timeout_hours="1",
+        )
+        assert built["notebook_task"]["notebook_path"] == f"{self._SCRIPTS}/job_runner_databricks"

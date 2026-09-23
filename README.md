@@ -160,34 +160,40 @@ Set `retries=1` (or higher) on `execute_spark_job` to recover automatically from
 
 ## Databricks runner deployment
 
-Glue and Wherobots runner scripts are uploaded to S3 automatically during task-group setup. The Databricks runner is a Workspace Notebook that must be deployed once before your first run. The provider references it at submit time but does not push it, because notebook deployment requires Workspace API credentials that many teams keep in CI/CD rather than on Airflow workers.
+A Databricks run needs two workspace assets: the runner notebook (`job_runner_databricks`) and the cluster init script (`agnostic_operator_cluster_init_databricks.sh`). Both ship with the provider.
 
-Deploy it via your CI/CD pipeline or the bundled helper:
+The `setup_cluster` task uploads both on the worker at execute time, the way Glue and Wherobots runners get staged to S3. Nothing runs at DAG parse time. Each asset lands at a content-hash-keyed path under `DatabricksConfig.workspace_scripts_path_template` (after `{s3_assets_root}` substitution):
+
+- `{scripts_path}/runners/{sha256[:12]}-job_runner_databricks`
+- `{scripts_path}/runners/{sha256[:12]}-agnostic_operator_cluster_init_databricks.sh`
+
+The run's `notebook_path` and `init_scripts` point at those paths. A `workspace get-status` check skips any path that already exists. A concurrent upload of the same hash counts as success. A new provider version writes new paths instead of overwriting files that in-flight clusters, or another environment sharing the workspace, still use.
+
+The upload uses the same Airflow connection as the submit path (`DatabricksConfig.cluster_conf["databricks_conn_id"]`), through `DatabricksSdkHook`. All of its auth modes work: PAT, OAuth M2M, Azure service principal, and federated OIDC.
+
+> [!IMPORTANT]
+> The connection's identity needs write access to `{scripts_path}/runners`, since the task creates that folder and imports into it. The default `/Shared/{s3_assets_root}` path needs no extra grant: Databricks gives every workspace user `CAN MANAGE` on `/Shared`. A custom path outside `/Shared` needs an explicit `CAN_EDIT` or `CAN_MANAGE` grant for that identity.
+
+### Using pre-deployed assets
+
+Set `DatabricksConfig(stage_workspace_assets=False)` to keep deploying the assets yourself, for example when Airflow workers hold no workspace write credentials. The run then references the fixed paths `{scripts_path}/job_runner_databricks` and `{scripts_path}/{cluster_init_script_name}`, with no workspace call at setup time. Deploy them via CI/CD or the bundled helpers:
 
 ```python
 from overture_airflow_provider.runner_assets import (
+    upload_databricks_init_script_to_workspace,
     upload_databricks_runner_to_workspace,
 )
 
-upload_databricks_runner_to_workspace(
-    databricks_host="https://my-workspace.cloud.databricks.com",
-    databricks_token="dapi...",  # PAT or CI/CD secret
-    # Must match DatabricksConfig.workspace_scripts_path_template (after
-    # {s3_assets_root} substitution) + "/job_runner_databricks".
-    workspace_path="/Shared/<s3_assets_root>/job_runner_databricks",
+host, token = "https://my-workspace.cloud.databricks.com", "dapi..."
+upload_databricks_runner_to_workspace(host, token, "/Shared/<s3_assets_root>/job_runner_databricks")
+upload_databricks_init_script_to_workspace(
+    host, token, "/Shared/<s3_assets_root>/agnostic_operator_cluster_init_databricks.sh"
 )
 ```
 
-Both the runner notebook and the cluster init script must be present before the run. If either is missing, the Databricks run fails at cluster launch with Databricks' own error pointing at the missing asset.
+A non-default `DatabricksConfig.cluster_init_script_name` means you supply your own init script. The provider never stages it, even with staging on, and references it at `{scripts_path}/{cluster_init_script_name}`. The runner notebook is still staged.
 
-### Cluster init script
-
-A Databricks run requires two workspace assets in the `workspace_scripts_path_template` folder:
-
-1. the runner notebook (`job_runner_databricks`, above), and
-2. the cluster init script named by `DatabricksConfig.cluster_init_script_name` (default `agnostic_operator_cluster_init_databricks.sh`), wired into the cluster's `init_scripts`.
-
-The init script is not bundled with the provider; deploy it to the same workspace folder via CI/CD. A missing init script surfaces as a Databricks cluster-launch error at run time.
+A missing asset surfaces as a Databricks cluster-launch error at run time, naming the missing path.
 
 > While a Databricks job is deferred, the Triggerer may log `aiohttp` "Unclosed client session / connector" ERROR lines. These originate in the upstream `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async client is not explicitly closed on the event loop), not in this provider. The task defers, polls, and resumes correctly regardless. This provider deliberately reuses the installed trigger and does not fork it to silence the message.
 

@@ -457,7 +457,10 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
         spark_cluster_desired_workers: str,
         iceberg_spark_config: dict | None = None,
     ) -> dict:
-        from overture_airflow_provider._databricks import setup_databricks_cluster
+        from overture_airflow_provider._databricks import (
+            setup_databricks_cluster,
+            stage_databricks_workspace_assets,
+        )
 
         merged = _merge_spark_conf(
             _GLUE_DATABRICKS_DEFAULTS, iceberg_spark_config, extra_spark_conf
@@ -471,6 +474,10 @@ class DatabricksPlatformHandler(SparkPlatformHandler):
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
         )
+        # Worker-side, execute-time staging (the Databricks equivalent of the
+        # Glue/Wherobots S3 runner upload); render calls
+        # setup_databricks_cluster directly and never uploads.
+        stage_databricks_workspace_assets(self.setup_info, cluster_config)
         cluster_config["merged_spark_conf"] = merged
         return cluster_config
 

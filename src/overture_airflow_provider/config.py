@@ -315,20 +315,37 @@ class DatabricksConfig:
             OvertureMaps/overture-airflow-provider#87. AWS callers already
             avoid it by setting ``cloud="aws"``, which routes cluster logs
             through ``s3://{s3_assets_bucket}/...`` instead.
-        workspace_scripts_path_template: Template for the workspace path
+        workspace_scripts_path_template: Template for the workspace folder
             holding the runner notebook and init script. ``{s3_assets_root}`` is
             substituted at runtime. Use a **bare** workspace path (e.g.
             ``/Shared/...``, ``/Users/...``), not the ``/Workspace/...`` FUSE-mount
             prefix: the Workspace REST and Jobs APIs address objects by bare path.
             A leading ``/Workspace`` is stripped automatically if supplied.
-        cluster_init_script_name: Filename of the cluster init script located
-            under ``workspace_scripts_path_template``. The default matches the
-            provider's bundled, Overture-free init script (shipped under
-            ``overture_airflow_provider.runners``, resolved via
-            ``runner_assets.get_databricks_init_script_path``); deploy it to
-            the workspace via
+        stage_workspace_assets: When ``True`` (default), the ``setup_cluster``
+            task uploads the bundled runner notebook and cluster init script to
+            content-hash-keyed paths under
+            ``{workspace_scripts_path_template}/runners/``
+            (``{sha256[:12]}-job_runner_databricks`` and
+            ``{sha256[:12]}-agnostic_operator_cluster_init_databricks.sh``),
+            skipping any path that already exists, and points the run's
+            ``notebook_path`` / ``init_scripts`` at them. This mirrors the
+            Glue/Wherobots S3 runner upload: no manual deploy step, and a new
+            provider version never overwrites a file an in-flight cluster
+            uses. The upload runs on the worker at execute time through
+            ``cluster_conf["databricks_conn_id"]``, whose identity needs write
+            access to that folder. Set ``False`` to use pre-deployed assets at
+            the fixed paths ``{workspace_scripts_path_template}/job_runner_databricks``
+            and ``{workspace_scripts_path_template}/{cluster_init_script_name}``
+            (the provider's behavior before 0.15.0).
+        cluster_init_script_name: Filename of the cluster init script. Left at
+            its default, the provider's bundled, Overture-free init script is
+            used (auto-staged when ``stage_workspace_assets`` is on). Set a
+            different name to use your own init script, pre-deployed at
+            ``{workspace_scripts_path_template}/{cluster_init_script_name}``;
+            it is never auto-staged. With ``stage_workspace_assets=False`` the
+            default name must be pre-deployed too, via
             ``runner_assets.upload_databricks_init_script_to_workspace`` or
-            your own CI/CD, mirroring the bundled Databricks runner notebook.
+            your own CI/CD.
         custom_tags: Cluster ``custom_tags`` dict applied to every cluster the
             provider launches.
         spark_conf: Extra entries written into the Databricks cluster's
@@ -426,6 +443,7 @@ class DatabricksConfig:
     extra_libraries: list[dict[str, Any]] = field(default_factory=list)
     dbfs_root_template: str = "dbfs:/FileStore/deploy/{s3_assets_root}"
     workspace_scripts_path_template: str = "/Shared/{s3_assets_root}"
+    stage_workspace_assets: bool = True
     cluster_init_script_name: str = "agnostic_operator_cluster_init_databricks.sh"
     custom_tags: dict[str, str] = field(default_factory=dict)
     spark_conf: dict[str, Any] = field(default_factory=dict)

@@ -79,6 +79,15 @@ provider-specific knobs.
 `dbfs_root_template` / `workspace_scripts_path_template` accept
 `{s3_assets_root}` substitution.
 
+`stage_workspace_assets=True` (default) makes `setup_cluster` upload the
+bundled runner notebook and init script to
+`{scripts_path}/runners/{sha12}-{name}` via `DatabricksSdkHook` on the same
+`databricks_conn_id`, then reference those paths. Path resolution
+(`_resolve_databricks_workspace_assets`) is pure so `render` shows the same
+paths without uploading; only `DatabricksPlatformHandler.setup_cluster` calls
+`stage_databricks_workspace_assets`. `False` restores the fixed pre-deployed
+paths. A non-default `cluster_init_script_name` is never staged.
+
 GPU (or any custom node type) is generic, not a hardcoded SKU. Two paths:
 
 - **Auto-discovery (preferred):** set `gpu=True`. The provider queries the

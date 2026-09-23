@@ -48,6 +48,7 @@ SERIALIZABLE_KEYS = (
     "databricks_dbfs_root_template",
     "databricks_workspace_scripts_path_template",
     "databricks_cluster_init_script_name",
+    "databricks_stage_workspace_assets",
     "databricks_custom_tags",
     "databricks_spark_conf",
     "databricks_spark_env_vars",

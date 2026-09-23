@@ -123,6 +123,7 @@ def setup_spark_job(
             databricks_config.workspace_scripts_path_template
         ),
         "databricks_cluster_init_script_name": (databricks_config.cluster_init_script_name),
+        "databricks_stage_workspace_assets": databricks_config.stage_workspace_assets,
         "databricks_custom_tags": dict(databricks_config.custom_tags),
         "databricks_spark_conf": dict(databricks_config.spark_conf),
         "databricks_spark_env_vars": dict(databricks_config.spark_env_vars),

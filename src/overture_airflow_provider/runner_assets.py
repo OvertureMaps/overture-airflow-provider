@@ -11,6 +11,10 @@ Two canonical operations:
 be deployed to the Databricks workspace separately from S3. Use
 :func:`get_runner_path` to obtain the source file and deploy it via your CI/CD
 pipeline or the :func:`upload_databricks_runner_to_workspace` helper.
+
+**Databricks cluster init script:** Likewise deployed to the workspace, not
+S3. Use :func:`get_databricks_init_script_path` to obtain the source file or
+:func:`upload_databricks_init_script_to_workspace` to deploy it directly.
 """
 
 import hashlib
@@ -27,6 +31,9 @@ _RUNNER_FILES: dict[str, str] = {
     "databricks": "job_runner_databricks.py",
     "wherobots": "job_runner_wherobots.py",
 }
+
+# Matches DatabricksConfig.cluster_init_script_name's default (config.py).
+_DATABRICKS_INIT_SCRIPT_NAME = "agnostic_operator_cluster_init_databricks.sh"
 
 
 def get_runner_path(platform: str) -> pathlib.Path:
@@ -188,3 +195,65 @@ def upload_databricks_runner_to_workspace(
     )
     resp.raise_for_status()
     print(f"Databricks runner uploaded to workspace: {workspace_path}")
+
+
+def get_databricks_init_script_path() -> pathlib.Path:
+    """Return the local filesystem path to the bundled Databricks cluster
+    init script.
+
+    Mirrors :func:`get_runner_path` for the job runners: the script ships as a
+    plain file under ``overture_airflow_provider.runners`` and is resolved via
+    :mod:`importlib.resources`.
+
+    Returns:
+        Absolute :class:`pathlib.Path` to the init script.
+    """
+    pkg_path = importlib.resources.files("overture_airflow_provider.runners").joinpath(
+        _DATABRICKS_INIT_SCRIPT_NAME
+    )
+    return pathlib.Path(str(pkg_path))
+
+
+def upload_databricks_init_script_to_workspace(
+    databricks_host: str,
+    databricks_token: str,
+    workspace_path: str,
+    *,
+    overwrite: bool = True,
+) -> None:
+    """Upload the bundled Databricks cluster init script to a Workspace path.
+
+    Uses the Databricks Workspace Import API (``/api/2.0/workspace/import``)
+    with ``format="RAW"`` (the script is a plain shell file, not a notebook).
+
+    Args:
+        databricks_host: Databricks workspace URL
+            (e.g. ``"https://my-workspace.azuredatabricks.net"``).
+        databricks_token: Databricks personal access token.
+        workspace_path: Target workspace path for the script, e.g.
+            ``"/Shared/my-app/agnostic_operator_cluster_init_databricks.sh"``.
+            Should match ``DatabricksConfig.cluster_init_script_name`` under
+            ``DatabricksConfig.workspace_scripts_path_template``.
+        overwrite: Whether to overwrite an existing file. Default ``True``.
+    """
+    import base64
+
+    import requests
+
+    source = get_databricks_init_script_path().read_text(encoding="utf-8")
+    encoded = base64.b64encode(source.encode()).decode()
+
+    url = databricks_host.rstrip("/") + "/api/2.0/workspace/import"
+    resp = requests.post(
+        url,
+        headers={"Authorization": "Bearer " + databricks_token},
+        json={
+            "path": workspace_path,
+            "format": "RAW",
+            "content": encoded,
+            "overwrite": overwrite,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    print(f"Databricks cluster init script uploaded to workspace: {workspace_path}")

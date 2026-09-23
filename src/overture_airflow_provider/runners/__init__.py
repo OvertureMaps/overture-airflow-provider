@@ -12,6 +12,17 @@ precompiled JAR selected via the ``--class`` job parameter (passed through
 ``--extra-jars``), so this ``scriptLocation`` file is never executed. Glue still
 *compiles* it before the job starts, so it only needs to compile cleanly. See
 the stub comment below for the full rationale.
+
+The Databricks cluster init script
+(``agnostic_operator_cluster_init_databricks.sh``) ships as a plain file
+alongside the other bundled runners, resolved via
+:func:`overture_airflow_provider.runner_assets.get_databricks_init_script_path`.
+It is referenced by ``DatabricksConfig.cluster_init_script_name`` (see
+``config.py`` / ``_databricks.py``): it downloads the Sedona and GeoTools JARs
+matching the cluster's ``SEDONA_VERSION``/``SPARK_VERSION``/``SCALA_VERSION``
+env vars into ``/databricks/jars``. It is Overture-free — no Overture-specific
+paths, buckets, or job logic — so it is bundled the same way as the job
+runners rather than left to be hand-deployed by each caller.
 """
 
 SCALA_RUNNER_SOURCE: str = """\

@@ -172,7 +172,7 @@ The run's `notebook_path` and `init_scripts` point at those paths. A `workspace 
 The upload uses the same Airflow connection as the submit path (`DatabricksConfig.cluster_conf["databricks_conn_id"]`), through `DatabricksSdkHook`. All of its auth modes work: PAT, OAuth M2M, Azure service principal, and federated OIDC.
 
 > [!IMPORTANT]
-> The connection's identity needs write access (`CAN_MANAGE`, or `CAN_EDIT` on the folder) to `{scripts_path}/runners`, since the task creates that folder and imports into it. The identity the job runs as needs read access to the same folder.
+> The connection's identity needs write access to `{scripts_path}/runners`, since the task creates that folder and imports into it. The default `/Shared/{s3_assets_root}` path needs no extra grant: Databricks gives every workspace user `CAN MANAGE` on `/Shared`. A custom path outside `/Shared` needs an explicit `CAN_EDIT` or `CAN_MANAGE` grant for that identity.
 
 ### Using pre-deployed assets
 

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Operational: with the default `stage_workspace_assets=True`, the Databricks connection's identity needs write access to `{scripts_path}/runners`.** Set `stage_workspace_assets=False` to keep the fixed pre-deployed paths and the previous no-write behavior. A non-default `cluster_init_script_name` is treated as a caller-supplied script and never staged.
+- **Operational: with the default `stage_workspace_assets=True`, the Databricks connection's identity needs write access to `{scripts_path}/runners`.** The default `/Shared/{s3_assets_root}` path already has it, since Databricks grants every workspace user `CAN MANAGE` on `/Shared`; a custom path outside `/Shared` needs an explicit grant. Set `stage_workspace_assets=False` to keep the fixed pre-deployed paths and the previous no-write behavior. A non-default `cluster_init_script_name` is treated as a caller-supplied script and never staged.
 
 ## [0.14.0] - 2026-09-22
 

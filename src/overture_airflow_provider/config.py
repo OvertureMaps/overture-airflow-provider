@@ -113,13 +113,18 @@ class PackageRegistryConfig:
         domain: Registry domain name.
         repository: Repository name within the domain.
         region: Region hosting the registry. Defaults to ``"us-east-1"``.
-        maven_repository: Optional Maven repository within the same domain.
-            When set, JAR URLs for Sedona/GeoTools are built against it.
-            Leave empty to disable registry-backed Maven downloads.
+        maven_repository: Optional Maven repository. When set, JAR URLs for
+            Sedona/GeoTools are built against it. Leave empty to disable
+            registry-backed Maven downloads.
         maven_repository_path: URL path segment for the Maven repository
-            (e.g. ``"maven/my-maven"``). Combined with the registry host to
+            (e.g. ``"maven/my-maven"``). Combined with the Maven host to
             form the base Maven URL. Defaults to ``"maven/" + maven_repository``
             when empty.
+        maven_domain: Domain hosting ``maven_repository``. Defaults to
+            ``domain`` so a registry that keeps pip and Maven side by side
+            needs no extra configuration.
+        maven_domain_owner: Account that owns ``maven_domain``. Defaults to
+            ``domain_owner``.
 
     Raises:
         ValueError: If any required field (``domain_owner``, ``domain``,
@@ -132,9 +137,13 @@ class PackageRegistryConfig:
     region: str = "us-east-1"
     maven_repository: str = ""
     maven_repository_path: str = ""
+    maven_domain: str = ""
+    maven_domain_owner: str = ""
     _validate: InitVar[bool] = True
 
     def __post_init__(self, _validate: bool) -> None:
+        self.maven_domain = self.maven_domain or self.domain
+        self.maven_domain_owner = self.maven_domain_owner or self.domain_owner
         if not _validate:
             return
         _require_non_empty(

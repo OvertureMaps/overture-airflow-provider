@@ -47,8 +47,10 @@ spark_agnostic_task_group(
 ### PackageRegistryConfig field names
 
 Fields are `domain`, `domain_owner`, `repository`, `region`,
-`maven_repository`, `maven_repository_path`. **Not** prefixed with
-`codeartifact_`.
+`maven_repository`, `maven_repository_path`, `maven_domain`,
+`maven_domain_owner`. **Not** prefixed with `codeartifact_`. The two
+`maven_domain*` fields default to their pip counterparts, set them only when
+the Maven repository lives in a different domain or account.
 
 ### IcebergConfig
 

@@ -34,7 +34,7 @@ Seven typed config dataclasses:
 | Dataclass | Required for |
 |---|---|
 | `ArtifactStoreConfig` | All platforms (S3 bucket for wheel/JAR cache) |
-| `PackageRegistryConfig` | All platforms (CodeArtifact pip + maven) |
+| `PackageRegistryConfig` | All platforms (CodeArtifact PyPI repo + optional maven repo via `maven_*` fields) |
 | `IcebergConfig` | Optional; Iceberg catalog wiring |
 | `GlueConfig` | Glue jobs (IAM role) |
 | `DatabricksConfig` | Databricks jobs (conn id, DBFS layout) |

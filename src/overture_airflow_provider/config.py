@@ -103,28 +103,35 @@ def coerce_config_dict(value: Any, field_name: str = "config") -> dict:
 
 @dataclass
 class PackageRegistryConfig:
-    """Pip-compatible private package registry (and optional Maven mirror).
+    """Private package registry: a PyPI index, plus an optional Maven repository.
+
+    The un-scoped fields (``domain_owner``, ``domain``, ``repository``) always
+    describe the **PyPI** (pip-compatible) repository; they are never a Maven
+    repository. Use the ``maven_*`` fields for Maven, whether it sits beside
+    the PyPI repository or in a separate domain/account. Unset ``maven_domain``
+    and ``maven_domain_owner`` fall back to ``domain`` and ``domain_owner``.
 
     Field names map directly to AWS CodeArtifact but are generic enough to
     work with any PyPI-compatible private index.
 
     Args:
-        domain_owner: Account ID (or tenant identifier) that owns the registry.
-        domain: Registry domain name.
-        repository: Repository name within the domain.
+        domain_owner: Account ID (or tenant identifier) that owns the PyPI
+            repository's domain.
+        domain: Domain of the PyPI repository.
+        repository: PyPI repository name within ``domain``.
         region: Region hosting the registry. Defaults to ``"us-east-1"``.
-        maven_repository: Optional Maven repository. When set, JAR URLs for
-            Sedona/GeoTools are built against it. Leave empty to disable
-            registry-backed Maven downloads.
+        maven_repository: Optional Maven repository (distinct from the PyPI
+            ``repository``). When set, JAR URLs for Sedona/GeoTools are built
+            against it. Leave empty to disable registry-backed Maven downloads.
         maven_repository_path: URL path segment for the Maven repository
             (e.g. ``"maven/my-maven"``). Combined with the Maven host to
             form the base Maven URL. Defaults to ``"maven/" + maven_repository``
             when empty.
-        maven_domain: Domain hosting ``maven_repository``. Defaults to
-            ``domain`` so a registry that keeps pip and Maven side by side
-            needs no extra configuration.
-        maven_domain_owner: Account that owns ``maven_domain``. Defaults to
-            ``domain_owner``.
+        maven_domain: Domain hosting ``maven_repository``. Set only when Maven
+            lives in a different domain than the PyPI repository; defaults to
+            ``domain``.
+        maven_domain_owner: Account that owns ``maven_domain``. Set only when
+            Maven lives in a different account; defaults to ``domain_owner``.
 
     Raises:
         ValueError: If any required field (``domain_owner``, ``domain``,

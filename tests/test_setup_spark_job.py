@@ -148,6 +148,49 @@ class TestRunIdentifier:
         assert re.search(r"_\d{14}$", _run()["run_identifier"])
 
 
+class TestMavenRegistryXComRoundTrip:
+    def test_distinct_maven_domain_survives_setup_and_xcom(self):
+        from overture_airflow_provider.config import PackageRegistryConfig
+        from overture_airflow_provider.setup_info import rehydrate, to_xcom
+
+        registry = PackageRegistryConfig(
+            domain_owner="111111111111",
+            domain="pypi-domain",
+            repository="pypi-repo",
+            maven_repository="maven-repo",
+            maven_domain="maven-domain",
+            maven_domain_owner="222222222222",
+        )
+        with patch(
+            "overture_airflow_provider._setup.CodeArtifactPyPiClient",
+            return_value=MagicMock(),
+        ):
+            info = setup_spark_job(
+                spark_impl_name=_GLUE_V5,
+                sedona_version=_SEDONA,
+                module_name="m",
+                class_name="C",
+                job_name="",
+                parameters="{}",
+                spark_jar_paths="",
+                package_registry=registry,
+            )
+        assert info["codeartifact_maven_domain"] == "maven-domain"
+        assert info["codeartifact_maven_domain_owner"] == "222222222222"
+
+        serialized = to_xcom(info)
+        with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient"):
+            restored = rehydrate(serialized)
+
+        for data in (serialized, restored):
+            assert data["codeartifact_domain"] == "pypi-domain"
+            assert data["codeartifact_domain_owner"] == "111111111111"
+            assert data["codeartifact_maven_domain"] == "maven-domain"
+            assert data["codeartifact_maven_domain_owner"] == "222222222222"
+            assert data["codeartifact_maven_repository"] == "maven-repo"
+            assert data["codeartifact_maven_repository_path"] == "maven/maven-repo"
+
+
 # ─── spark_execution_logic lazy-facade ────────────────────────────────────────
 
 

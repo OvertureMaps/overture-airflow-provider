@@ -34,6 +34,27 @@ class TestPackageRegistryConfig:
         assert cfg.maven_repository == ""
         assert cfg.maven_repository_path == ""
 
+    def test_maven_domain_defaults_to_pip_domain(self):
+        cfg = PackageRegistryConfig(
+            domain_owner="123456789012", domain="my-pypi", repository="my-repo"
+        )
+        assert cfg.maven_domain == "my-pypi"
+        assert cfg.maven_domain_owner == "123456789012"
+
+    def test_maven_domain_can_live_in_another_account(self):
+        cfg = PackageRegistryConfig(
+            domain_owner="123456789012",
+            domain="my-pypi",
+            repository="my-repo",
+            maven_repository="my-maven",
+            maven_domain="my-maven-domain",
+            maven_domain_owner="210987654321",
+        )
+        assert cfg.maven_domain == "my-maven-domain"
+        assert cfg.maven_domain_owner == "210987654321"
+        assert cfg.domain == "my-pypi"
+        assert cfg.domain_owner == "123456789012"
+
     @pytest.mark.parametrize("field_name", ["domain_owner", "domain", "repository", "region"])
     def test_empty_required_field_raises(self, field_name):
         kwargs = {

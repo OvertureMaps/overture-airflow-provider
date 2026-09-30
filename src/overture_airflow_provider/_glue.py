@@ -156,8 +156,11 @@ def download_jars_glue(
     )
 
     codeartifact_maven_repo = helper.get_codeartifact_maven_repo(
-        domain=setup_info["codeartifact_domain"],
-        domain_owner=setup_info["codeartifact_domain_owner"],
+        domain=setup_info.get("codeartifact_maven_domain") or setup_info["codeartifact_domain"],
+        domain_owner=(
+            setup_info.get("codeartifact_maven_domain_owner")
+            or setup_info["codeartifact_domain_owner"]
+        ),
         region=setup_info["codeartifact_region"],
         repository_path=setup_info["codeartifact_maven_repository_path"],
     )

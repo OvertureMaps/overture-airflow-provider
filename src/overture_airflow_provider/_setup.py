@@ -147,6 +147,8 @@ def setup_spark_job(
         "codeartifact_domain": package_registry.domain,
         "codeartifact_repository": package_registry.repository,
         "codeartifact_region": package_registry.region,
+        "codeartifact_maven_domain_owner": package_registry.maven_domain_owner,
+        "codeartifact_maven_domain": package_registry.maven_domain,
         "codeartifact_maven_repository": package_registry.maven_repository,
         "codeartifact_maven_repository_path": (
             package_registry.maven_repository_path

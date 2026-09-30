@@ -325,6 +325,48 @@ class TestGlueSetupCluster:
         assert "spark.driver.maxResultSize" in result["merged_spark_conf"]
 
 
+class TestGlueDownloadJarsMavenDomain:
+    """``download_jars_glue`` must build the Maven URL from the Maven domain, not the pip one."""
+
+    def _run(self, setup_info):
+        from overture_airflow_provider._glue import download_jars_glue
+
+        with patch("overture_airflow_provider._glue.SparkAgnosticHelper") as helper_cls:
+            helper = helper_cls.return_value
+            helper.get_codeartifact_maven_repo.return_value = ""
+            with pytest.raises(AirflowException, match="Maven repo URL is empty"):
+                download_jars_glue(setup_info, spark_jar_paths=[])
+        return helper.get_codeartifact_maven_repo.call_args.kwargs
+
+    def test_uses_maven_domain_when_set(self):
+        info = _glue_setup_info()
+        info.update(
+            {
+                "codeartifact_domain_owner": "111111111111",
+                "codeartifact_domain": "pip-domain",
+                "codeartifact_maven_domain_owner": "222222222222",
+                "codeartifact_maven_domain": "maven-domain",
+                "codeartifact_maven_repository_path": "maven/overture",
+            }
+        )
+        kwargs = self._run(info)
+        assert kwargs["domain"] == "maven-domain"
+        assert kwargs["domain_owner"] == "222222222222"
+
+    def test_falls_back_to_pip_domain_for_older_xcoms(self):
+        info = _glue_setup_info()
+        info.update(
+            {
+                "codeartifact_domain_owner": "111111111111",
+                "codeartifact_domain": "pip-domain",
+                "codeartifact_maven_repository_path": "maven/overture-maven",
+            }
+        )
+        kwargs = self._run(info)
+        assert kwargs["domain"] == "pip-domain"
+        assert kwargs["domain_owner"] == "111111111111"
+
+
 class TestGlueExecuteJob:
     def _make_context(self, mapping=False, real_ti=False):
         data = {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-29
+
+### Added
+
+- **`PackageRegistryConfig` can point Maven at a separate CodeArtifact domain or account.** New optional `maven_domain` and `maven_domain_owner` fields default to `domain` and `domain_owner`, so existing configs are unchanged. The un-scoped `domain`, `domain_owner` and `repository` fields are documented as the PyPI repository; use the `maven_*` fields for Maven.
+
 ## [0.15.0] - 2026-09-23
 
 ### Added

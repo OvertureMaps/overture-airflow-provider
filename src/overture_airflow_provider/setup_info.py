@@ -71,6 +71,8 @@ SERIALIZABLE_KEYS = (
     "codeartifact_domain",
     "codeartifact_repository",
     "codeartifact_region",
+    "codeartifact_maven_domain_owner",
+    "codeartifact_maven_domain",
     "codeartifact_maven_repository",
     "codeartifact_maven_repository_path",
 )

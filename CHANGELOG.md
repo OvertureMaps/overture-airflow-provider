@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.17.0] - 2026-10-06
+
+### Fixed
+
+- **Wherobots runs failed on Airflow 3 before submission with `"RuntimeTaskInstance" object has no field "xcom_push"`.** `execute_wherobots_job()` monkeypatched `ti.xcom_push` to catch the run id the moment `WherobotsRunOperator` pushes it (for the early `spark_agnostic` job-URL XCom and the zombie-cancel trail). Airflow 3's `RuntimeTaskInstance` is a pydantic model and rejects the assignment. The operator now receives a read-through context view whose `ti`/`task_instance` is a proxy that delegates to the real task instance and overrides only `xcom_push`; the real task instance is never mutated. Behaviour on Airflow 2 is unchanged (fixes OvertureMaps/overture-airflow-provider#114).
 
 ## [0.16.0] - 2026-09-29
 

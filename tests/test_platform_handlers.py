@@ -1701,6 +1701,7 @@ class TestWherobotsExecuteJob:
         parameters='{"key": "value"}',
         simulate_submit=False,
         mapping_context=False,
+        ti=None,
     ):
         from overture_airflow_provider._wherobots import execute_wherobots_job
 
@@ -1719,7 +1720,9 @@ class TestWherobotsExecuteJob:
             jar_info = {"jars_s3": []}
 
         captured_operator_kwargs = {}
-        context = _AirflowContext({"ti": MagicMock()}) if mapping_context else {"ti": MagicMock()}
+        if ti is None:
+            ti = MagicMock()
+        context = _AirflowContext({"ti": ti}) if mapping_context else {"ti": ti}
 
         mock_operator = MagicMock()
         if simulate_submit:
@@ -1773,6 +1776,9 @@ class TestWherobotsExecuteJob:
             if MockWherobots.called:
                 captured_operator_kwargs.update(MockWherobots.call_args[1])
         captured_operator_kwargs["context"] = context
+        if mock_operator.execute.called:
+            (executed_context,) = mock_operator.execute.call_args[0]
+            captured_operator_kwargs["operator_execute_context"] = executed_context
 
         return result, captured_operator_kwargs
 
@@ -1975,6 +1981,37 @@ class TestWherobotsExecuteJob:
         calls = kwargs["context"]["ti"].xcom_push.call_args_list
         spark_agnostic_calls = [c for c in calls if c.kwargs.get("key") == "spark_agnostic"]
         assert spark_agnostic_calls
+
+    def test_early_xcom_push_works_with_pydantic_task_instance(self):
+        # Airflow 3's RuntimeTaskInstance is a pydantic model: assigning
+        # ``ti.xcom_push = ...`` raises ``"RuntimeTaskInstance" object has no
+        # field "xcom_push"``. The interception must not mutate the real ti.
+        from pydantic import BaseModel, ConfigDict
+
+        class _RuntimeTaskInstance(BaseModel):
+            model_config = ConfigDict(arbitrary_types_allowed=True)
+            task_id: str = "execute_spark_job"
+            pushed: list = []
+
+            def xcom_push(self, key, value):
+                self.pushed.append((key, value))
+
+        ti = _RuntimeTaskInstance()
+        with pytest.raises(ValueError, match='has no field "xcom_push"'):
+            ti.xcom_push = lambda *a, **k: None
+
+        result, kwargs = self._run(simulate_submit=True, mapping_context=True, ti=ti)
+
+        assert result["job_url"].endswith("/runs/wb_run_123")
+        keys = [key for key, _ in ti.pushed]
+        assert keys == ["run_id", "spark_agnostic"]
+        # The operator saw a context whose ti still exposes the real instance's
+        # attributes, and the original context/ti were left untouched.
+        operator_context = kwargs["operator_execute_context"]
+        assert operator_context["ti"].task_id == "execute_spark_job"
+        assert operator_context["task_instance"] is operator_context["ti"]
+        assert kwargs["context"]["ti"] is ti
+        assert "xcom_push" not in ti.__dict__
 
     def test_returns_job_url_in_result_after_execution(self):
         # Regression: execute_wherobots_job must return job_url so the final

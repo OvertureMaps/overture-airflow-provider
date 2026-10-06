@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+from collections.abc import Mapping
 
 from overture_airflow_provider._retry_guard import record_launched_run
 from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
@@ -36,6 +37,56 @@ def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
             "status": "RUNNING",
         }
     )
+
+
+class _TaskInstanceProxy:
+    """Read-through view of a task instance with ``xcom_push`` swapped out.
+
+    ``execute_wherobots_job`` needs to see the run id the moment
+    ``WherobotsRunOperator`` pushes it. Assigning ``ti.xcom_push = ...`` worked
+    on Airflow 2 but Airflow 3's ``RuntimeTaskInstance`` is a pydantic model
+    that rejects non-field attributes, so the override lives on this proxy
+    instead and the real task instance is never mutated.
+    """
+
+    def __init__(self, ti, xcom_push):
+        self._ti = ti
+        self._xcom_push = xcom_push
+
+    def xcom_push(self, *args, **kwargs):
+        return self._xcom_push(*args, **kwargs)
+
+    def __getattr__(self, name):
+        if name in ("_ti", "_xcom_push"):
+            raise AttributeError(name)
+        return getattr(self._ti, name)
+
+
+class _ContextWithTaskInstance(Mapping):
+    """Context view that serves ``ti``/``task_instance`` from a replacement.
+
+    Delegates every other key to the wrapped context lazily, so Airflow's
+    deprecated-key accessors are never triggered by an eager ``dict(context)``.
+    """
+
+    _TI_KEYS = ("ti", "task_instance")
+
+    def __init__(self, context, ti):
+        self._context = context
+        self._ti = ti
+
+    def __getitem__(self, key):
+        if key in self._TI_KEYS:
+            return self._ti
+        return self._context[key]
+
+    def __iter__(self):
+        keys = dict.fromkeys(self._context)
+        keys.update(dict.fromkeys(self._TI_KEYS))
+        return iter(keys)
+
+    def __len__(self):
+        return sum(1 for _ in self)
 
 
 def _build_wherobots_run_url(conn_id: str, run_id: str) -> str | None:
@@ -470,6 +521,7 @@ def execute_wherobots_job(
     original_xcom_push = getattr(ti, "xcom_push", None)
     early_xcom_pushed = False
     captured_job_url = None
+    operator_context = context
 
     if callable(original_xcom_push):
 
@@ -501,13 +553,11 @@ def execute_wherobots_job(
                     captured_job_url = job_url
             return result
 
-        ti.xcom_push = _xcom_push_with_early_agnostic
+        operator_context = _ContextWithTaskInstance(
+            context, _TaskInstanceProxy(ti, _xcom_push_with_early_agnostic)
+        )
 
-    try:
-        platform_operator.execute(context)
-    finally:
-        if callable(original_xcom_push):
-            ti.xcom_push = original_xcom_push
+    platform_operator.execute(operator_context)
 
     result = {"platform_operator": platform_operator}
     if captured_job_url:

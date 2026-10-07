@@ -176,7 +176,7 @@ args win):
 
 When `execute_spark_job` raises, the handler's `describe_failure()` method
 produces a `FailureInfo` dataclass (platform, run id, state, reason, root-cause
-tail, console URL). `classify_failure()` assigns one of four categories based
+tail, console URL). `classify_failure()` assigns one of five categories based
 on signals the orchestration layer already holds:
 
 | Classification | When |
@@ -185,11 +185,12 @@ on signals the orchestration layer already holds:
 | `submit/config` | run never launched; likely a provider or config fault |
 | `trigger/polling` | deferral machinery failed; see Triggerer logs |
 | `platform/infra` | platform reported an internal error (e.g. Databricks `INTERNAL_ERROR`) |
+| `platform/capacity` | platform accepted the run but rejected it for capacity before any job code ran (Glue `Exceeded maximum concurrent compute` with `ExecutionTime: 0`) |
 
 `apply_heuristics()` scans the combined reason + root-cause text for known
-patterns (IAM denials, auth errors, OOM, throttling, missing resources) and
-appends an actionable hint. `format_failure()` renders all fields into a
-uniform multi-line message.
+patterns (IAM denials, auth errors, OOM, throttling, missing resources, Glue
+capacity rejections) and appends an actionable hint. `format_failure()` renders
+all fields into a uniform multi-line message.
 
 `_operator.py` picks the raised exception type from the same `run_launched`
 signal that drives classification above: `downstream-job` and `trigger/polling`
@@ -201,8 +202,23 @@ raises the retryable `AirflowException`. This lets a caller set
 infra faults (e.g. a worker recycling mid-submit) without risking a silent
 retry of a job that actually ran and failed.
 
+`platform/capacity` is the one launched-with-a-run-id case that stays
+retryable. `GluePlatformHandler.describe_failure` detects it from the Glue
+`JobRun` payload (`_glue_capacity_never_started`: capacity `ErrorMessage` and
+`ExecutionTime` 0 or missing); `complete_glue_job` then raises
+`_exceptions.RetryableJobFailure` (an `AirflowException` subclass) when
+`_failures.is_retryable()` says so, and `resume_execution` propagates that type
+unchanged instead of wrapping it in `AirflowFailException`. A run that carries
+a capacity message but has `ExecutionTime > 0` did start, so it classifies as
+`downstream-job` and is never retried. The retry try's stale-run scan (below)
+only matches active states, so the FAILED capacity run is ignored and a fresh
+run is submitted.
+
 `_failures.py` has no Airflow or platform SDK imports; it works purely from
 stdlib so it is testable and importable without any runtime dependencies.
+`_exceptions.py` holds the provider's own `AirflowException` subclasses, kept
+out of `_failures.py` for that reason and out of `spark_platform_handlers.py`
+because `render.py` imports the handlers without Airflow present.
 
 ## Retry / clear guard
 

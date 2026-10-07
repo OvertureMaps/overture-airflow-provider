@@ -37,6 +37,7 @@ from overture_airflow_provider._airflow_compat import (
     BaseOperator,
     TaskDeferred,
 )
+from overture_airflow_provider._exceptions import RetryableJobFailure
 from overture_airflow_provider._failures import format_failure
 from overture_airflow_provider._report_issue import REPORT_ISSUE_XCOM_KEY
 from overture_airflow_provider._retry_guard import read_recorded_run
@@ -231,6 +232,8 @@ class SparkAgnosticExecuteOperator(BaseOperator):
            run id and resolves it through the same ``complete_job`` path
            ``execute_complete`` uses, so the task log names the real platform
            error instead of a generic "trigger failure" with ``run: <unknown>``.
+           A ``RetryableJobFailure`` (the run did no work) propagates unchanged;
+           any other resolved failure is wrapped in ``AirflowFailException``.
 
         2. A genuine Triggerer crash mid-poll, which carries no resolvable
            run. This goes through the per-platform ``describe_failure`` seam
@@ -258,13 +261,16 @@ class SparkAgnosticExecuteOperator(BaseOperator):
                     result = handler.complete_job(
                         {"run_id": run_id}, context, cluster_info=self.cluster_info
                     )
+                except RetryableJobFailure:
+                    # The run did no work; stays retryable. Subclass of
+                    # AirflowException, so this arm must come first.
+                    raise
                 except AirflowFailException:
                     # Already the classified, non-retryable failure; propagate unchanged.
                     raise
                 except AirflowException as resolve_exc:
-                    # complete_job only ever raises plain AirflowException, but a
-                    # resolved run_id means the job launched -- never retryable,
-                    # same as the launched-and-failed case in execute() above.
+                    # A resolved run id means the job launched and ran -- never
+                    # retryable, same as the launched-and-failed case in execute().
                     raise AirflowFailException(str(resolve_exc)) from None
                 except Exception as resolve_exc:  # noqa: BLE001
                     # The run couldn't be resolved, so this falls through to the generic classification.

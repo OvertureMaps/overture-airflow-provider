@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from overture_airflow_provider._failures import (
     CANCELLED,
     FAILED,
+    GLUE_CAPACITY_ERROR_RE,
     INTERNAL_ERROR,
     PLATFORM_DATABRICKS,
     PLATFORM_GLUE,
@@ -54,6 +55,13 @@ _WHEROBOTS_STATE_MAP = {
 def _normalize_state(raw: str | None, mapping: dict[str, str]) -> str:
     """Map a platform-native terminal state onto a canonical one (default FAILED)."""
     return mapping.get((raw or "").upper(), FAILED)
+
+
+def _glue_capacity_never_started(job_run: dict) -> bool:
+    """True when Glue failed ``job_run`` for lack of capacity before any job code ran."""
+    if (job_run.get("ExecutionTime") or 0) > 0:
+        return False
+    return bool(GLUE_CAPACITY_ERROR_RE.search(job_run.get("ErrorMessage") or ""))
 
 
 def _parse_databricks_run_state(run_state):
@@ -302,7 +310,9 @@ class GluePlatformHandler(SparkPlatformHandler):
             reason=reason,
             root_cause=root_cause,
             classification=classify_failure(
-                run_launched=run_launched, is_trigger_failure=is_trigger_failure
+                run_launched=run_launched,
+                is_trigger_failure=is_trigger_failure,
+                is_capacity_never_started=_glue_capacity_never_started(job_run),
             ),
             hint=apply_heuristics(reason, root_cause, platform=self.platform_name),
         )

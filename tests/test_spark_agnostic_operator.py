@@ -307,6 +307,46 @@ def test_resume_execution_resolves_terminal_glue_failure():
     handler.describe_failure.assert_not_called()
 
 
+def test_resume_execution_keeps_capacity_never_started_failure_retryable():
+    """A ``RetryableJobFailure`` from ``complete_job`` on the ``__fail__`` path
+    propagates unchanged rather than being wrapped in ``AirflowFailException``."""
+    from overture_airflow_provider._airflow_compat import (
+        AirflowException,
+        AirflowFailException,
+    )
+    from overture_airflow_provider._exceptions import RetryableJobFailure
+
+    op = _make_operator()
+    handler = MagicMock()
+    message = (
+        "Spark job FAILED on GLUE (platform capacity failure: the run never started, "
+        "safe to retry).\n  reason:  Exceeded maximum concurrent compute"
+    )
+    handler.complete_job.side_effect = RetryableJobFailure(message)
+
+    run_id = "jr_" + "d" * 64
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(AirflowException) as exc:
+            op.resume_execution(
+                "__fail__",
+                {"error": f"Exiting Job {run_id} Run State: FAILED"},
+                {"ti": MagicMock()},
+            )
+
+    assert type(exc.value) is RetryableJobFailure
+    assert not isinstance(exc.value, AirflowFailException)
+    assert str(exc.value) == message
+    handler.complete_job.assert_called_once()
+    assert handler.complete_job.call_args.args[0] == {"run_id": run_id}
+    handler.describe_failure.assert_not_called()
+
+
 def test_resume_execution_finds_run_id_in_error_when_traceback_lacks_it():
     """The run id can live only in `error` even when a traceback is present,
     e.g. if the trigger's own frames don't repeat the final exception line."""

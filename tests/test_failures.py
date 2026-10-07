@@ -60,8 +60,6 @@ class TestClassifyFailure:
         )
 
     def test_capacity_never_started_is_platform_capacity(self):
-        # The run was launched (a run id exists) but the platform rejected it
-        # for capacity before any job code ran.
         assert (
             classify_failure(run_launched=True, is_capacity_never_started=True) == PLATFORM_CAPACITY
         )

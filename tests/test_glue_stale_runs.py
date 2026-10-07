@@ -135,9 +135,7 @@ class TestStopStaleGlueRuns:
         client.batch_stop_job_run.assert_not_called()
 
     def test_ignores_capacity_failed_run_from_the_previous_try(self):
-        """Retry interplay for a run Glue rejected for capacity before it ran:
-        it is FAILED, not active, so the retry try's pre-submit scan leaves it
-        alone and submits a fresh run without any stop/wait."""
+        """A FAILED capacity run is not active, so the pre-submit scan skips it."""
         failed = {
             **_run("jr_capacity", state="FAILED"),
             "ErrorMessage": "Exceeded maximum concurrent compute",

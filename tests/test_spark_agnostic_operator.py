@@ -308,11 +308,8 @@ def test_resume_execution_resolves_terminal_glue_failure():
 
 
 def test_resume_execution_keeps_capacity_never_started_failure_retryable():
-    """A Glue run the service rejected for capacity before it ran (ExecutionTime
-    0, "Exceeded maximum concurrent compute") reaches __fail__ with a run id like
-    any other terminal failure, but complete_job raises RetryableJobFailure. It
-    must propagate unchanged -- a retryable AirflowException, never wrapped in
-    AirflowFailException -- so the task's configured retries resubmit it."""
+    """A ``RetryableJobFailure`` from ``complete_job`` on the ``__fail__`` path
+    propagates unchanged rather than being wrapped in ``AirflowFailException``."""
     from overture_airflow_provider._airflow_compat import (
         AirflowException,
         AirflowFailException,

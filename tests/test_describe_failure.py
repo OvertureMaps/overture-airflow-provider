@@ -79,9 +79,8 @@ _CAPACITY_MSG = "Exceeded maximum concurrent compute"
 
 
 class TestGlueCapacityNeverStarted:
-    """A queued Glue run the service failed for capacity before it ran (prod:
-    ``ErrorMessage: "Exceeded maximum concurrent compute"``, ``ExecutionTime: 0``)
-    classifies as ``platform/capacity``; a run that did execute never does."""
+    """A capacity ``ErrorMessage`` with ``ExecutionTime`` 0 classifies as
+    ``platform/capacity``; a run that did execute never does."""
 
     def test_zero_execution_time_with_capacity_message(self):
         info = _glue().describe_failure(
@@ -102,13 +101,11 @@ class TestGlueCapacityNeverStarted:
         assert info.classification == PLATFORM_CAPACITY
 
     def test_positive_execution_time_is_downstream_even_with_capacity_message(self):
-        # The job started, so whatever it wrote is suspect: not retryable.
         info = _glue().describe_failure(
             payload={"JobRunState": "FAILED", "ErrorMessage": _CAPACITY_MSG, "ExecutionTime": 42},
             run_launched=True,
         )
         assert info.classification == DOWNSTREAM_JOB
-        # The capacity hint still applies as a diagnostic.
         assert info.hint.startswith("Glue capacity:")
 
     def test_zero_execution_time_with_other_message_is_downstream(self):

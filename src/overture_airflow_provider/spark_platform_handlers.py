@@ -58,15 +58,7 @@ def _normalize_state(raw: str | None, mapping: dict[str, str]) -> str:
 
 
 def _glue_capacity_never_started(job_run: dict) -> bool:
-    """True when Glue rejected ``job_run`` for lack of capacity before it ran.
-
-    Glue holds a queued run (``JobRunQueuingEnabled``) for ~15 min and, if the
-    account's DPU ceiling never frees up, fails it with ``ErrorMessage:
-    "Exceeded maximum concurrent compute"`` and ``ExecutionTime: 0``. No job
-    code ran and nothing was written, so the run is safe to resubmit. A missing
-    ``ExecutionTime`` counts as 0; any positive value means the job did start
-    and the failure is treated like any other downstream-job failure.
-    """
+    """True when Glue failed ``job_run`` for lack of capacity before any job code ran."""
     if (job_run.get("ExecutionTime") or 0) > 0:
         return False
     return bool(GLUE_CAPACITY_ERROR_RE.search(job_run.get("ErrorMessage") or ""))

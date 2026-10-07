@@ -714,10 +714,8 @@ def submit_glue_job(
 def cancel_glue_run(run_id: str, extra: dict | None = None) -> None:
     """Best-effort stop of a Glue job run left over from a killed or zombie try.
 
-    Harmless for a run that is already terminal (e.g. one Glue failed for
-    capacity before it started): ``BatchStopJobRun`` reports a non-stoppable run
-    in its ``Errors`` list rather than raising, and the caller treats this as
-    best-effort either way.
+    Harmless for an already-terminal run: ``BatchStopJobRun`` reports it in
+    ``Errors`` rather than raising.
     """
     extra = extra or {}
     glue_client = boto3.client("glue", region_name=extra.get("region"))
@@ -826,11 +824,9 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
     ``GlueJobCompleteTrigger`` reports the run reached a terminal state. On a
     non-success state, ``handler`` (when supplied) is used to raise a classified,
     de-noised failure naming the Glue ``ErrorMessage`` as the root cause, with the
-    run's own stdout tail attached when Glue's ``LogTail`` field is empty. A run
-    that never started (Glue rejected it for capacity with ``ExecutionTime: 0``)
-    raises ``RetryableJobFailure`` so the task's own ``retries`` apply; any other
-    failure raises a plain ``AirflowException`` that the operator turns into the
-    non-retryable ``AirflowFailException``.
+    run's own stdout tail attached when Glue's ``LogTail`` field is empty. A
+    failure classified as retryable (the run did no work) raises
+    ``RetryableJobFailure``; any other raises a plain ``AirflowException``.
     """
     from overture_airflow_provider._airflow_compat import AirflowException
 

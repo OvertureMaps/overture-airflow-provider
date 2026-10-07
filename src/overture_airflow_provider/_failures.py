@@ -153,9 +153,9 @@ _HEURISTICS: list[_Heuristic] = [
     ),
     _Heuristic(
         GLUE_CAPACITY_ERROR_RE,
-        "Glue capacity: the account's DPU ceiling was hit. A run with ExecutionTime 0 never "
-        "started and is safe to retry; raise retries on execute_spark_job or stagger "
-        "concurrent submits.",
+        "Glue capacity: Glue could not allocate the required resources. For ExecutionTime 0, "
+        "the run never started and is safe to retry; check DPU quotas and VPC/subnet capacity, "
+        "raise retries on execute_spark_job, or stagger concurrent submits.",
         frozenset({PLATFORM_GLUE}),
     ),
     _Heuristic(

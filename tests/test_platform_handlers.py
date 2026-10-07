@@ -843,6 +843,75 @@ class TestCompleteGlueJob:
         assert "downstream job error" in msg
         assert "AccessDenied" in msg
         assert "hint:" in msg
+        # Launched-and-failed stays the plain AirflowException the operator
+        # wraps in AirflowFailException; never the retryable subclass.
+        from overture_airflow_provider._exceptions import RetryableJobFailure
+
+        assert not isinstance(exc.value, RetryableJobFailure)
+
+    def _run_failed_with_handler(self, job_run: dict):
+        from overture_airflow_provider._glue import complete_glue_job
+
+        handler = GluePlatformHandler(_glue_setup_info())
+        context = {"ti": MagicMock(task_id="execute_spark_job")}
+        mock_client = MagicMock()
+        mock_client.get_job_run.return_value = {"JobRun": job_run}
+        # Doubles as the "logs" client; the shutdown marker keeps the catch-up
+        # poll from sleeping in real time.
+        mock_client.get_log_events.return_value = {
+            "events": [{"message": "Running autoDebugger shutdown hook.", "timestamp": 0}]
+        }
+        with patch("overture_airflow_provider._glue.boto3.client", return_value=mock_client):
+            with pytest.raises(AirflowException) as exc:
+                complete_glue_job(_glue_setup_info(), "jr_abc123", context, handler=handler)
+        return exc.value
+
+    def test_capacity_rejection_before_start_is_retryable(self):
+        """Prod case: Glue queued the run (JobRunQueuingEnabled), the account's
+        DPU ceiling never freed up, and Glue failed it with ExecutionTime 0.
+        No job code ran, so it surfaces as the retryable subclass."""
+        from overture_airflow_provider._exceptions import RetryableJobFailure
+
+        exc = self._run_failed_with_handler(
+            {
+                "JobRunState": "FAILED",
+                "ErrorMessage": "Exceeded maximum concurrent compute",
+                "ExecutionTime": 0,
+                "Attempt": 0,
+            }
+        )
+        assert isinstance(exc, RetryableJobFailure)
+        msg = str(exc)
+        assert "platform capacity failure: the run never started, safe to retry" in msg
+        assert "Exceeded maximum concurrent compute" in msg
+        assert "hint:    Glue capacity:" in msg
+
+    def test_capacity_message_after_the_job_ran_is_not_retryable(self):
+        from overture_airflow_provider._exceptions import RetryableJobFailure
+
+        exc = self._run_failed_with_handler(
+            {
+                "JobRunState": "FAILED",
+                "ErrorMessage": "Exceeded maximum concurrent compute",
+                "ExecutionTime": 900,
+            }
+        )
+        assert type(exc) is AirflowException
+        assert not isinstance(exc, RetryableJobFailure)
+        assert "downstream job error" in str(exc)
+
+    def test_executed_and_failed_is_not_retryable(self):
+        from overture_airflow_provider._exceptions import RetryableJobFailure
+
+        exc = self._run_failed_with_handler(
+            {
+                "JobRunState": "FAILED",
+                "ErrorMessage": "Job run failed with exit code 1",
+                "ExecutionTime": 1234,
+            }
+        )
+        assert type(exc) is AirflowException
+        assert not isinstance(exc, RetryableJobFailure)
 
     def _run_with_logs_client(self, job_run: dict, log_events: list[dict] | None):
         """Run complete_glue_job with distinct "glue" and "logs" client mocks,

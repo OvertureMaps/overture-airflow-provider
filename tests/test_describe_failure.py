@@ -7,6 +7,7 @@ from overture_airflow_provider._failures import (
     DOWNSTREAM_JOB,
     FAILED,
     INTERNAL_ERROR,
+    PLATFORM_CAPACITY,
     PLATFORM_GLUE,
     PLATFORM_INFRA,
     PLATFORM_WHEROBOTS,
@@ -72,6 +73,62 @@ class TestGlueDescribeFailure:
     def test_missing_job_name_falls_back(self):
         info = _glue(job_name="").describe_failure(payload={"JobRunState": "FAILED"})
         assert info.job_ref == "<unknown>"
+
+
+_CAPACITY_MSG = "Exceeded maximum concurrent compute"
+
+
+class TestGlueCapacityNeverStarted:
+    """A queued Glue run the service failed for capacity before it ran (prod:
+    ``ErrorMessage: "Exceeded maximum concurrent compute"``, ``ExecutionTime: 0``)
+    classifies as ``platform/capacity``; a run that did execute never does."""
+
+    def test_zero_execution_time_with_capacity_message(self):
+        info = _glue().describe_failure(
+            payload={"JobRunState": "FAILED", "ErrorMessage": _CAPACITY_MSG, "ExecutionTime": 0},
+            run_id="jr_cap",
+            run_launched=True,
+        )
+        assert info.classification == PLATFORM_CAPACITY
+        assert info.state == FAILED
+        assert info.reason == _CAPACITY_MSG
+        assert info.hint.startswith("Glue capacity:")
+
+    def test_missing_execution_time_counts_as_never_started(self):
+        info = _glue().describe_failure(
+            payload={"JobRunState": "FAILED", "ErrorMessage": _CAPACITY_MSG},
+            run_launched=True,
+        )
+        assert info.classification == PLATFORM_CAPACITY
+
+    def test_positive_execution_time_is_downstream_even_with_capacity_message(self):
+        # The job started, so whatever it wrote is suspect: not retryable.
+        info = _glue().describe_failure(
+            payload={"JobRunState": "FAILED", "ErrorMessage": _CAPACITY_MSG, "ExecutionTime": 42},
+            run_launched=True,
+        )
+        assert info.classification == DOWNSTREAM_JOB
+        # The capacity hint still applies as a diagnostic.
+        assert info.hint.startswith("Glue capacity:")
+
+    def test_zero_execution_time_with_other_message_is_downstream(self):
+        info = _glue().describe_failure(
+            payload={
+                "JobRunState": "FAILED",
+                "ErrorMessage": "Job run failed with exit code 1",
+                "ExecutionTime": 0,
+            },
+            run_launched=True,
+        )
+        assert info.classification == DOWNSTREAM_JOB
+
+    def test_trigger_failure_still_wins(self):
+        info = _glue().describe_failure(
+            payload={"JobRunState": "FAILED", "ErrorMessage": _CAPACITY_MSG, "ExecutionTime": 0},
+            run_launched=True,
+            is_trigger_failure=True,
+        )
+        assert info.classification == TRIGGER_POLLING
 
 
 class TestDatabricksDescribeFailure:

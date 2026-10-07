@@ -35,6 +35,15 @@ TRIGGER_POLLING = "trigger/polling"
 #: The platform itself errored out (e.g. Databricks ``INTERNAL_ERROR`` life-cycle
 #: state): infrastructure-side, not the provider and not the downstream job.
 PLATFORM_INFRA = "platform/infra"
+#: The platform accepted the run but rejected it for lack of capacity before any
+#: of the job's code ran (e.g. Glue ``Exceeded maximum concurrent compute`` with
+#: ``ExecutionTime: 0``). Nothing was written, so resubmitting is safe.
+PLATFORM_CAPACITY = "platform/capacity"
+
+#: Classifications whose run did no work, so a caller-configured retry can
+#: safely resubmit it. Everything else launched and ran (or crashed mid-poll
+#: after launch) and is never retried automatically.
+RETRYABLE_CLASSIFICATIONS = frozenset({SUBMIT_CONFIG, PLATFORM_CAPACITY})
 
 #: One-line explanation rendered next to the failure header per classification.
 _CLASSIFICATION_HEADERS = {
@@ -42,6 +51,7 @@ _CLASSIFICATION_HEADERS = {
     SUBMIT_CONFIG: "submit/config failure, likely a provider or configuration fault",
     TRIGGER_POLLING: "trigger/polling failure, see Triggerer logs (not task logs)",
     PLATFORM_INFRA: "platform/infra fault, not a provider or downstream job error",
+    PLATFORM_CAPACITY: "platform capacity failure: the run never started, safe to retry",
 }
 
 # Canonical terminal run states. Handlers normalise platform-native states
@@ -58,6 +68,16 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 PLATFORM_GLUE = "GLUE"
 PLATFORM_DATABRICKS = "DATABRICKS"
 PLATFORM_WHEROBOTS = "WHEROBOTS"
+
+#: Glue ``ErrorMessage`` text for a run the service rejected for lack of account
+#: capacity (DPU ceiling). ``Exceeded maximum concurrent compute`` is what Glue
+#: reports after a queued run (``JobRunQueuingEnabled``) waits out its ~15 min
+#: queue window without capacity freeing up. Shared by the heuristic below and
+#: the Glue handler's never-started predicate.
+GLUE_CAPACITY_ERROR_RE = re.compile(
+    r"exceeded maximum concurrent compute|resource\s*unavailable|insufficient\s*capacity",
+    re.I,
+)
 
 #: Default number of trailing characters to keep from a root-cause/log tail.
 _DEFAULT_ROOT_CAUSE_CHARS = 2000
@@ -139,6 +159,13 @@ _HEURISTICS: list[_Heuristic] = [
         frozenset(),
     ),
     _Heuristic(
+        GLUE_CAPACITY_ERROR_RE,
+        "Glue capacity: the account's DPU ceiling was hit. A run with ExecutionTime 0 never "
+        "started and is safe to retry; raise retries on execute_spark_job or stagger "
+        "concurrent submits.",
+        frozenset({PLATFORM_GLUE}),
+    ),
+    _Heuristic(
         re.compile(r"entitynotfound", re.I),
         "Not found: a referenced Glue job/resource is missing. Check job_name and region.",
         frozenset({PLATFORM_GLUE}),
@@ -175,12 +202,15 @@ def classify_failure(
     run_launched: bool,
     is_trigger_failure: bool = False,
     is_platform_internal_error: bool = False,
+    is_capacity_never_started: bool = False,
 ) -> str:
     """Classify a failure from signals the orchestration layer already holds.
 
     Precedence (first match wins):
 
     - ``is_trigger_failure`` (a deferral/polling crash): ``trigger/polling``.
+    - ``is_capacity_never_started`` (the platform rejected the run for lack of
+      capacity before any job code ran): ``platform/capacity``.
     - ``is_platform_internal_error`` (e.g. Databricks ``INTERNAL_ERROR``):
       ``platform/infra``.
     - the run launched (early run-id XCom present): ``downstream-job``.
@@ -188,11 +218,23 @@ def classify_failure(
     """
     if is_trigger_failure:
         return TRIGGER_POLLING
+    if is_capacity_never_started:
+        return PLATFORM_CAPACITY
     if is_platform_internal_error:
         return PLATFORM_INFRA
     if run_launched:
         return DOWNSTREAM_JOB
     return SUBMIT_CONFIG
+
+
+def is_retryable(info: FailureInfo) -> bool:
+    """True when ``info``'s run did no work, so resubmitting it is safe.
+
+    Drives the exception type the operator raises: retryable failures surface
+    as ``AirflowException`` (so the task's ``retries`` apply); anything else as
+    ``AirflowFailException``, which Airflow never retries.
+    """
+    return info.classification in RETRYABLE_CLASSIFICATIONS
 
 
 def bounded_tail(text: str | None, max_chars: int = _DEFAULT_ROOT_CAUSE_CHARS) -> str | None:

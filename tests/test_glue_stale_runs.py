@@ -134,6 +134,23 @@ class TestStopStaleGlueRuns:
         )
         client.batch_stop_job_run.assert_not_called()
 
+    def test_ignores_capacity_failed_run_from_the_previous_try(self):
+        """Retry interplay for a run Glue rejected for capacity before it ran:
+        it is FAILED, not active, so the retry try's pre-submit scan leaves it
+        alone and submits a fresh run without any stop/wait."""
+        failed = {
+            **_run("jr_capacity", state="FAILED"),
+            "ErrorMessage": "Exceeded maximum concurrent compute",
+            "ExecutionTime": 0,
+        }
+        client = _client([[failed]])
+        assert (
+            _glue.stop_stale_glue_runs(client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock())
+            == []
+        )
+        client.batch_stop_job_run.assert_not_called()
+        client.get_job_run.assert_not_called()
+
     def test_stops_and_waits_for_terminal_state(self):
         sleep = MagicMock()
         client = _client(

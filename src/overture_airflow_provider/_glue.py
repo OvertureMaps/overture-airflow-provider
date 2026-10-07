@@ -712,7 +712,13 @@ def submit_glue_job(
 
 
 def cancel_glue_run(run_id: str, extra: dict | None = None) -> None:
-    """Best-effort stop of a Glue job run left over from a killed or zombie try."""
+    """Best-effort stop of a Glue job run left over from a killed or zombie try.
+
+    Harmless for a run that is already terminal (e.g. one Glue failed for
+    capacity before it started): ``BatchStopJobRun`` reports a non-stoppable run
+    in its ``Errors`` list rather than raising, and the caller treats this as
+    best-effort either way.
+    """
     extra = extra or {}
     glue_client = boto3.client("glue", region_name=extra.get("region"))
     glue_client.batch_stop_job_run(JobName=extra.get("job_name"), JobRunIds=[run_id])
@@ -820,7 +826,11 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
     ``GlueJobCompleteTrigger`` reports the run reached a terminal state. On a
     non-success state, ``handler`` (when supplied) is used to raise a classified,
     de-noised failure naming the Glue ``ErrorMessage`` as the root cause, with the
-    run's own stdout tail attached when Glue's ``LogTail`` field is empty.
+    run's own stdout tail attached when Glue's ``LogTail`` field is empty. A run
+    that never started (Glue rejected it for capacity with ``ExecutionTime: 0``)
+    raises ``RetryableJobFailure`` so the task's own ``retries`` apply; any other
+    failure raises a plain ``AirflowException`` that the operator turns into the
+    non-retryable ``AirflowFailException``.
     """
     from overture_airflow_provider._airflow_compat import AirflowException
 
@@ -833,7 +843,8 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
     job_state = job_run["JobRunState"]
     if job_state != "SUCCEEDED":
         if handler is not None:
-            from overture_airflow_provider._failures import format_failure
+            from overture_airflow_provider._exceptions import RetryableJobFailure
+            from overture_airflow_provider._failures import format_failure, is_retryable
 
             if not job_run.get("LogTail"):
                 log_group = setup_info.get("glue_output_log_group", _GLUE_OUTPUT_LOG_GROUP)
@@ -849,7 +860,8 @@ def complete_glue_job(setup_info: dict, run_id: str, context: dict, handler=None
                 run_launched=True,
                 console_url=_glue_console_url(region, job_name, run_id),
             )
-            raise AirflowException(format_failure(failure)) from None
+            exc_cls = RetryableJobFailure if is_retryable(failure) else AirflowException
+            raise exc_cls(format_failure(failure)) from None
         msg = f"Glue job {job_name} (run {run_id}) did not succeed. Final state: {job_state}"
         print(f"ERROR: {msg}")
         raise AirflowException(msg)

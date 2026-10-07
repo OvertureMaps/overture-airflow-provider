@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.1] - 2026-10-07
+
+### Fixed
+
+- **Glue runs that never started because the account was out of capacity are now retryable.** A run submitted with `JobRunQueuingEnabled` waits in Glue's run queue for about 15 minutes; if the account's DPU ceiling never frees up, Glue fails it with `ErrorMessage: "Exceeded maximum concurrent compute"` and `ExecutionTime: 0`. The provider already held a run id at that point, so `resume_execution` classified it as launched-and-failed and raised `AirflowFailException`, which Airflow never retries, and every occurrence needed a manual task clear even with `retries=1`. `GluePlatformHandler.describe_failure` now recognises a terminal Glue run with a capacity `ErrorMessage` and `ExecutionTime` of 0 (or missing) as the new `platform/capacity` classification ("platform capacity failure: the run never started, safe to retry"), `complete_glue_job` raises it as `RetryableJobFailure` (an `AirflowException` subclass, new `_exceptions` module), and `resume_execution` propagates that type unchanged so the task's configured `retries` resubmit the run. A new Glue-scoped heuristic hint names the DPU ceiling and suggests raising `retries` or staggering submits. A run that carries the same message but has `ExecutionTime > 0` did run and still raises `AirflowFailException`; Databricks and Wherobots are unchanged. The retry try's pre-submit stale-run scan only matches active states, so the FAILED capacity run is left alone (refs OvertureMaps/tf-data-platform#5693).
+
 ## [0.17.0] - 2026-10-06
 
 ### Fixed

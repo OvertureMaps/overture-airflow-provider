@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "airflow-provider-overture"
-version = "0.17.1"
+version = "0.0.0"
 description = "Spark-agnostic Airflow task group for running jobs on AWS Glue, Databricks, or Wherobots from a single DAG entry point."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -69,6 +69,12 @@ dev = [
 [tool.uv.build-backend]
 module-name = "overture_airflow_provider"
 module-root = "src"
+
+[tool.semantic_release]
+commit_parser = "conventional"
+tag_format = "v{version}"
+allow_zero_version = true
+major_on_zero = true
 
 [tool.ruff]
 line-length = 100

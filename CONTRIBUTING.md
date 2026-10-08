@@ -22,16 +22,17 @@ node --test                      # run bundle_inspector's static JS tests (no de
 
 ## PR title format
 
+Titles follow [Conventional Commits](https://www.conventionalcommits.org/). Squash merge
+makes the title the commit message on `main`, and it drives the release version.
+
 ```
-[TYPE] Short description
-[TYPE](scope) Short description
-[BREAKING][TYPE] Short description
+type: short description
+type(scope): short description
+type!: short description
 ```
 
-Valid `TYPE` values: `BUG`, `FEATURE`, `ENHANCEMENT`, `DOCS`, `REFACTOR`,
-`TEST`, `CHORE`, `PERFORMANCE`, `SECURITY`, `INVESTIGATION`.
-
-Use `[WIP]` as a prefix on repos without draft PR support.
+Valid `type` values: `feat`, `fix`, `perf`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`.
+Add `!` for a breaking change. Open a draft PR for work in progress.
 
 ## Scope guidelines
 
@@ -52,18 +53,31 @@ This repo, workflow, and GitHub environment must be pre-configured in PyPI and T
 
 ### Releasing a new version
 
-1. Update `version` in `pyproject.toml` (`project.version`).
-2. Commit and merge to `main`.
-3. Create a GitHub Release (tag + title + notes).
-4. The `publish-pypi.yml` workflow triggers automatically and publishes to PyPI
+Releases are automated by [python-semantic-release](https://python-semantic-release.readthedocs.io/)
+in [`release.yml`](.github/workflows/release.yml). Do not edit `project.version` by hand; it is
+a placeholder, and `publish-pypi.yml` stamps the release tag's version into the build.
+
+1. Merge to `main` using a [Conventional Commits](https://www.conventionalcommits.org/) title
+   (`feat:` → minor, `fix:`/`perf:` → patch, `!` or a `BREAKING CHANGE:` footer → major;
+   `docs:`, `chore:`, `test:` etc. do not release). With squash merge, the PR title becomes the
+   commit message, so make it Conventional-Commits formatted at merge time.
+2. `release.yml` creates the `vX.Y.Z` tag and GitHub Release with generated notes (nothing is
+   committed back to `main`).
+3. Publishing the release triggers `publish-pypi.yml`, which publishes to PyPI
    in the [`pypi` GitHub environment](https://github.com/OvertureMaps/overture-airflow-provider/deployments).
+   If publishing fails, re-run that workflow run.
+
+The release is created as the `overture-releaser` GitHub App (`contents:write` only): the job
+assumes the `gha-releaser-secrets-reader` AWS role via OIDC and reads the app's PEM from Secrets
+Manager. `GITHUB_TOKEN` can't be used because its releases don't fire `release: published`.
+Release notes live on the GitHub Release; `CHANGELOG.md` is frozen at 0.17.1.
 
 ### Dry-run / Test PyPI
 
 Trigger the workflow manually via `workflow_dispatch` to publish to
 [Test PyPI](https://test.pypi.org/project/airflow-provider-overture/) instead of production.
-Useful for verifying the build and publish pipeline end-to-end. Uses `skip-existing: true`
-so version conflicts don't fail the run.
+Useful for verifying the build and publish pipeline end-to-end. Each run stamps a unique
+`0.0.0.devN` version, so every upload is new. Uses `skip-existing: true` so a re-run doesn't fail.
 
 ### Environments
 

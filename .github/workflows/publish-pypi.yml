@@ -1,6 +1,7 @@
 ---
 # Publishes the airflow-provider-overture package in two scenarios:
-#   1. Release (production): triggered when a GitHub Release is published → publishes to PyPI.
+#   1. Release (production): triggered when a GitHub Release is published (created by release.yml)
+#      → publishes to PyPI. The release tag is stamped into the build as the package version.
 #   2. Dry-run: triggered manually via workflow_dispatch → publishes to Test PyPI to verify
 #      the build and publish pipeline end-to-end without affecting the production package index.
 # Uses OIDC trusted publishing — no API token required.
@@ -33,6 +34,18 @@ jobs:
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: false
+
+      # project.version in pyproject.toml is a placeholder; the release tag is the source of truth.
+      # Dry-runs get a unique dev version so Test PyPI's skip-existing never hides a failed upload.
+      - name: Stamp version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            uv version "${TAG#v}" --frozen
+          else
+            uv version "0.0.0.dev${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}" --frozen
+          fi
 
       - name: Build package
         run: uv build

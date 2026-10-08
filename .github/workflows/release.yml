@@ -1,0 +1,84 @@
+# Cuts a GitHub Release from Conventional Commits on every push to main. python-semantic-release
+# computes the next version; if it is new, a `v<version>` release (and tag) is created with
+# generated notes. Nothing is committed back to main. Publishing the release triggers
+# publish-pypi.yml.
+#
+# The release is created with the overture-releaser GitHub App's token, not GITHUB_TOKEN:
+# GITHUB_TOKEN-created releases don't fire `release: published`. The app has contents:write only,
+# which is enough because the tag is created server-side by the Releases API (no git push, so
+# no `workflows` permission gap). See omf-github-terraform docs/github-apps.md.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false # never cancel a release mid-flight
+
+jobs:
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # the app token below carries the release-creation grant
+      id-token: write # OIDC federation to the narrow releaser-secrets-reader AWS role
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The official Docker action resolves GitPython (an unpinned transitive dependency) at
+      # image-build time, and GitPython v3.1.60 broke PSR v10.6.1's config load. Install PSR in
+      # an isolated pipx venv with GitPython pinned below the broken release instead.
+      # See: https://github.com/python-semantic-release/python-semantic-release/issues/1476
+      - name: Install python-semantic-release
+        run: |
+          pipx install "python-semantic-release==10.6.1"
+          pipx inject --force python-semantic-release "gitpython<3.1.60"
+
+      # Narrow OIDC role (omf-github-terraform's oidc-aws.tf) that can only read the releaser
+      # app's PEM secret.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-west-2
+          role-to-assume: arn:aws:iam::816069134238:role/gha-releaser-secrets-reader
+          role-session-name: GitHubActions_${{ github.job }}_${{ github.run_id }}
+
+      - name: Fetch releaser PEM from Secrets Manager
+        uses: aws-actions/aws-secretsmanager-get-secrets@2297f9a879480a9e3af9b293ed15c70caf8e1c88 # v3.0.2
+        with:
+          secret-ids: |
+            RELEASER_APP_PEM, omf-github-terraform/releaser/pem
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: Iv23lijru2e660v1zJQO # overture-releaser app ID, not sensitive
+          private-key: ${{ env.RELEASER_APP_PEM }} # zizmor: ignore[secrets-outside-env]
+          permission-contents: write
+
+      # `--print` only computes the next version (no commit, tag, or push). When there are no
+      # releasable commits it prints the current version, whose tag already exists, so a re-run
+      # is a no-op.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          version=$(semantic-release version --print)
+          tag="v${version}"
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            echo "${tag} already exists; no releasable commits."
+            exit 0
+          fi
+          gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+            --title "${tag}" --generate-notes

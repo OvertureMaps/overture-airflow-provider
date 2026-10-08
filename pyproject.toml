@@ -70,6 +70,17 @@ dev = [
 module-name = "overture_airflow_provider"
 module-root = "src"
 
+[tool.semantic_release]
+commit_parser = "conventional"
+tag_format = "v{version}"
+version_toml = ["pyproject.toml:project.version"]
+commit_message = "chore(release): {version} [skip ci]"
+allow_zero_version = true
+major_on_zero = false
+
+[tool.semantic_release.branches.main]
+match = "main"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

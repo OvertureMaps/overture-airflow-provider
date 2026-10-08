@@ -52,11 +52,22 @@ This repo, workflow, and GitHub environment must be pre-configured in PyPI and T
 
 ### Releasing a new version
 
-1. Update `version` in `pyproject.toml` (`project.version`).
-2. Commit and merge to `main`.
-3. Create a GitHub Release (tag + title + notes).
-4. The `publish-pypi.yml` workflow triggers automatically and publishes to PyPI
+Releases are automated by [python-semantic-release](https://python-semantic-release.readthedocs.io/)
+via [`release.yml`](.github/workflows/release.yml). Do not edit `project.version` by hand.
+
+1. Merge to `main` using a [Conventional Commits](https://www.conventionalcommits.org/) title
+   (`feat:` → minor, `fix:`/`perf:` → patch, `!` or a `BREAKING CHANGE:` footer → major;
+   `docs:`, `chore:`, `test:` etc. do not release). With squash merge, the PR title becomes the
+   commit message, so make it Conventional-Commits formatted at merge time.
+2. The workflow computes the next version, commits the `pyproject.toml` bump, tags `vX.Y.Z`, and
+   creates the GitHub Release with generated notes.
+3. Publishing the release triggers `publish-pypi.yml`, which publishes to PyPI
    in the [`pypi` GitHub environment](https://github.com/OvertureMaps/overture-airflow-provider/deployments).
+
+The workflow authenticates with a GitHub App (repo variable `RELEASE_APP_CLIENT_ID`, secret
+`RELEASE_APP_PRIVATE_KEY`) that can bypass the `main` branch ruleset. `GITHUB_TOKEN` cannot be
+used: it would not trigger `publish-pypi.yml`. Release notes live on the GitHub Release;
+`CHANGELOG.md` is frozen at 0.17.1.
 
 ### Dry-run / Test PyPI
 

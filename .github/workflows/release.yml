@@ -1,0 +1,46 @@
+# Cuts a release from Conventional Commits on every push to main: python-semantic-release
+# computes the next version, commits the pyproject.toml bump, tags it, and creates the GitHub
+# Release. Publishing the release triggers publish-pypi.yml.
+#
+# A GitHub App token is required instead of GITHUB_TOKEN: events created by GITHUB_TOKEN do not
+# trigger other workflows (so publish-pypi.yml would never fire), and the bump commit must be
+# pushed to main past branch protection. The app needs contents:write and must be allowed to
+# bypass the main branch ruleset.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic release
+    runs-on: ubuntu-latest
+    # Skip the release commit PSR pushes back to main.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    steps:
+      - name: Generate release token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Python Semantic Release
+        uses: python-semantic-release/python-semantic-release@b700dbeb1f431a0fcc30a79f3f0869407fe07278 # v10.7.0
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          # Release notes live on the GitHub Release; CHANGELOG.md is no longer edited.
+          changelog: false

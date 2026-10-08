@@ -204,8 +204,6 @@ Include the `Co-authored-by: Copilot` trailer in AI-generated commits:
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
-Any functional change (bug fix, feature, behavior change; not docs/tests/chore-only
-diffs) bumps `version` in `pyproject.toml` and adds a matching `CHANGELOG.md`
-entry under a new version header, in the same PR as the change. Follow semver:
-patch for fixes, minor for backwards-compatible additions, major for breaking
-changes.
+Releases are automated (python-semantic-release, see `CONTRIBUTING.md`): do not bump
+`version` in `pyproject.toml` or edit `CHANGELOG.md` (frozen at 0.17.1) in PRs. The merge
+commit title must follow Conventional Commits (`feat:`, `fix:`, `feat!:`) to produce a release.

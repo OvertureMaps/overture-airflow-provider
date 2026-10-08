@@ -53,22 +53,22 @@ This repo, workflow, and GitHub environment must be pre-configured in PyPI and T
 ### Releasing a new version
 
 Releases are automated by [python-semantic-release](https://python-semantic-release.readthedocs.io/)
-inside [`publish-pypi.yml`](.github/workflows/publish-pypi.yml). Do not edit `project.version`
-by hand; it is a placeholder, and the release version is stamped into the build from the tag.
+in [`release.yml`](.github/workflows/release.yml). Do not edit `project.version` by hand; it is
+a placeholder, and `publish-pypi.yml` stamps the release tag's version into the build.
 
 1. Merge to `main` using a [Conventional Commits](https://www.conventionalcommits.org/) title
    (`feat:` → minor, `fix:`/`perf:` → patch, `!` or a `BREAKING CHANGE:` footer → major;
    `docs:`, `chore:`, `test:` etc. do not release). With squash merge, the PR title becomes the
    commit message, so make it Conventional-Commits formatted at merge time.
-2. The workflow tags `vX.Y.Z` and creates the GitHub Release with generated notes (nothing is
+2. `release.yml` creates the `vX.Y.Z` tag and GitHub Release with generated notes (nothing is
    committed back to `main`).
-3. The same run builds and publishes to PyPI in the
-   [`pypi` GitHub environment](https://github.com/OvertureMaps/overture-airflow-provider/deployments).
-   If publishing fails after tagging, re-run the workflow and it resumes the publish.
+3. Publishing the release triggers `publish-pypi.yml`, which publishes to PyPI
+   in the [`pypi` GitHub environment](https://github.com/OvertureMaps/overture-airflow-provider/deployments).
+   If publishing fails, re-run that workflow run.
 
-The tag push authenticates as the `overture-pull-requester` GitHub App: the job assumes the
-`gha-pull-requester-secrets-reader` AWS role via OIDC, reads the app's PEM from Secrets Manager,
-and mints a token with `contents` + `workflows` write (`GITHUB_TOKEN` can never get `workflows`).
+The release is created as the `overture-releaser` GitHub App (`contents:write` only): the job
+assumes the `gha-releaser-secrets-reader` AWS role via OIDC and reads the app's PEM from Secrets
+Manager. `GITHUB_TOKEN` can't be used because its releases don't fire `release: published`.
 Release notes live on the GitHub Release; `CHANGELOG.md` is frozen at 0.17.1.
 
 ### Dry-run / Test PyPI
@@ -82,7 +82,7 @@ so version conflicts don't fail the run.
 
 | GitHub environment | Target index    | Trigger                       |
 |--------------------|-----------------|-------------------------------|
-| `pypi`             | PyPI (prod)     | Push to `main` with a release |
+| `pypi`             | PyPI (prod)     | GitHub Release published      |
 | `test-pypi`        | Test PyPI       | Manual `workflow_dispatch`    |
 
 Both environments use OIDC trusted publisher entries on their respective indexes —

@@ -22,16 +22,17 @@ node --test                      # run bundle_inspector's static JS tests (no de
 
 ## PR title format
 
+Titles follow [Conventional Commits](https://www.conventionalcommits.org/). Squash merge
+makes the title the commit message on `main`, and it drives the release version.
+
 ```
-[TYPE] Short description
-[TYPE](scope) Short description
-[BREAKING][TYPE] Short description
+type: short description
+type(scope): short description
+type!: short description
 ```
 
-Valid `TYPE` values: `BUG`, `FEATURE`, `ENHANCEMENT`, `DOCS`, `REFACTOR`,
-`TEST`, `CHORE`, `PERFORMANCE`, `SECURITY`, `INVESTIGATION`.
-
-Use `[WIP]` as a prefix on repos without draft PR support.
+Valid `type` values: `feat`, `fix`, `perf`, `docs`, `refactor`, `test`, `build`, `ci`, `chore`.
+Add `!` for a breaking change. Open a draft PR for work in progress.
 
 ## Scope guidelines
 
@@ -75,8 +76,8 @@ Release notes live on the GitHub Release; `CHANGELOG.md` is frozen at 0.17.1.
 
 Trigger the workflow manually via `workflow_dispatch` to publish to
 [Test PyPI](https://test.pypi.org/project/airflow-provider-overture/) instead of production.
-Useful for verifying the build and publish pipeline end-to-end. Uses `skip-existing: true`
-so version conflicts don't fail the run.
+Useful for verifying the build and publish pipeline end-to-end. Each run stamps a unique
+`0.0.0.devN` version, so every upload is new. Uses `skip-existing: true` so a re-run doesn't fail.
 
 ### Environments
 

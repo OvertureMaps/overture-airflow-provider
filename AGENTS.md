@@ -196,7 +196,7 @@ Details in `tests/e2e/README.md`.
 
 ## PR / commit conventions
 
-Title format: `[TYPE] Short description` (see `CONTRIBUTING.md`).
+Title format: Conventional Commits, `type: short description` (see `CONTRIBUTING.md`).
 
 Include the `Co-authored-by: Copilot` trailer in AI-generated commits:
 

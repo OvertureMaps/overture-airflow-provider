@@ -36,11 +36,16 @@ jobs:
           enable-cache: false
 
       # project.version in pyproject.toml is a placeholder; the release tag is the source of truth.
-      - name: Stamp release version
-        if: github.event_name == 'release'
+      # Dry-runs get a unique dev version so Test PyPI's skip-existing never hides a failed upload.
+      - name: Stamp version
         env:
           TAG: ${{ github.event.release.tag_name }}
-        run: uv version "${TAG#v}" --frozen
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            uv version "${TAG#v}" --frozen
+          else
+            uv version "0.0.0.dev${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}" --frozen
+          fi
 
       - name: Build package
         run: uv build

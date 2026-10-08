@@ -205,5 +205,6 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
 Releases are automated (python-semantic-release, see `CONTRIBUTING.md`): do not bump
-`version` in `pyproject.toml` or edit `CHANGELOG.md` (frozen at 0.17.1) in PRs. The merge
+`version` in `pyproject.toml` (a placeholder; the release stamps it from the tag) or edit
+`CHANGELOG.md` (frozen at 0.17.1) in PRs. The merge
 commit title must follow Conventional Commits (`feat:`, `fix:`, `feat!:`) to produce a release.

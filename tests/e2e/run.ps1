@@ -9,7 +9,7 @@
   .\run.ps1               # build + run the e2e suite (default)
   .\run.ps1 all           # run the FULL unit suite under real Airflow
   .\run.ps1 standalone    # bring up Airflow UI at http://localhost:8080
-  $env:AIRFLOW_VERSION="3.0.3"; .\run.ps1
+  $env:AIRFLOW_VERSION="3.1.0"; .\run.ps1
 #>
 [CmdletBinding()]
 param(

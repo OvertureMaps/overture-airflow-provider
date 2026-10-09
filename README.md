@@ -10,7 +10,7 @@ Write your DAG once and target any supported engine by switching one argument. C
 
 The provider is intentionally unopinionated: every environment-specific value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed in via typed config dataclasses. No org-specific defaults are baked in.
 
-> Beta. Tested against real Airflow 3.0 and 3.3 via Docker e2e.
+> Beta. Tested against real Airflow 3.1 and 3.3 via Docker e2e.
 
 ## Contents
 
@@ -44,7 +44,7 @@ pip install "airflow-provider-overture[wherobots]"
 pip install "airflow-provider-overture[all]"
 ```
 
-Requires Python `>=3.11` and Apache Airflow `>=3.0`.
+Requires Python `>=3.11` and Apache Airflow `>=3.1`.
 
 ## Quick start
 
@@ -270,7 +270,7 @@ GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shap
 |                | Minimum | Also tested |
 | -------------- | ------- | ----------- |
 | Python         | 3.11    | 3.12, 3.13  |
-| Apache Airflow | 3.0     | 3.3         |
+| Apache Airflow | 3.1     | 3.3         |
 
 #### Spark platform matrix
 

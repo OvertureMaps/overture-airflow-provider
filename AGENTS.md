@@ -167,7 +167,7 @@ a **real** Airflow and its example DAGs parse cleanly (credential-free).
 ```bash
 cd tests/e2e
 docker compose run --rm --build e2e                 # default: Airflow 3.3.1
-AIRFLOW_VERSION=3.1.0 docker compose run --rm --build e2e
+AIRFLOW_VERSION=3.3.1 docker compose run --rm --build e2e
 ./run.sh all   # bonus: run the whole tests/ suite under real Airflow
 ```
 

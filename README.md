@@ -270,7 +270,7 @@ GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shap
 |                | Minimum | Also tested |
 | -------------- | ------- | ----------- |
 | Python         | 3.11    | 3.12, 3.13  |
-| Apache Airflow | 3.3     | 3.3         |
+| Apache Airflow | 3.3     |             |
 
 #### Spark platform matrix
 

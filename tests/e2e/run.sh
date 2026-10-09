@@ -6,7 +6,7 @@
 #   ./run.sh                 # build + run the e2e suite (default)
 #   ./run.sh all             # run the FULL unit suite under real Airflow
 #   ./run.sh standalone      # bring up Airflow UI at http://localhost:8080
-#   AIRFLOW_VERSION=3.1.0 PYTHON_VERSION=3.12 ./run.sh
+#   AIRFLOW_VERSION=3.3.1 PYTHON_VERSION=3.12 ./run.sh
 #
 # This is just sugar over `docker compose`; CI calls `docker compose run` directly.
 # ─────────────────────────────────────────────────────────────────────────────

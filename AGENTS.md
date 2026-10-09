@@ -172,7 +172,7 @@ AIRFLOW_VERSION=3.1.0 docker compose run --rm --build e2e
 ```
 
 `tests/e2e` is excluded from the default `pytest` run unless `RUN_E2E=1` (set by
-the container). CI: `.github/workflows/test.yml` (matrix: Airflow 3.1 + 3.3).
+the container). CI: `.github/workflows/test.yml` (matrix: Airflow 3.3).
 Details in `tests/e2e/README.md`.
 
 ---

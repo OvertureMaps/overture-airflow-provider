@@ -166,13 +166,13 @@ a **real** Airflow and its example DAGs parse cleanly (credential-free).
 
 ```bash
 cd tests/e2e
-docker compose run --rm --build e2e                 # default: Airflow 2.11
-AIRFLOW_VERSION=3.0.3 docker compose run --rm --build e2e
+docker compose run --rm --build e2e                 # default: Airflow 3.3.1
+AIRFLOW_VERSION=3.3.1 docker compose run --rm --build e2e
 ./run.sh all   # bonus: run the whole tests/ suite under real Airflow
 ```
 
 `tests/e2e` is excluded from the default `pytest` run unless `RUN_E2E=1` (set by
-the container). CI: `.github/workflows/e2e.yml` (matrix: Airflow 2.11 + 3.0).
+the container). CI: `.github/workflows/test.yml` (matrix: Airflow 3.3).
 Details in `tests/e2e/README.md`.
 
 ---

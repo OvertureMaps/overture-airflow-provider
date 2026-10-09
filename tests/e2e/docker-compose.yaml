@@ -21,7 +21,7 @@ x-build: &build
   context: ../..
   dockerfile: tests/e2e/Dockerfile
   args:
-    AIRFLOW_VERSION: ${AIRFLOW_VERSION:-2.11.0}
+    AIRFLOW_VERSION: ${AIRFLOW_VERSION:-3.3.1}
     PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
 
 x-airflow-env: &airflow-env

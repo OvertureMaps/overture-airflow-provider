@@ -5,19 +5,13 @@ The ``execute_spark_job`` task pushes a JSON blob to XCom under the key
 ``job_url`` field so Airflow can render a clickable link on the task-instance
 detail page.
 
-Airflow 3.x flow
-----------------
+Flow
+----
 After the task completes, the task runner calls ``get_link`` and pushes the
 returned URL to the ``_link_SparkJobLink`` XCom key.  The web server reads
-that key directly — it never calls ``get_link`` itself.
-
-``XCom`` is imported via ``_airflow_compat`` so the correct implementation is
-used in each Airflow generation:
-
-- **Airflow 3.x**: ``airflow.sdk.execution_time.xcom.XCom`` (SUPERVISOR_COMMS
-  backed, available in the task-runner context where ``get_link`` is called).
-- **Airflow 2.x**: ``airflow.models.xcom.XCom`` (SQLAlchemy backed, available
-  in the web-server context where ``get_link`` is called in Airflow 2.x).
+that key directly — it never calls ``get_link`` itself.  ``XCom`` is the
+SUPERVISOR_COMMS-backed ``airflow.sdk.execution_time.xcom.XCom``, available in
+the task-runner context where ``get_link`` is called.
 
 Supported platforms and their link targets:
 - **Glue** — AWS Glue job-run console URL
@@ -82,21 +76,9 @@ class SparkJobLink(BaseOperatorLink):
         self,
         operator,
         *,
-        ti_key=None,
-        dttm=None,
+        ti_key,
     ) -> str:
-        # ti_key-based lookup — Airflow 2.3+ and all of Airflow 3.x.
-        if ti_key is not None:
-            raw = XCom.get_value(key=SPARK_AGNOSTIC_XCOM_KEY, ti_key=ti_key)
-        else:
-            # Fallback for Airflow < 2.3 (no dynamic task mapping).
-            assert dttm is not None
-            raw = XCom.get_one(
-                key=SPARK_AGNOSTIC_XCOM_KEY,
-                dag_id=operator.dag_id,
-                task_id=operator.task_id,
-                execution_date=dttm,
-            )
+        raw = XCom.get_value(key=SPARK_AGNOSTIC_XCOM_KEY, ti_key=ti_key)
 
         if not raw:
             return ""
@@ -109,17 +91,9 @@ class SparkJobLink(BaseOperatorLink):
             return ""
 
 
-def _read_xcom(key, operator, ti_key, dttm):
-    """Fetch a task XCom value across Airflow 2.3+ and 3.x lookup styles."""
-    if ti_key is not None:
-        return XCom.get_value(key=key, ti_key=ti_key)
-    assert dttm is not None
-    return XCom.get_one(
-        key=key,
-        dag_id=operator.dag_id,
-        task_id=operator.task_id,
-        execution_date=dttm,
-    )
+def _read_xcom(key, ti_key):
+    """Fetch a task XCom value by key for the given task-instance key."""
+    return XCom.get_value(key=key, ti_key=ti_key)
 
 
 class ReportIssueLink(BaseOperatorLink):
@@ -139,10 +113,9 @@ class ReportIssueLink(BaseOperatorLink):
         self,
         operator,
         *,
-        ti_key=None,
-        dttm=None,
+        ti_key,
     ) -> str:
-        cfg = parse_report_issue_xcom(_read_xcom(REPORT_ISSUE_XCOM_KEY, operator, ti_key, dttm))
+        cfg = parse_report_issue_xcom(_read_xcom(REPORT_ISSUE_XCOM_KEY, ti_key))
         target = (cfg.get("target") or "").strip()
         if not target:
             return ""
@@ -151,7 +124,7 @@ class ReportIssueLink(BaseOperatorLink):
             log.debug("ReportIssueLink: unknown provider %r", cfg.get("provider"))
             return ""
 
-        platform, job_url = self._spark_context(operator, ti_key, dttm)
+        platform, job_url = self._spark_context(ti_key)
         ctx = IssueContext(
             dag_id=getattr(operator, "dag_id", "") or "",
             task_id=getattr(operator, "task_id", "") or "",
@@ -168,10 +141,10 @@ class ReportIssueLink(BaseOperatorLink):
             return ""
 
     @staticmethod
-    def _spark_context(operator, ti_key, dttm) -> tuple[str, str]:
+    def _spark_context(ti_key) -> tuple[str, str]:
         """Best-effort platform + job-console URL from the spark_agnostic XCom."""
         try:
-            raw = _read_xcom(SPARK_AGNOSTIC_XCOM_KEY, operator, ti_key, dttm)
+            raw = _read_xcom(SPARK_AGNOSTIC_XCOM_KEY, ti_key)
             data = raw if isinstance(raw, dict) else (json.loads(raw) if raw else {})
         except (json.JSONDecodeError, AttributeError, TypeError):
             return "", ""

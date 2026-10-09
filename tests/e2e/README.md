@@ -19,7 +19,7 @@ docker compose run --rm --build e2e
 .\run.ps1                # Windows PowerShell
 ```
 
-Pick the Airflow/Python version with build args (defaults: 2.11.0 / 3.12):
+Pick the Airflow/Python version with build args (defaults: 3.3.1 / 3.12):
 
 ```bash
 AIRFLOW_VERSION=3.0.3 PYTHON_VERSION=3.12 docker compose run --rm --build e2e

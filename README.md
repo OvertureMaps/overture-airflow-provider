@@ -10,7 +10,7 @@ Write your DAG once and target any supported engine by switching one argument. C
 
 The provider is intentionally unopinionated: every environment-specific value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed in via typed config dataclasses. No org-specific defaults are baked in.
 
-> Beta. Tested against real Airflow 2.11 and 3.0 via Docker e2e.
+> Beta. Tested against real Airflow 3.0 and 3.3 via Docker e2e.
 
 ## Contents
 
@@ -44,7 +44,7 @@ pip install "airflow-provider-overture[wherobots]"
 pip install "airflow-provider-overture[all]"
 ```
 
-Requires Python `>=3.11` and Apache Airflow `>=2.11`.
+Requires Python `>=3.11` and Apache Airflow `>=3.0`.
 
 ## Quick start
 
@@ -246,7 +246,7 @@ Pass `pre_resolved_package_info=` or `pre_resolved_jar_info=` with real S3 URIs 
 
 ## Bundle Inspector plugin
 
-Installing this package registers `bundle_inspector`, an Airflow plugin (not related to `spark_agnostic_task_group`) for browsing Overture bundles in S3 by pipeline stage, theme, schema version, and run ID. It works on both Airflow 2 (Flask blueprints) and Airflow 3 (FastAPI apps); the right one loads automatically. No plugins-folder drop-in needed, no separate install step: it ships in this package and shows up under **Browse -> Bundle Inspector** once the provider is installed.
+Installing this package registers `bundle_inspector`, an Airflow plugin (not related to `spark_agnostic_task_group`) for browsing Overture bundles in S3 by pipeline stage, theme, schema version, and run ID. It is served as an Airflow 3 FastAPI app. No plugins-folder drop-in needed, no separate install step: it ships in this package and shows up under **Browse -> Bundle Inspector** once the provider is installed.
 
 Configure it via the `[bundle_inspector]` section in `airflow.cfg`:
 
@@ -270,7 +270,7 @@ GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shap
 |                | Minimum | Also tested |
 | -------------- | ------- | ----------- |
 | Python         | 3.11    | 3.12, 3.13  |
-| Apache Airflow | 2.11    | 3.x         |
+| Apache Airflow | 3.0     | 3.3         |
 
 #### Spark platform matrix
 
@@ -309,7 +309,7 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Supports Airflow 2.11.x and 3.x via a compat shim ([`_airflow_compat.py`](src/overture_airflow_provider/_airflow_compat.py)) that re-exports `DAG`, `task`, `task_group`, and `BaseHook` from whichever location exists on the installed Airflow. When dropping 2.x support, simplify the shim to the `airflow.sdk` imports.
+Requires Airflow 3.x. [`_airflow_compat.py`](src/overture_airflow_provider/_airflow_compat.py) is the single import point for the `airflow.sdk` symbols the provider uses.
 
 > Windows: Apache Airflow does not officially support Windows (a warning is emitted at import time). Tests, lint, and the render module all work, but production deployments should run on Linux or macOS.
 

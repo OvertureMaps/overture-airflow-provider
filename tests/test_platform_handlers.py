@@ -2194,16 +2194,6 @@ class TestSparkJobLink:
 
         assert url == "https://example.com/runs/123"
 
-    def test_returns_url_from_xcom_via_dttm_fallback(self):
-        link = self._make_link()
-        operator = self._make_operator()
-        payload = json.dumps({"job_url": "https://example.com/runs/456"})
-
-        with patch("overture_airflow_provider.links.XCom.get_one", return_value=payload):
-            url = link.get_link(operator, dttm=MagicMock())
-
-        assert url == "https://example.com/runs/456"
-
     def test_returns_url_from_dict_xcom(self):
         """Airflow 3.x may deserialize the XCom value to a dict directly."""
         link = self._make_link()

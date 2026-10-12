@@ -43,10 +43,10 @@ class _TaskInstanceProxy:
     """Read-through view of a task instance with ``xcom_push`` swapped out.
 
     ``execute_wherobots_job`` needs to see the run id the moment
-    ``WherobotsRunOperator`` pushes it. Assigning ``ti.xcom_push = ...`` worked
-    on Airflow 2 but Airflow 3's ``RuntimeTaskInstance`` is a pydantic model
-    that rejects non-field attributes, so the override lives on this proxy
-    instead and the real task instance is never mutated.
+    ``WherobotsRunOperator`` pushes it. Airflow 3's ``RuntimeTaskInstance`` is a
+    pydantic model that rejects non-field attributes (so ``ti.xcom_push = ...``
+    fails); the override lives on this proxy instead and the real task instance
+    is never mutated.
     """
 
     def __init__(self, ti, xcom_push):

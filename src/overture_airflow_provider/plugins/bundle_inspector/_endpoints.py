@@ -1,11 +1,8 @@
 """Framework-agnostic request handling for the bundle inspector API.
 
 These functions contain the actual routing logic (config resolution, param
-parsing, calls into :mod:`s3`) with no Flask or FastAPI imports. Airflow 2
-loads Flask blueprints; Airflow 3 loads FastAPI apps; each framework adapter
-(``flask_app.py`` / ``fastapi_app.py``) is a thin wrapper over this module so
-neither web framework becomes a hard import for the Airflow major version
-that doesn't ship it.
+parsing, calls into :mod:`s3`) with no FastAPI imports. ``fastapi_app.py`` is
+a thin wrapper over this module.
 """
 
 import os

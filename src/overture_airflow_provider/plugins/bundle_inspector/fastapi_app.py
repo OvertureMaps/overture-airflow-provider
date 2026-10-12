@@ -3,14 +3,12 @@
 Only imported when FastAPI and Airflow's FastAPI auth dependency are
 available (Airflow 3's API server). Route handlers are thin wrappers over
 :mod:`_endpoints`; the actual S3/Airflow-Variable logic lives there so it
-has no FastAPI dependency and stays shared with the Airflow 2 (Flask)
-adapter in ``flask_app.py``.
+has no FastAPI dependency.
 
 Endpoints require an authenticated Airflow user (any user who can reach the
 API server's session, via ``airflow.api_fastapi.core_api.security.GetUserDep``)
 rather than a per-DAG authorization check: bundle browsing isn't scoped to a
-single DAG, so there is no ``dag_id`` to authorize against the way Airflow 2's
-``has_access_dag`` did.
+single DAG, so there is no ``dag_id`` to authorize against.
 """
 
 import pathlib
@@ -57,7 +55,7 @@ def build_ui_app() -> FastAPI:
 
 
 def build_api_app() -> FastAPI:
-    """Expose the same JSON/streaming endpoints as the Airflow 2 Flask blueprint."""
+    """Expose the bundle inspector JSON/streaming endpoints."""
     app = FastAPI(openapi_url=None)
 
     @app.get("/config")

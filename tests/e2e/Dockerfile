@@ -7,13 +7,13 @@
 # Airflow release, so pip never silently upgrades/downgrades Airflow itself.
 #
 # Build matrix is driven by AIRFLOW_VERSION / PYTHON_VERSION build args so CI
-# can exercise the same image across the Airflow 2.x and 3.x compat branches.
+# can exercise the same image across supported Airflow 3.x releases.
 #
 # Platform SDKs (databricks-sdk, wherobots) are intentionally NOT installed:
 # the lazy-import architecture means the all-platforms example DAG must parse
 # with only core installed. Leaving them out makes that a hard, enforced gate.
 # ─────────────────────────────────────────────────────────────────────────────
-ARG AIRFLOW_VERSION=2.11.0
+ARG AIRFLOW_VERSION=3.3.1
 ARG PYTHON_VERSION=3.12
 
 FROM apache/airflow:${AIRFLOW_VERSION}-python${PYTHON_VERSION}

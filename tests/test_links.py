@@ -5,13 +5,12 @@ from unittest.mock import MagicMock, patch
 from overture_airflow_provider.links import ReportIssueLink, _read_xcom
 
 
-def test_read_xcom_uses_dttm_when_no_ti_key():
+def test_read_xcom_uses_ti_key():
+    ti_key = MagicMock()
     with patch("overture_airflow_provider.links.XCom") as MockXCom:
-        MockXCom.get_one.return_value = "val"
-        result = _read_xcom("k", MagicMock(dag_id="d", task_id="t"), None, "2024-01-01")
-    MockXCom.get_one.assert_called_once_with(
-        key="k", dag_id="d", task_id="t", execution_date="2024-01-01"
-    )
+        MockXCom.get_value.return_value = "val"
+        result = _read_xcom("k", ti_key)
+    MockXCom.get_value.assert_called_once_with(key="k", ti_key=ti_key)
     assert result == "val"
 
 
@@ -34,7 +33,7 @@ def test_report_issue_link_tracker_build_url_raises_returns_empty():
 def test_spark_context_bad_json_returns_empty():
     link = ReportIssueLink()
     with patch("overture_airflow_provider.links._read_xcom", return_value="{bad json"):
-        platform, url = link._spark_context(MagicMock(), MagicMock(), None)
+        platform, url = link._spark_context(MagicMock())
     assert platform == "" and url == ""
 
 
@@ -42,5 +41,5 @@ def test_spark_context_non_dict_returns_empty():
     link = ReportIssueLink()
     # valid JSON but not a dict — triggers the isinstance guard
     with patch("overture_airflow_provider.links._read_xcom", return_value='"just-a-string"'):
-        platform, url = link._spark_context(MagicMock(), MagicMock(), None)
+        platform, url = link._spark_context(MagicMock())
     assert platform == "" and url == ""

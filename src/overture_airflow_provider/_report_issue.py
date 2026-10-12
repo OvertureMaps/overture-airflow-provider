@@ -136,8 +136,8 @@ def get_tracker(name: str) -> IssueTracker | None:
 def parse_report_issue_xcom(raw) -> dict:
     """Coerce a raw XCom value into a config dict, tolerating bad input.
 
-    Airflow 2.x hands back the JSON string the operator pushed; Airflow 3.x may
-    deserialize it to a dict directly. Anything unparseable yields ``{}`` so the
+    Airflow may hand back the JSON string the operator pushed or deserialize it
+    to a dict directly. Anything unparseable yields ``{}`` so the
     link renders nothing rather than erroring in the web server.
     """
     if not raw:

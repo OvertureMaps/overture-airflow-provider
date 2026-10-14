@@ -291,8 +291,12 @@ class GlueConfig:
     Args:
         iam_role_name: IAM role name attached to the Glue job.
             Defaults to ``"AWSGlueServiceRole"``.
-        execution_class: Glue execution class. ``"STANDARD"`` (default) uses
-            standard workers; ``"FLEX"`` uses spot-backed workers at lower cost.
+        execution_class: Glue execution class. ``"FLEX"`` (default) runs
+            G.1X/G.2X workers on spare capacity at lower cost, but AWS can
+            reclaim executors mid-run; G.4X/G.8X don't support Flex and run
+            STANDARD. ``"STANDARD"`` runs on dedicated capacity at any worker
+            type; use it for long or shuffle-heavy jobs that can't tolerate
+            executor loss.
         verbose: When ``True`` (default) the underlying ``GlueJobOperator``
             streams the job's CloudWatch driver/executor logs into the Airflow
             task log. Set ``False`` to silence that stream (e.g. for very chatty
@@ -305,7 +309,7 @@ class GlueConfig:
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
-    execution_class: str = "STANDARD"
+    execution_class: str = "FLEX"
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
 

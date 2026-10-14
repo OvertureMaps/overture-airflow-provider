@@ -617,10 +617,11 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["Timeout"] == 60 * 8
 
-    def test_timeout_honors_override(self):
+    @staticmethod
+    def _build_glue_kwargs(max_timeout_hours):
         from overture_airflow_provider._glue import build_glue_operator_kwargs
 
-        built = build_glue_operator_kwargs(
+        return build_glue_operator_kwargs(
             setup_info=_glue_setup_info(),
             package_info={
                 "py_files": "s3://bucket/pkg.whl",
@@ -642,9 +643,23 @@ class TestGlueExecuteJob:
             spark_cluster_desired_workers="",
             iam_role_name="AWSGlueServiceRole",
             task_id="execute_spark_job",
-            max_timeout_hours="2",
+            max_timeout_hours=max_timeout_hours,
         )
+
+    def test_timeout_honors_override(self):
+        built = self._build_glue_kwargs("2")
         assert built["create_job_kwargs"]["Timeout"] == 60 * 2
+
+    def test_waiter_outlasts_glue_timeout(self):
+        _, captured = self._run_glue()
+        kwargs = captured["call_kwargs"]
+        assert kwargs["waiter_delay"] * kwargs["waiter_max_attempts"] > 8 * 3600
+
+    def test_waiter_scales_with_timeout_override(self):
+        short = self._build_glue_kwargs("2")["operator_kwargs"]
+        long = self._build_glue_kwargs("12")["operator_kwargs"]
+        assert short["waiter_delay"] * short["waiter_max_attempts"] > 2 * 3600
+        assert long["waiter_max_attempts"] > short["waiter_max_attempts"]
 
     def test_operator_kwargs_include_deferrable_true(self):
         _, captured = self._run_glue()

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import shutil
 import time
 from collections.abc import Callable
@@ -34,10 +35,12 @@ _BATCH_STOP_MAX_RUN_IDS = 25
 #: live writer. ``WAITING`` is a queued run (``JobRunQueuingEnabled``);
 #: ``STOPPING`` is already on its way out but must still be waited on.
 _ACTIVE_GLUE_RUN_STATES = frozenset({"STARTING", "RUNNING", "STOPPING", "WAITING"})
-#: Slack added to the job's own ``Timeout`` to bound how far back the
-#: pre-submit scan walks a job's run history; covers queued waits and a
-#: timeout that was lowered between tries. See ``_stale_run_lookback``.
+#: Slack added to the job's own ``Timeout`` to bound how long a run can stay
+#: non-terminal; covers queued waits and a timeout that was lowered between
+#: tries. See ``_stale_run_lookback``.
 _STALE_RUN_LOOKBACK_SLACK = timedelta(hours=16)
+#: Seconds between the deferred trigger's ``GetJobRun`` polls.
+_GLUE_WAITER_DELAY_SECONDS = 60
 #: Hard cap on ``get_job_runs`` pages (200 runs each) per scan.
 _STALE_RUN_MAX_PAGES = 10
 #: Bounds on how long ``stop_stale_glue_runs`` waits for a stopped run to
@@ -384,6 +387,8 @@ def build_glue_operator_kwargs(
         "run_job_kwargs": {"JobRunQueuingEnabled": True},
         "verbose": verbose,
         "deferrable": True,
+        "waiter_delay": _GLUE_WAITER_DELAY_SECONDS,
+        "waiter_max_attempts": _glue_waiter_max_attempts(max_timeout_hours),
     }
 
     return {
@@ -418,6 +423,15 @@ def _stale_run_lookback(max_timeout_hours: int | str) -> timedelta:
     that plus ``_STALE_RUN_LOOKBACK_SLACK`` ago is necessarily terminal.
     """
     return timedelta(hours=int(max_timeout_hours)) + _STALE_RUN_LOOKBACK_SLACK
+
+
+def _glue_waiter_max_attempts(max_timeout_hours: int | str) -> int:
+    """Poll budget for the deferred trigger, sized to outlast any live run.
+
+    The upstream default of 75 polls fails tasks whose runs pass 75 minutes.
+    """
+    lookback_seconds = _stale_run_lookback(max_timeout_hours).total_seconds()
+    return math.ceil(lookback_seconds / _GLUE_WAITER_DELAY_SECONDS)
 
 
 def find_active_glue_runs(

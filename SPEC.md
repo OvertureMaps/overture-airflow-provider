@@ -101,9 +101,9 @@ setup_spark_job ──┬─► download_python_packages ─┐
   (`GlueJobCompleteTrigger`, `DatabricksExecutionTrigger`) so the Triggerer —
   not a Celery worker — polls until completion. It resumes in
   `execute_complete`. Wherobots has no upstream trigger and runs synchronously.
-  The Glue trigger polls once a minute for the same window the stale-run scan
-  uses (`max_queue_wait_hours` + `max_timeout_hours`), so it outlasts any run
-  Glue still considers live.
+  The Glue trigger polls every `GlueConfig.waiter_delay_seconds` (default 60)
+  for the same window the stale-run scan uses (`max_queue_wait_hours` +
+  `max_timeout_hours`), so it outlasts any run Glue still considers live.
 
 ## XCom contract
 

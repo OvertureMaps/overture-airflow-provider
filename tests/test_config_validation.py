@@ -119,3 +119,11 @@ class TestGlueConfig:
     def test_negative_max_queue_wait_hours_raises(self):
         with pytest.raises(ValueError, match="max_queue_wait_hours"):
             GlueConfig(max_queue_wait_hours=-1)
+
+    def test_waiter_delay_seconds_defaults_to_sixty(self):
+        assert GlueConfig().waiter_delay_seconds == 60
+
+    @pytest.mark.parametrize("delay", [0, -5])
+    def test_non_positive_waiter_delay_seconds_raises(self, delay):
+        with pytest.raises(ValueError, match="waiter_delay_seconds"):
+            GlueConfig(waiter_delay_seconds=delay)

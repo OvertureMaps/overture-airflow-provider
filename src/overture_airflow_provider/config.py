@@ -310,6 +310,11 @@ class GlueConfig:
             lowered between tries of one task instance; a run still live from
             an earlier, longer-timeout try can then escape the stale-run scan
             and race the retry.
+        waiter_delay_seconds: Seconds between the deferred trigger's
+            ``GetJobRun`` polls. Defaults to ``60``. A run's completion reaches
+            Airflow up to this long after Glue reports it, so lower values
+            shorten chains of short jobs at the cost of more Glue API calls.
+            The poll budget scales with it to cover the same window.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
@@ -317,11 +322,16 @@ class GlueConfig:
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
     max_queue_wait_hours: int = 16
+    waiter_delay_seconds: int = 60
 
     def __post_init__(self) -> None:
         if self.max_queue_wait_hours < 0:
             raise ValueError(
                 f"GlueConfig.max_queue_wait_hours must be >= 0, got {self.max_queue_wait_hours}"
+            )
+        if self.waiter_delay_seconds <= 0:
+            raise ValueError(
+                f"GlueConfig.waiter_delay_seconds must be > 0, got {self.waiter_delay_seconds}"
             )
 
 

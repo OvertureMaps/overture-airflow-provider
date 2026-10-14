@@ -36,8 +36,6 @@ _BATCH_STOP_MAX_RUN_IDS = 25
 #: live writer. ``WAITING`` is a queued run (``JobRunQueuingEnabled``);
 #: ``STOPPING`` is already on its way out but must still be waited on.
 _ACTIVE_GLUE_RUN_STATES = frozenset({"STARTING", "RUNNING", "STOPPING", "WAITING"})
-#: Seconds between the deferred trigger's ``GetJobRun`` polls.
-_GLUE_WAITER_DELAY_SECONDS = 60
 #: Hard cap on ``get_job_runs`` pages (200 runs each) per scan.
 _STALE_RUN_MAX_PAGES = 10
 #: Bounds on how long ``stop_stale_glue_runs`` waits for a stopped run to
@@ -384,9 +382,11 @@ def build_glue_operator_kwargs(
         "run_job_kwargs": {"JobRunQueuingEnabled": True},
         "verbose": verbose,
         "deferrable": True,
-        "waiter_delay": _GLUE_WAITER_DELAY_SECONDS,
+        "waiter_delay": _glue_config_value(setup_info, "waiter_delay_seconds"),
         "waiter_max_attempts": _glue_waiter_max_attempts(
-            max_timeout_hours, _max_queue_wait_hours(setup_info)
+            max_timeout_hours,
+            _glue_config_value(setup_info, "max_queue_wait_hours"),
+            _glue_config_value(setup_info, "waiter_delay_seconds"),
         ),
     }
 
@@ -414,10 +414,10 @@ def _run_started_on(run: dict) -> datetime | None:
     return started if started.tzinfo else started.replace(tzinfo=UTC)
 
 
-def _max_queue_wait_hours(setup_info: dict) -> int:
-    """``GlueConfig.max_queue_wait_hours`` from ``setup_info``, defaulted for XCom
-    payloads written before the key existed."""
-    return int(setup_info.get("glue_max_queue_wait_hours", GlueConfig.max_queue_wait_hours))
+def _glue_config_value(setup_info: dict, field_name: str) -> int:
+    """A ``GlueConfig`` int field from ``setup_info``, defaulted for XCom payloads
+    written before its ``glue_<field_name>`` key existed."""
+    return int(setup_info.get(f"glue_{field_name}", getattr(GlueConfig, field_name)))
 
 
 def _stale_run_lookback(max_timeout_hours: int | str, max_queue_wait_hours: int) -> timedelta:
@@ -428,13 +428,15 @@ def _stale_run_lookback(max_timeout_hours: int | str, max_queue_wait_hours: int)
     return timedelta(hours=int(max_timeout_hours) + max_queue_wait_hours)
 
 
-def _glue_waiter_max_attempts(max_timeout_hours: int | str, max_queue_wait_hours: int) -> int:
+def _glue_waiter_max_attempts(
+    max_timeout_hours: int | str, max_queue_wait_hours: int, waiter_delay_seconds: int
+) -> int:
     """Poll budget for the deferred trigger, sized to outlast any live run.
 
     The upstream default of 75 polls fails tasks whose runs pass 75 minutes.
     """
     lookback = _stale_run_lookback(max_timeout_hours, max_queue_wait_hours)
-    return math.ceil(lookback.total_seconds() / _GLUE_WAITER_DELAY_SECONDS)
+    return math.ceil(lookback.total_seconds() / waiter_delay_seconds)
 
 
 def find_active_glue_runs(
@@ -688,7 +690,7 @@ def submit_glue_job(
                 setup_info["job_name"],
                 ti_key,
                 max_timeout_hours=max_timeout_hours,
-                max_queue_wait_hours=_max_queue_wait_hours(setup_info),
+                max_queue_wait_hours=_glue_config_value(setup_info, "max_queue_wait_hours"),
             )
 
     # deferrable=True -> execute() submits the run, then raises TaskDeferred with

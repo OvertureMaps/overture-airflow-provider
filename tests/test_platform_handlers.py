@@ -666,6 +666,12 @@ class TestGlueExecuteJob:
         built = self._build_glue_kwargs("2", {"glue_max_queue_wait_hours": 1})
         assert built["operator_kwargs"]["waiter_max_attempts"] == (2 + 1) * 60
 
+    def test_waiter_honors_configured_delay(self):
+        built = self._build_glue_kwargs("8", {"glue_waiter_delay_seconds": 30})
+        kwargs = built["operator_kwargs"]
+        assert kwargs["waiter_delay"] == 30
+        assert kwargs["waiter_max_attempts"] == (8 + 16) * 120
+
     def test_waiter_with_zero_queue_wait_covers_only_timeout(self):
         built = self._build_glue_kwargs("8", {"glue_max_queue_wait_hours": 0})
         assert built["operator_kwargs"]["waiter_max_attempts"] == 8 * 60

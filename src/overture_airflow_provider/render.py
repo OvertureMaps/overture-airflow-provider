@@ -218,6 +218,7 @@ def _build_render_setup_info(
         "glue_verbose": glue_config.verbose,
         "glue_output_log_group": glue_config.output_log_group,
         "glue_max_queue_wait_hours": glue_config.max_queue_wait_hours,
+        "glue_waiter_delay_seconds": glue_config.waiter_delay_seconds,
         "iam_role_name": glue_config.iam_role_name,
         "codeartifact_domain_owner": package_registry.domain_owner,
         "codeartifact_domain": package_registry.domain,

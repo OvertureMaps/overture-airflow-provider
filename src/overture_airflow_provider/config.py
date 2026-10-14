@@ -302,12 +302,27 @@ class GlueConfig:
             stdout, keyed by run id. Defaults to Glue's own
             ``/aws-glue/jobs/output``; override only if your jobs are
             configured to write continuous logging output elsewhere.
+        max_queue_wait_hours: Hours a run may sit queued (``WAITING``) before
+            its ``max_timeout_hours`` clock starts. Added to the job timeout to
+            bound both how long Airflow waits on a run and how far back a
+            retry scans for stale runs to stop. Defaults to ``16``. ``0``
+            assumes runs never queue and that ``max_timeout_hours`` is never
+            lowered between tries of one task instance; a run still live from
+            an earlier, longer-timeout try can then escape the stale-run scan
+            and race the retry.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
     execution_class: str = "STANDARD"
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
+    max_queue_wait_hours: int = 16
+
+    def __post_init__(self) -> None:
+        if self.max_queue_wait_hours < 0:
+            raise ValueError(
+                f"GlueConfig.max_queue_wait_hours must be >= 0, got {self.max_queue_wait_hours}"
+            )
 
 
 @dataclass

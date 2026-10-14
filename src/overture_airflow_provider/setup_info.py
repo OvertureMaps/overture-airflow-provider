@@ -66,6 +66,7 @@ SERIALIZABLE_KEYS = (
     "glue_execution_class",
     "glue_verbose",
     "glue_output_log_group",
+    "glue_max_queue_wait_hours",
     "iam_role_name",
     "codeartifact_domain_owner",
     "codeartifact_domain",

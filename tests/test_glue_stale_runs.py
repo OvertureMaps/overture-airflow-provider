@@ -20,7 +20,7 @@ KEY = "dag__grp.execute_spark_job__manual__2026-01-01__-1"
 # Relative to the real clock: stop_stale_glue_runs scans with the real "now",
 # so fixture runs must look recent to fall inside the lookback window.
 NOW = datetime.now(UTC)
-LOOKBACK = _glue._stale_run_lookback(8)
+LOOKBACK = _glue._stale_run_lookback(8, 16)
 
 
 def _run(run_id, state="RUNNING", key=KEY, age=timedelta(minutes=5)):
@@ -57,9 +57,12 @@ def _client(pages, states=None):
 
 
 class TestStaleRunLookback:
-    def test_is_job_timeout_plus_slack(self):
-        assert _glue._stale_run_lookback(8) == timedelta(hours=24)
-        assert _glue._stale_run_lookback("3") == timedelta(hours=19)
+    def test_is_job_timeout_plus_queue_wait(self):
+        assert _glue._stale_run_lookback(8, 16) == timedelta(hours=24)
+        assert _glue._stale_run_lookback("3", 2) == timedelta(hours=5)
+
+    def test_zero_queue_wait_is_job_timeout_alone(self):
+        assert _glue._stale_run_lookback(8, 0) == timedelta(hours=8)
 
 
 class TestFindActiveGlueRuns:
@@ -129,7 +132,9 @@ class TestStopStaleGlueRuns:
     def test_noop_when_nothing_active(self):
         client = _client([[_run("jr_done", state="SUCCEEDED")]])
         assert (
-            _glue.stop_stale_glue_runs(client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock())
+            _glue.stop_stale_glue_runs(
+                client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
+            )
             == []
         )
         client.batch_stop_job_run.assert_not_called()
@@ -143,7 +148,9 @@ class TestStopStaleGlueRuns:
         }
         client = _client([[failed]])
         assert (
-            _glue.stop_stale_glue_runs(client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock())
+            _glue.stop_stale_glue_runs(
+                client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
+            )
             == []
         )
         client.batch_stop_job_run.assert_not_called()
@@ -160,6 +167,7 @@ class TestStopStaleGlueRuns:
             JOB,
             KEY,
             max_timeout_hours=8,
+            max_queue_wait_hours=16,
             sleep=sleep,
             timeout_seconds=600,
             poll_interval_seconds=7,
@@ -187,7 +195,7 @@ class TestStopStaleGlueRuns:
             },
         ]
         stopped = _glue.stop_stale_glue_runs(
-            client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock()
+            client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
         )
         assert stopped == ids
         assert client.batch_stop_job_run.call_args_list == [
@@ -197,13 +205,15 @@ class TestStopStaleGlueRuns:
 
     def test_does_not_re_stop_a_run_already_stopping(self):
         client = _client([[_run("jr_stopping", state="STOPPING"), _run("jr_running")]])
-        _glue.stop_stale_glue_runs(client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock())
+        _glue.stop_stale_glue_runs(
+            client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
+        )
         client.batch_stop_job_run.assert_called_once_with(JobName=JOB, JobRunIds=["jr_running"])
 
     def test_only_stopping_runs_still_waits_without_batch_stop(self):
         client = _client([[_run("jr_stopping", state="STOPPING")]])
         assert _glue.stop_stale_glue_runs(
-            client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock()
+            client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
         ) == ["jr_stopping"]
         client.batch_stop_job_run.assert_not_called()
         client.get_job_run.assert_called()
@@ -220,7 +230,9 @@ class TestStopStaleGlueRuns:
             ],
         }
         with pytest.raises(AirflowException, match="Could not stop still-active Glue run jr_1"):
-            _glue.stop_stale_glue_runs(client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock())
+            _glue.stop_stale_glue_runs(
+                client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
+            )
 
     def test_ignores_stop_error_for_a_run_that_finished_meanwhile(self):
         client = _client([[_run("jr_1")]], states={"jr_1": ["SUCCEEDED"]})
@@ -229,7 +241,7 @@ class TestStopStaleGlueRuns:
             "Errors": [{"JobRunId": "jr_1", "ErrorDetail": {"ErrorCode": "InvalidState"}}],
         }
         assert _glue.stop_stale_glue_runs(
-            client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock()
+            client, JOB, KEY, max_timeout_hours=8, max_queue_wait_hours=16, sleep=MagicMock()
         ) == ["jr_1"]
 
     def test_raises_when_run_does_not_stop_in_time(self, monkeypatch):
@@ -238,7 +250,13 @@ class TestStopStaleGlueRuns:
         client = _client([[_run("jr_1")]], states={"jr_1": ["STOPPING"]})
         with pytest.raises(AirflowException, match="did not stop within 600s"):
             _glue.stop_stale_glue_runs(
-                client, JOB, KEY, max_timeout_hours=8, sleep=MagicMock(), timeout_seconds=600
+                client,
+                JOB,
+                KEY,
+                max_timeout_hours=8,
+                max_queue_wait_hours=16,
+                sleep=MagicMock(),
+                timeout_seconds=600,
             )
 
 

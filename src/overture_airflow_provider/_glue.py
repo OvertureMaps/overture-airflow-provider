@@ -16,6 +16,7 @@ from overture_airflow_provider._retry_guard import (
     task_instance_label,
 )
 from overture_airflow_provider.cluster_sizing import AwsGlueClusterSize
+from overture_airflow_provider.config import GlueConfig
 from overture_airflow_provider.spark import SparkSedona
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 
@@ -35,10 +36,6 @@ _BATCH_STOP_MAX_RUN_IDS = 25
 #: live writer. ``WAITING`` is a queued run (``JobRunQueuingEnabled``);
 #: ``STOPPING`` is already on its way out but must still be waited on.
 _ACTIVE_GLUE_RUN_STATES = frozenset({"STARTING", "RUNNING", "STOPPING", "WAITING"})
-#: Slack added to the job's own ``Timeout`` to bound how long a run can stay
-#: non-terminal; covers queued waits and a timeout that was lowered between
-#: tries. See ``_stale_run_lookback``.
-_STALE_RUN_LOOKBACK_SLACK = timedelta(hours=16)
 #: Seconds between the deferred trigger's ``GetJobRun`` polls.
 _GLUE_WAITER_DELAY_SECONDS = 60
 #: Hard cap on ``get_job_runs`` pages (200 runs each) per scan.
@@ -388,7 +385,9 @@ def build_glue_operator_kwargs(
         "verbose": verbose,
         "deferrable": True,
         "waiter_delay": _GLUE_WAITER_DELAY_SECONDS,
-        "waiter_max_attempts": _glue_waiter_max_attempts(max_timeout_hours),
+        "waiter_max_attempts": _glue_waiter_max_attempts(
+            max_timeout_hours, _max_queue_wait_hours(setup_info)
+        ),
     }
 
     return {
@@ -415,23 +414,27 @@ def _run_started_on(run: dict) -> datetime | None:
     return started if started.tzinfo else started.replace(tzinfo=UTC)
 
 
-def _stale_run_lookback(max_timeout_hours: int | str) -> timedelta:
-    """How far back the pre-submit scan walks ``job_name``'s run history.
+def _max_queue_wait_hours(setup_info: dict) -> int:
+    """``GlueConfig.max_queue_wait_hours`` from ``setup_info``, defaulted for XCom
+    payloads written before the key existed."""
+    return int(setup_info.get("glue_max_queue_wait_hours", GlueConfig.max_queue_wait_hours))
 
-    Every run the provider starts is capped by the job's ``Timeout``
-    (``60 * max_timeout_hours`` minutes), so a run that started more than
-    that plus ``_STALE_RUN_LOOKBACK_SLACK`` ago is necessarily terminal.
+
+def _stale_run_lookback(max_timeout_hours: int | str, max_queue_wait_hours: int) -> timedelta:
+    """How long a run can stay non-terminal: queued wait plus the job's ``Timeout``.
+
+    Bounds both the pre-submit stale-run scan and the deferred trigger's poll budget.
     """
-    return timedelta(hours=int(max_timeout_hours)) + _STALE_RUN_LOOKBACK_SLACK
+    return timedelta(hours=int(max_timeout_hours) + max_queue_wait_hours)
 
 
-def _glue_waiter_max_attempts(max_timeout_hours: int | str) -> int:
+def _glue_waiter_max_attempts(max_timeout_hours: int | str, max_queue_wait_hours: int) -> int:
     """Poll budget for the deferred trigger, sized to outlast any live run.
 
     The upstream default of 75 polls fails tasks whose runs pass 75 minutes.
     """
-    lookback_seconds = _stale_run_lookback(max_timeout_hours).total_seconds()
-    return math.ceil(lookback_seconds / _GLUE_WAITER_DELAY_SECONDS)
+    lookback = _stale_run_lookback(max_timeout_hours, max_queue_wait_hours)
+    return math.ceil(lookback.total_seconds() / _GLUE_WAITER_DELAY_SECONDS)
 
 
 def find_active_glue_runs(
@@ -490,6 +493,7 @@ def stop_stale_glue_runs(
     task_instance_key: str,
     *,
     max_timeout_hours: int | str,
+    max_queue_wait_hours: int,
     sleep: Callable[[float], None] = time.sleep,
     timeout_seconds: float = _STALE_RUN_STOP_TIMEOUT_SECONDS,
     poll_interval_seconds: float = _STALE_RUN_POLL_INTERVAL_SECONDS,
@@ -503,8 +507,8 @@ def stop_stale_glue_runs(
     Glue reports a terminal state. Submitting before that would put two
     writers on the same output, which is exactly the race this prevents.
 
-    ``max_timeout_hours`` is the job's configured run timeout; it bounds how
-    far back the run history is scanned (``_stale_run_lookback``).
+    ``max_timeout_hours`` and ``max_queue_wait_hours`` bound how far back the
+    run history is scanned (``_stale_run_lookback``).
 
     Returns the ids of the runs that were stopped. Raises ``AirflowException``
     if a run can't be stopped or doesn't reach a terminal state within
@@ -517,7 +521,7 @@ def stop_stale_glue_runs(
         glue_client,
         job_name,
         task_instance_key,
-        lookback=_stale_run_lookback(max_timeout_hours),
+        lookback=_stale_run_lookback(max_timeout_hours, max_queue_wait_hours),
     )
     if not active:
         return []
@@ -684,6 +688,7 @@ def submit_glue_job(
                 setup_info["job_name"],
                 ti_key,
                 max_timeout_hours=max_timeout_hours,
+                max_queue_wait_hours=_max_queue_wait_hours(setup_info),
             )
 
     # deferrable=True -> execute() submits the run, then raises TaskDeferred with

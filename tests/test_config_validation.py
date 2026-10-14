@@ -12,6 +12,7 @@ import pytest
 
 from overture_airflow_provider.config import (
     ArtifactStoreConfig,
+    GlueConfig,
     PackageRegistryConfig,
 )
 
@@ -106,3 +107,15 @@ class TestArtifactStoreConfig:
     def test_validate_initvar_not_a_stored_field(self):
         names = {f.name for f in dataclasses.fields(ArtifactStoreConfig)}
         assert "_validate" not in names
+
+
+class TestGlueConfig:
+    def test_max_queue_wait_hours_defaults_to_sixteen(self):
+        assert GlueConfig().max_queue_wait_hours == 16
+
+    def test_max_queue_wait_hours_accepts_zero(self):
+        assert GlueConfig(max_queue_wait_hours=0).max_queue_wait_hours == 0
+
+    def test_negative_max_queue_wait_hours_raises(self):
+        with pytest.raises(ValueError, match="max_queue_wait_hours"):
+            GlueConfig(max_queue_wait_hours=-1)

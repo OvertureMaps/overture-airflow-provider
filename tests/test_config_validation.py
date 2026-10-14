@@ -122,3 +122,21 @@ class TestGlueConfig:
     def test_invalid_execution_class_raises(self, execution_class):
         with pytest.raises(ValueError, match="GlueConfig.execution_class must be one of"):
             GlueConfig(execution_class=execution_class)
+
+    def test_max_queue_wait_hours_defaults_to_sixteen(self):
+        assert GlueConfig().max_queue_wait_hours == 16
+
+    def test_max_queue_wait_hours_accepts_zero(self):
+        assert GlueConfig(max_queue_wait_hours=0).max_queue_wait_hours == 0
+
+    def test_negative_max_queue_wait_hours_raises(self):
+        with pytest.raises(ValueError, match="max_queue_wait_hours"):
+            GlueConfig(max_queue_wait_hours=-1)
+
+    def test_waiter_delay_seconds_defaults_to_sixty(self):
+        assert GlueConfig().waiter_delay_seconds == 60
+
+    @pytest.mark.parametrize("delay", [0, -5])
+    def test_non_positive_waiter_delay_seconds_raises(self, delay):
+        with pytest.raises(ValueError, match="waiter_delay_seconds"):
+            GlueConfig(waiter_delay_seconds=delay)

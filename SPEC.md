@@ -101,6 +101,9 @@ setup_spark_job ──┬─► download_python_packages ─┐
   (`GlueJobCompleteTrigger`, `DatabricksExecutionTrigger`) so the Triggerer —
   not a Celery worker — polls until completion. It resumes in
   `execute_complete`. Wherobots has no upstream trigger and runs synchronously.
+  The Glue trigger polls every `GlueConfig.waiter_delay_seconds` (default 60)
+  for the same window the stale-run scan uses (`max_queue_wait_hours` +
+  `max_timeout_hours`), so it outlasts any run Glue still considers live.
 
 ## XCom contract
 
@@ -248,8 +251,9 @@ cover the ways a try can end (`_retry_guard.py`):
    terminal. Glue's
    own run list is the only state that survives a clear. If a stale run can't
    be stopped the try fails as `submit/config` (retryable). The scan is
-   bounded (lookback = the job's `max_timeout_hours` + 16h — every run is
-   capped by the job's `Timeout` — and a page cap), and is skipped for
+   bounded (lookback = `GlueConfig.max_queue_wait_hours`, default 16, plus
+   the job's `max_timeout_hours`, since every run is capped by the job's
+   `Timeout` once it leaves the queue; and a page cap), and is skipped for
    brand-new jobs and when the context has no task-instance identity (render
    preview).
 

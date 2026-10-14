@@ -587,7 +587,76 @@ def test_run_launched_returns_false_on_xcom_error():
 
 def test_init_wraps_on_failure_callback():
     op = _make_operator()
-    assert op.on_failure_callback == op._cancel_run_then_delegate
+    assert list(op.on_failure_callback) == [op._cancel_run_then_delegate]
+
+
+def test_init_on_failure_callback_is_list_with_user_callback():
+    # The Airflow task runner iterates the attribute; a bare method breaks it.
+    op = _make_operator(on_failure_callback=lambda ctx: None)
+    assert isinstance(op.on_failure_callback, list)
+    assert op.on_failure_callback == [op._cancel_run_then_delegate]
+
+
+def _run_failure_callbacks_like_task_runner(op, context):
+    # Mirrors the task-sdk runner: iterate the attribute and call each entry.
+    with (
+        patch("overture_airflow_provider._operator.rehydrate", return_value=_FULL),
+        patch("overture_airflow_provider._operator.get_platform_handler", return_value=MagicMock()),
+        patch("overture_airflow_provider._operator.read_recorded_run", return_value=None),
+    ):
+        for callback in op.on_failure_callback:
+            callback(context)
+
+
+def test_failure_callbacks_run_when_iterated_like_task_runner():
+    user_callback = MagicMock()
+    op = _make_operator(on_failure_callback=user_callback)
+    context = {"ti": MagicMock()}
+
+    _run_failure_callbacks_like_task_runner(op, context)
+
+    user_callback.assert_called_once_with(context)
+
+
+def test_failure_callbacks_run_without_user_callback_like_task_runner():
+    op = _make_operator()
+
+    _run_failure_callbacks_like_task_runner(op, {"ti": MagicMock()})
+
+
+def test_cancel_run_then_delegate_calls_every_user_callback_in_a_tuple():
+    first_callback = MagicMock()
+    second_callback = MagicMock()
+    op = _make_operator(on_failure_callback=(first_callback, second_callback))
+    context = {"ti": MagicMock()}
+
+    _run_failure_callbacks_like_task_runner(op, context)
+
+    first_callback.assert_called_once_with(context)
+    second_callback.assert_called_once_with(context)
+
+
+def test_cancel_run_then_delegate_continues_after_a_user_callback_raises():
+    first_callback = MagicMock(side_effect=RuntimeError("slack down"))
+    second_callback = MagicMock()
+    op = _make_operator(on_failure_callback=[first_callback, second_callback])
+    context = {"ti": MagicMock()}
+
+    _run_failure_callbacks_like_task_runner(op, context)
+
+    second_callback.assert_called_once_with(context)
+
+
+def test_other_state_callbacks_are_not_overridden():
+    op = _make_operator()
+
+    for attr in (
+        "on_success_callback",
+        "on_retry_callback",
+        "on_execute_callback",
+        "on_skipped_callback",
+    ):
+        assert not getattr(op, attr), attr
 
 
 def test_cancel_run_then_delegate_noop_when_nothing_recorded():

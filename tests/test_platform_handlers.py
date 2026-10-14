@@ -440,9 +440,10 @@ class TestGlueExecuteJob:
         if not job_exists:
             mock_glue_client.get_job.side_effect = _EntityNotFound("no such job")
 
-        def _stop(client, job_name, key, *, max_timeout_hours):
+        def _stop(client, job_name, key, *, max_timeout_hours, max_queue_wait_hours):
             calls.append(("stop_stale", job_name, key))
             captured["stop_max_timeout_hours"] = max_timeout_hours
+            captured["stop_max_queue_wait_hours"] = max_queue_wait_hours
             return []
 
         with (
@@ -545,6 +546,11 @@ class TestGlueExecuteJob:
         _, captured = self._run_glue(real_ti=True, max_timeout_hours="3")
         assert captured["stop_max_timeout_hours"] == "3"
 
+    def test_stale_run_scan_defaults_queue_wait_for_older_setup_info(self):
+        # setup_info pushed to XCom before glue_max_queue_wait_hours existed.
+        _, captured = self._run_glue(real_ti=True)
+        assert captured["stop_max_queue_wait_hours"] == 16
+
     def test_stale_run_scan_works_with_mapping_context(self):
         _, captured = self._run_glue(real_ti=True, mapping_context=True)
         assert captured["calls"][0] == ("stop_stale", "test.Job", self._TI_KEY)
@@ -617,11 +623,12 @@ class TestGlueExecuteJob:
         create_kwargs = captured["call_kwargs"]["create_job_kwargs"]
         assert create_kwargs["Timeout"] == 60 * 8
 
-    def test_timeout_honors_override(self):
+    @staticmethod
+    def _build_glue_kwargs(max_timeout_hours, setup_info_overrides=None):
         from overture_airflow_provider._glue import build_glue_operator_kwargs
 
-        built = build_glue_operator_kwargs(
-            setup_info=_glue_setup_info(),
+        return build_glue_operator_kwargs(
+            setup_info={**_glue_setup_info(), **(setup_info_overrides or {})},
             package_info={
                 "py_files": "s3://bucket/pkg.whl",
                 "script_location": "s3://bucket/job_runner_glue.py",
@@ -642,9 +649,32 @@ class TestGlueExecuteJob:
             spark_cluster_desired_workers="",
             iam_role_name="AWSGlueServiceRole",
             task_id="execute_spark_job",
-            max_timeout_hours="2",
+            max_timeout_hours=max_timeout_hours,
         )
+
+    def test_timeout_honors_override(self):
+        built = self._build_glue_kwargs("2")
         assert built["create_job_kwargs"]["Timeout"] == 60 * 2
+
+    def test_waiter_polls_every_minute_through_timeout_plus_queue_wait(self):
+        _, captured = self._run_glue()
+        kwargs = captured["call_kwargs"]
+        assert kwargs["waiter_delay"] == 60
+        assert kwargs["waiter_max_attempts"] == (8 + 16) * 60
+
+    def test_waiter_honors_configured_queue_wait(self):
+        built = self._build_glue_kwargs("2", {"glue_max_queue_wait_hours": 1})
+        assert built["operator_kwargs"]["waiter_max_attempts"] == (2 + 1) * 60
+
+    def test_waiter_honors_configured_delay(self):
+        built = self._build_glue_kwargs("8", {"glue_waiter_delay_seconds": 30})
+        kwargs = built["operator_kwargs"]
+        assert kwargs["waiter_delay"] == 30
+        assert kwargs["waiter_max_attempts"] == (8 + 16) * 120
+
+    def test_waiter_with_zero_queue_wait_covers_only_timeout(self):
+        built = self._build_glue_kwargs("8", {"glue_max_queue_wait_hours": 0})
+        assert built["operator_kwargs"]["waiter_max_attempts"] == 8 * 60
 
     def test_operator_kwargs_include_deferrable_true(self):
         _, captured = self._run_glue()

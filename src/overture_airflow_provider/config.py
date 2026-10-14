@@ -308,21 +308,46 @@ class GlueConfig:
             stdout, keyed by run id. Defaults to Glue's own
             ``/aws-glue/jobs/output``; override only if your jobs are
             configured to write continuous logging output elsewhere.
+        max_queue_wait_hours: Hours a run may sit queued (``WAITING``) before
+            its ``max_timeout_hours`` clock starts. Added to the job timeout to
+            bound both how long Airflow waits on a run and how far back a
+            retry scans for stale runs to stop. Defaults to ``16``. ``0``
+            assumes runs never queue and that ``max_timeout_hours`` is never
+            lowered between tries of one task instance; a run still live from
+            an earlier, longer-timeout try can then escape the stale-run scan
+            and race the retry.
+        waiter_delay_seconds: Seconds between the deferred trigger's
+            ``GetJobRun`` polls. Defaults to ``60``. A run's completion reaches
+            Airflow up to this long after Glue reports it, so lower values
+            shorten chains of short jobs at the cost of more Glue API calls.
+            The poll budget scales with it to cover the same window.
 
     Raises:
-        ValueError: If ``execution_class`` is not one of ``GLUE_EXECUTION_CLASSES``.
+        ValueError: If ``execution_class`` is not one of
+            ``GLUE_EXECUTION_CLASSES``, ``max_queue_wait_hours`` is negative,
+            or ``waiter_delay_seconds`` is not positive.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
     execution_class: str = "FLEX"
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
+    max_queue_wait_hours: int = 16
+    waiter_delay_seconds: int = 60
 
     def __post_init__(self) -> None:
         if self.execution_class not in GLUE_EXECUTION_CLASSES:
             raise ValueError(
                 f"GlueConfig.execution_class must be one of {GLUE_EXECUTION_CLASSES}, "
                 f"got {self.execution_class!r}"
+            )
+        if self.max_queue_wait_hours < 0:
+            raise ValueError(
+                f"GlueConfig.max_queue_wait_hours must be >= 0, got {self.max_queue_wait_hours}"
+            )
+        if self.waiter_delay_seconds <= 0:
+            raise ValueError(
+                f"GlueConfig.waiter_delay_seconds must be > 0, got {self.waiter_delay_seconds}"
             )
 
 

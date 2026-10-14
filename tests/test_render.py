@@ -109,6 +109,29 @@ def test_render_glue_verbose_toggle_off():
     assert result.operator_kwargs["verbose"] is False
 
 
+def test_render_glue_max_queue_wait_hours_sets_waiter_budget():
+    from overture_airflow_provider.config import GlueConfig
+
+    result = render_spark_job(
+        spark_impl_name="GLUE_v5",
+        glue_config=GlueConfig(max_queue_wait_hours=4),
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["waiter_max_attempts"] == (8 + 4) * 60
+
+
+def test_render_glue_waiter_delay_seconds_sets_poll_interval():
+    from overture_airflow_provider.config import GlueConfig
+
+    result = render_spark_job(
+        spark_impl_name="GLUE_v5",
+        glue_config=GlueConfig(waiter_delay_seconds=15),
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["waiter_delay"] == 15
+    assert result.operator_kwargs["waiter_max_attempts"] == (8 + 16) * 240
+
+
 def test_render_glue_max_timeout_hours_defaults_to_eight():
     result = render_spark_job(spark_impl_name="GLUE_v5", **_COMMON_KWARGS)
     assert result.submit_payload["create_job_kwargs"]["Timeout"] == 60 * 8

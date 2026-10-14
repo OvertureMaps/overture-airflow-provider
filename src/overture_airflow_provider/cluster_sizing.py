@@ -58,7 +58,7 @@ class AwsGlueClusterSize:
         Glue rejects FLEX on G.4X/G.8X, so a FLEX request there falls back to
         STANDARD. A STANDARD request is always honored.
         """
-        if execution_class.upper() == "FLEX" and worker_type in cls.FLEX_COMPATIBLE_WORKER_TYPES:
+        if execution_class == "FLEX" and worker_type in cls.FLEX_COMPATIBLE_WORKER_TYPES:
             return "FLEX"
         return "STANDARD"
 

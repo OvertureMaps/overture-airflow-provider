@@ -47,6 +47,8 @@ from overture_airflow_provider._report_issue import (
 
 DEFAULT_MAX_TIMEOUT_HOURS = "8"
 
+GLUE_EXECUTION_CLASSES = ("FLEX", "STANDARD")
+
 
 def _require_non_empty(cls_name: str, **fields: str) -> None:
     """Raise ``ValueError`` for any required string field that is empty/blank.
@@ -306,12 +308,22 @@ class GlueConfig:
             stdout, keyed by run id. Defaults to Glue's own
             ``/aws-glue/jobs/output``; override only if your jobs are
             configured to write continuous logging output elsewhere.
+
+    Raises:
+        ValueError: If ``execution_class`` is not one of ``GLUE_EXECUTION_CLASSES``.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
     execution_class: str = "FLEX"
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
+
+    def __post_init__(self) -> None:
+        if self.execution_class not in GLUE_EXECUTION_CLASSES:
+            raise ValueError(
+                f"GlueConfig.execution_class must be one of {GLUE_EXECUTION_CLASSES}, "
+                f"got {self.execution_class!r}"
+            )
 
 
 @dataclass

@@ -35,7 +35,6 @@ class TestAwsGlueClusterSizeResolveExecutionClass:
             # FLEX on compatible types → keep FLEX
             ("FLEX", "G.1X", "FLEX"),
             ("FLEX", "G.2X", "FLEX"),
-            ("FLEX", "G.2X", "FLEX"),
             # FLEX on incompatible types → downgrade to STANDARD
             ("FLEX", "G.4X", "STANDARD"),
             ("FLEX", "G.8X", "STANDARD"),

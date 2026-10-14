@@ -150,7 +150,7 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         self.max_timeout_hours = max_timeout_hours
         self.report_issue_config = report_issue_config or None
         self._user_on_failure_callback = user_on_failure_callback
-        self.on_failure_callback = self._cancel_run_then_delegate
+        self.on_failure_callback = [self._cancel_run_then_delegate]
         # Kept from execute() so on_kill (which Airflow calls without a
         # context) can still find this try's recorded run.
         self._execute_context = None
@@ -353,7 +353,10 @@ class SparkAgnosticExecuteOperator(BaseOperator):
         if not isinstance(callbacks, (list, tuple)):
             callbacks = [callbacks]
         for callback in callbacks:
-            callback(context)
+            try:
+                callback(context)
+            except Exception:
+                self.log.exception("User on_failure_callback %r raised", callback)
 
     def _push_report_issue_config(self, context) -> None:
         """Push the report-issue config to XCom so the link works even on failure.

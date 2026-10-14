@@ -1,6 +1,7 @@
-"""Tests for fail-fast validation of required config dataclass fields.
+"""Tests for fail-fast validation of config dataclass fields.
 
-Required fields must reject empty/whitespace-only values at construction time
+Required fields must reject empty/whitespace-only values, and enumerated fields
+(``GlueConfig.execution_class``) must reject unknown values, at construction time
 with a clear, field-named ``ValueError`` rather than failing later with a
 cryptic S3/CodeArtifact error. Optional fields and the internal ``unset()``
 disabled placeholders must still construct fine.
@@ -110,6 +111,18 @@ class TestArtifactStoreConfig:
 
 
 class TestGlueConfig:
+    def test_defaults_to_flex(self):
+        assert GlueConfig().execution_class == "FLEX"
+
+    @pytest.mark.parametrize("execution_class", ["FLEX", "STANDARD"])
+    def test_valid_execution_class_constructs(self, execution_class):
+        assert GlueConfig(execution_class=execution_class).execution_class == execution_class
+
+    @pytest.mark.parametrize("execution_class", ["flex", "Standard", "FELX", ""])
+    def test_invalid_execution_class_raises(self, execution_class):
+        with pytest.raises(ValueError, match="GlueConfig.execution_class must be one of"):
+            GlueConfig(execution_class=execution_class)
+
     def test_max_queue_wait_hours_defaults_to_sixteen(self):
         assert GlueConfig().max_queue_wait_hours == 16
 

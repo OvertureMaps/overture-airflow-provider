@@ -53,7 +53,12 @@ class AwsGlueClusterSize:
 
     @classmethod
     def resolve_execution_class(cls, execution_class: str, worker_type: str) -> str:
-        if worker_type in cls.FLEX_COMPATIBLE_WORKER_TYPES:
+        """FLEX only when requested and supported by ``worker_type``; STANDARD otherwise.
+
+        Glue rejects FLEX on G.4X/G.8X, so a FLEX request there falls back to
+        STANDARD. A STANDARD request is always honored.
+        """
+        if execution_class == "FLEX" and worker_type in cls.FLEX_COMPATIBLE_WORKER_TYPES:
             return "FLEX"
         return "STANDARD"
 

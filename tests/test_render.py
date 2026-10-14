@@ -109,6 +109,31 @@ def test_render_glue_verbose_toggle_off():
     assert result.operator_kwargs["verbose"] is False
 
 
+@pytest.mark.parametrize(
+    "glue_config_kwargs, cores, workers, expected",
+    [
+        # Default is FLEX on Flex-capable workers...
+        ({}, "40", "5", ("G.2X", "FLEX")),
+        # ...and STANDARD where Glue doesn't support Flex.
+        ({}, "900", "57", ("G.4X", "STANDARD")),
+        # An explicit STANDARD is honored without changing the worker type.
+        ({"execution_class": "STANDARD"}, "40", "5", ("G.2X", "STANDARD")),
+    ],
+)
+def test_render_glue_execution_class(glue_config_kwargs, cores, workers, expected):
+    from overture_airflow_provider.config import GlueConfig
+
+    result = render_spark_job(
+        spark_impl_name="GLUE_v5",
+        spark_cluster_desired_worker_cores=cores,
+        spark_cluster_desired_workers=workers,
+        glue_config=GlueConfig(**glue_config_kwargs),
+        **_COMMON_KWARGS,
+    )
+    create_job_kwargs = result.submit_payload["create_job_kwargs"]
+    assert (create_job_kwargs["WorkerType"], create_job_kwargs["ExecutionClass"]) == expected
+
+
 def test_render_glue_max_queue_wait_hours_sets_waiter_budget():
     from overture_airflow_provider.config import GlueConfig
 

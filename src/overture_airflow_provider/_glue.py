@@ -236,7 +236,7 @@ def build_glue_operator_kwargs(
     iam_role_name: str,
     task_id: str,
     dag_id: str = "",
-    execution_class: str = "STANDARD",
+    execution_class: str = "FLEX",
     verbose: bool = True,
     task_instance_key: str | None = None,
 ) -> dict:
@@ -594,7 +594,7 @@ def submit_glue_job(
     iam_role_name: str,
     task_id: str,
     context: dict,
-    execution_class: str = "STANDARD",
+    execution_class: str = "FLEX",
     verbose: bool = True,
 ) -> dict:
     """Submit a Glue job (non-blocking) and return a trigger to defer on.

@@ -47,6 +47,8 @@ from overture_airflow_provider._report_issue import (
 
 DEFAULT_MAX_TIMEOUT_HOURS = "8"
 
+GLUE_EXECUTION_CLASSES = ("FLEX", "STANDARD")
+
 
 def _require_non_empty(cls_name: str, **fields: str) -> None:
     """Raise ``ValueError`` for any required string field that is empty/blank.
@@ -291,8 +293,12 @@ class GlueConfig:
     Args:
         iam_role_name: IAM role name attached to the Glue job.
             Defaults to ``"AWSGlueServiceRole"``.
-        execution_class: Glue execution class. ``"STANDARD"`` (default) uses
-            standard workers; ``"FLEX"`` uses spot-backed workers at lower cost.
+        execution_class: Glue execution class. ``"FLEX"`` (default) runs
+            G.1X/G.2X workers on spare capacity at lower cost, but AWS can
+            reclaim executors mid-run; G.4X/G.8X don't support Flex and run
+            STANDARD. ``"STANDARD"`` runs on dedicated capacity at any worker
+            type; use it for long or shuffle-heavy jobs that can't tolerate
+            executor loss.
         verbose: When ``True`` (default) the underlying ``GlueJobOperator``
             streams the job's CloudWatch driver/executor logs into the Airflow
             task log. Set ``False`` to silence that stream (e.g. for very chatty
@@ -315,16 +321,26 @@ class GlueConfig:
             Airflow up to this long after Glue reports it, so lower values
             shorten chains of short jobs at the cost of more Glue API calls.
             The poll budget scales with it to cover the same window.
+
+    Raises:
+        ValueError: If ``execution_class`` is not one of
+            ``GLUE_EXECUTION_CLASSES``, ``max_queue_wait_hours`` is negative,
+            or ``waiter_delay_seconds`` is not positive.
     """
 
     iam_role_name: str = "AWSGlueServiceRole"
-    execution_class: str = "STANDARD"
+    execution_class: str = "FLEX"
     verbose: bool = True
     output_log_group: str = "/aws-glue/jobs/output"
     max_queue_wait_hours: int = 16
     waiter_delay_seconds: int = 60
 
     def __post_init__(self) -> None:
+        if self.execution_class not in GLUE_EXECUTION_CLASSES:
+            raise ValueError(
+                f"GlueConfig.execution_class must be one of {GLUE_EXECUTION_CLASSES}, "
+                f"got {self.execution_class!r}"
+            )
         if self.max_queue_wait_hours < 0:
             raise ValueError(
                 f"GlueConfig.max_queue_wait_hours must be >= 0, got {self.max_queue_wait_hours}"

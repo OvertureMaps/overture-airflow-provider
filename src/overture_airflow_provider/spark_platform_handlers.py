@@ -376,7 +376,7 @@ class GluePlatformHandler(SparkPlatformHandler):
             iam_role_name=iam_role_name,
             task_id=task_id,
             context=context,
-            execution_class=self.setup_info.get("glue_execution_class", "STANDARD"),
+            execution_class=self.setup_info.get("glue_execution_class", "FLEX"),
             verbose=self.setup_info.get("glue_verbose", True),
         )
         return {"trigger": submitted["trigger"], "run_id": submitted["run_id"]}

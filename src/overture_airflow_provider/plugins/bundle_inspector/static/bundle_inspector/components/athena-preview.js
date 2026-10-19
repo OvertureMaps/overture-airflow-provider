@@ -1,6 +1,7 @@
 // Display component: Athena query editor with streaming CSV results and geometry map.
-// Depends on: core.js, csv-utils.js, map-utils.js, wkb.js (parseWkbHex, detectGeometryColumn,
-//             vertexAverage), components/registry.js, maplibre-gl
+// Depends on: core.js, csv-utils.js, map-utils.js (createBaseMap, fitMapToFeatures),
+//             wkb.js (parseWkbHex, detectGeometryColumn, vertexAverage),
+//             components/registry.js, maplibre-gl
 
 const ATHENA_FOLDERS = new Set(['data', 'metrics', 'changelog', 'changelog_internal', 'bridgefiles', 'registry', 'validation']);
 const KNOWN_STAGES = new Set(['theme_promote', 'theme_stage', 'release_candidate']);
@@ -177,9 +178,8 @@ function renderGeometryMap(container, dataFc, markerFc) {
     bboxDiv.className = 'bbox-filter-hint';
     container.appendChild(bboxDiv);
 
-    const map = new maplibregl.Map({
+    const map = createBaseMap({
         container: mapDiv,
-        style: CARTO_STYLE,
         center: [0, 20],
         zoom: 1,
         minZoom: 0,

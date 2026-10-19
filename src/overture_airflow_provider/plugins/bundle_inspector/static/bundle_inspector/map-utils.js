@@ -1,21 +1,9 @@
 // Shared map utilities for MapLibre GL components.
 
-const CARTO_STYLE = {
-    version: 8,
-    sources: {
-        'carto': {
-            type: 'raster',
-            tiles: ['https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '&copy; OpenStreetMap &copy; CARTO',
-        },
-    },
-    layers: [{
-        id: 'carto-tiles',
-        type: 'raster',
-        source: 'carto',
-    }],
-};
+// OpenFreeMap Positron: free, keyless vector basemap. Attribution
+// (OpenFreeMap / OpenMapTiles / OpenStreetMap) comes from the style's TileJSON.
+// Overlays added later via map.addLayer() (no beforeId) render above it.
+const BASEMAP_STYLE = 'https://tiles.openfreemap.org/styles/positron';
 
 // Extend a maplibregl.LngLatBounds with all coordinates in a geometry.
 function collectBounds(geometry, bounds) {

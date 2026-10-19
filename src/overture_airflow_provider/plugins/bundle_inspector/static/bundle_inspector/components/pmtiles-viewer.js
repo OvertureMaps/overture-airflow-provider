@@ -1,6 +1,6 @@
 // Display component: PMTiles vector tile viewer.
 // Range requests are proxied through Airflow (/s3proxy) to avoid S3 CORS issues.
-// Depends on: core.js, map-utils.js (CARTO_STYLE), components/registry.js, maplibre-gl
+// Depends on: core.js, map-utils.js (BASEMAP_STYLE), components/registry.js, maplibre-gl
 
 let pmtilesReady = null;
 
@@ -37,7 +37,7 @@ async function loadPmtilesMap(mapContainer, key) {
 
     const map = new maplibregl.Map({
         container: mapContainer,
-        style: CARTO_STYLE,
+        style: BASEMAP_STYLE,
         center: [
             (header.minLon + header.maxLon) / 2,
             (header.minLat + header.maxLat) / 2,

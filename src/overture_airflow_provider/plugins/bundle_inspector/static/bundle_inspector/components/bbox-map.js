@@ -1,5 +1,5 @@
 // Display component: partition bounding boxes on a map.
-// Depends on: core.js, map-utils.js (BASEMAP_STYLE, fitMapToFeatures), components/registry.js, maplibre-gl
+// Depends on: core.js, map-utils.js (createBaseMap, fitMapToFeatures), components/registry.js, maplibre-gl
 
 async function renderBboxMap(container, prefix) {
     const mapDiv = document.createElement('div');
@@ -20,9 +20,8 @@ async function renderBboxMap(container, prefix) {
     const geojson = await res.json();
     loading.remove();
 
-    const map = new maplibregl.Map({
+    const map = createBaseMap({
         container: mapDiv,
-        style: BASEMAP_STYLE,
         center: [0, 20],
         zoom: 1,
     });

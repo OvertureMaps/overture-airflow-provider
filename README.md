@@ -261,6 +261,8 @@ Each option is also settable via its `AIRFLOW__BUNDLE_INSPECTOR__<OPTION>` envir
 
 GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shapely`: `pip install "airflow-provider-overture[bundle-inspector]"`. Without them those two endpoints return a 500 with the import error; the rest of the UI (tree browsing, PMTiles, CSV, Athena queries) works without either.
 
+The UI loads its JS libraries from `cdn.jsdelivr.net` and its map basemap from [OpenFreeMap](https://openfreemap.org) (`tiles.openfreemap.org`, Positron style, no API key), so users' browsers need access to both hosts. If the basemap can't be reached, maps fall back to a blank background and still draw their data.
+
 ## Reference
 
 ### Supported versions

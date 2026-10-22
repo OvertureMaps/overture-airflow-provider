@@ -35,14 +35,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The official Docker action resolves GitPython (an unpinned transitive dependency) at
-      # image-build time, and GitPython v3.1.60 broke PSR v10.6.1's config load. Install PSR in
-      # an isolated pipx venv with GitPython pinned below the broken release instead.
-      # See: https://github.com/python-semantic-release/python-semantic-release/issues/1476
-      - name: Install python-semantic-release
-        run: |
-          pipx install "python-semantic-release==10.6.1"
-          pipx inject --force python-semantic-release "gitpython<3.1.60"
+      # PSR and its pins live in pyproject.toml's `release` dependency group. Run with uv, not
+      # the official Docker action, which resolves an unpinned GitPython at image-build time.
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
 
       # Narrow OIDC role (omf-github-terraform's oidc-aws.tf) that can only read the releaser
       # app's PEM secret.
@@ -74,7 +72,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          version=$(semantic-release version --print)
+          version=$(uv run --only-group release semantic-release version --print)
           tag="v${version}"
           if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
             echo "${tag} already exists; no releasable commits."

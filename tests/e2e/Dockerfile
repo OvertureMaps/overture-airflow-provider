@@ -23,6 +23,12 @@ ARG AIRFLOW_VERSION
 ARG PYTHON_VERSION
 ARG CONSTRAINTS_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
+# emSign ECC Root CA - G3 remediation (GHSA-6q48-6c7w-9gw2): the base image's pip
+# vendors a certifi that still trusts the compromised root. Hash-pinned so the
+# download is verified even over a pre-fix TLS stack.
+ARG PIP_REQUIREMENT="pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+RUN pip install --no-cache-dir "${PIP_REQUIREMENT}"
+
 # Copy the provider source needed to build + test the wheel.
 COPY --chown=airflow:0 pyproject.toml README.md LICENSE /opt/overture/
 COPY --chown=airflow:0 src /opt/overture/src
@@ -30,7 +36,9 @@ COPY --chown=airflow:0 tests /opt/overture/tests
 COPY --chown=airflow:0 examples /opt/overture/examples
 
 # Install the provider (core only) + test runner, constrained to this Airflow.
+# The constraints file pins an older certifi, so raise it to the fixed floor afterwards.
 RUN pip install --no-cache-dir --constraint "${CONSTRAINTS_URL}" \
-        "/opt/overture" "pytest>=8.0" "pytest-mock>=3.12"
+        "/opt/overture" "pytest>=8.0" "pytest-mock>=3.12" \
+    && pip install --no-cache-dir "certifi>=2026.10.19"
 
 WORKDIR /opt/overture

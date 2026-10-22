@@ -29,7 +29,7 @@ AIRFLOW_VERSION=3.3.1 PYTHON_VERSION=3.12 docker compose run --rm --build e2e
 
 | Piece | Role |
 | --- | --- |
-| `Dockerfile` | Extends `apache/airflow:${AIRFLOW_VERSION}-python${PYTHON_VERSION}`, pip-installs the provider (core only) + pytest under Airflow's official constraints. |
+| `Dockerfile` | Extends `apache/airflow:${AIRFLOW_VERSION}-python${PYTHON_VERSION}`, upgrades pip to a hash-pinned 26.2.2, pip-installs the provider (core only) + pytest under Airflow's official constraints, then raises certifi to 2026.10.19 or later. |
 | `docker-compose.yaml` | `e2e` one-shot service and an opt-in `standalone` service (Airflow UI) under the `manual` profile. |
 | `run-e2e.sh` | In-container entrypoint: `airflow db migrate` -> `airflow dags reserialize` (real parse) -> `pytest`. |
 | `test_dag_e2e.py` | The assertions: no import errors, DAG + provider + extra-links registered, task-group expansion + dependency edges, lazy-import purity, setup-task execution, and the setup_info XCom round-trip. |

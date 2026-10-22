@@ -71,7 +71,7 @@ dev = [
 # certifi: floor for the emSign ECC Root CA - G3 compromise (GHSA-6q48-6c7w-9gw2).
 release = [
     "python-semantic-release==10.7.0",
-    "gitpython<3.1.60",
+    "gitpython<3.2.2",
     "certifi>=2026.10.19",
 ]
 

@@ -70,7 +70,7 @@ dev = [
 # (https://github.com/python-semantic-release/python-semantic-release/issues/1476).
 # certifi: floor for the emSign ECC Root CA - G3 compromise (GHSA-6q48-6c7w-9gw2).
 release = [
-    "python-semantic-release==10.6.1",
+    "python-semantic-release==10.7.0",
     "gitpython<3.1.60",
     "certifi>=2026.10.19",
 ]

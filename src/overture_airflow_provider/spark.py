@@ -93,6 +93,7 @@ class SparkSedona:
             "1.7.2": "28.5",
             "1.8.1": "33.1",
             "1.9.0": "33.5",
+            "1.9.1": "33.5",
         }
         return geotools_version_map[sedona_version]
 

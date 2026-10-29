@@ -136,7 +136,11 @@ def spark_agnostic_task_group(
             registry (e.g. ``"my-spark-pkg==1.0 numba"``).
         spark_jar_paths: Comma-separated JAR paths or S3/DBFS URIs.
         spark_cluster_desired_worker_cores: Total desired worker vCPUs.
-        spark_cluster_size_name: Named cluster size (Wherobots only).
+        spark_cluster_size_name: Wherobots runtime override (ignored on Glue
+            and Databricks). Either a ``ClusterSize`` name (``"XS"``..``"XXL"``)
+            or a native Wherobots runtime name such as ``"large-himem"``. When
+            set, it takes precedence over ``spark_cluster_desired_worker_cores``
+            for picking the Wherobots runtime.
         spark_cluster_desired_workers: Explicit worker count.
         extra_spark_conf: JSON string of Spark config overrides (merged on top
             of platform defaults and ``iceberg_config``).

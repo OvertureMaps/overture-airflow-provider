@@ -340,6 +340,11 @@ def build_wherobots_operator_kwargs(
     stable GA runtime; ``"preview"`` opts into the preview channel; a
     ``None``/empty/missing value omits the field entirely.
 
+    The runtime comes from ``spark_cluster_size`` when set (a ``ClusterSize``
+    name like ``"L"`` or a native runtime name like ``"large-himem"``; see
+    ``WherobotsClusterSize.from_cluster_size``), otherwise from
+    ``spark_cluster_desired_worker_cores``.
+
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
     """

@@ -131,6 +131,9 @@ cannot load Scala 2.12 JARs. `None` omits the field from submissions.
 `AwsGlueClusterSize` / `DatabricksClusterSize` / `WherobotsClusterSize` are
 plain classes, **not enums** — do not call `.XS.name` on them. Pass a
 `ClusterSize` name string (`"XS"`, `"S"`, `"M"`, …) to `from_cluster_size`.
+`WherobotsClusterSize.from_cluster_size` (fed by `spark_cluster_size_name`) also
+accepts any native `wherobots.db.Runtime` value, e.g. `"large-himem"`, and
+raises `ValueError` for unknown names; Glue/Databricks ignore that kwarg.
 Prefer `spark_cluster_desired_worker_cores` (integer string) in DAG code; it
 is more portable across platforms.
 

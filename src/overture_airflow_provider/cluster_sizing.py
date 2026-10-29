@@ -292,8 +292,26 @@ class WherobotsClusterSize:
 
     @classmethod
     def from_cluster_size(cls, cluster_size: str):
-        mapping = cls._get_runtime_mapping()
-        return mapping[ClusterSize.from_str(cluster_size)]
+        """Resolve a cluster size or a native Wherobots runtime name to a ``Runtime``.
+
+        Accepts a ``ClusterSize`` name (``"XS"``..``"XXL"``, mapped to the
+        general-purpose runtimes) or any runtime the installed ``wherobots.db``
+        SDK defines, by value or member name (e.g. ``"large-himem"`` or
+        ``"LARGE_HIMEM"``). Matching is case-insensitive.
+        """
+        from wherobots.db import Runtime  # local import: optional SDK
+
+        name = cluster_size.strip()
+        if name.upper() in ClusterSize.__members__:
+            return cls._get_runtime_mapping()[ClusterSize[name.upper()]]
+        for runtime in Runtime:
+            if name.lower() == runtime.value or name.upper() == runtime.name:
+                return runtime
+        valid = ", ".join([*ClusterSize.__members__, *(r.value for r in Runtime)])
+        raise ValueError(
+            f"{cluster_size!r} is not a valid Wherobots cluster size or runtime; "
+            f"expected one of: {valid}"
+        )
 
 
 # Shared helper -------------------------------------------------------------

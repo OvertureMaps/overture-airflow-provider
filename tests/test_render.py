@@ -220,6 +220,16 @@ def test_render_wherobots_honors_config_version_override():
     assert result.submit_payload["version"] == "preview"
 
 
+def test_render_wherobots_runtime_override(fake_wherobots_runtime):
+    result = render_spark_job(
+        spark_impl_name="WHEROBOTS_v1_5_0",
+        spark_cluster_size="large-himem",
+        spark_cluster_desired_worker_cores="1000",
+        **_COMMON_KWARGS,
+    )
+    assert result.operator_kwargs["runtime"] is fake_wherobots_runtime.LARGE_HIMEM
+
+
 def test_render_wherobots_max_timeout_hours_defaults_to_eight():
     result = render_spark_job(spark_impl_name="WHEROBOTS_v1_5_0", **_COMMON_KWARGS)
     assert result.operator_kwargs["timeout_seconds"] == 3600 * 8

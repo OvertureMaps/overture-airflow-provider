@@ -295,6 +295,30 @@ class WherobotsClusterSize:
         mapping = cls._get_runtime_mapping()
         return mapping[ClusterSize.from_str(cluster_size)]
 
+    @classmethod
+    def from_runtime_name(cls, runtime_name: str):
+        """Resolve a native Wherobots runtime name to a ``Runtime``.
+
+        Accepts any runtime the installed ``wherobots.db`` SDK defines, by value
+        or member name (e.g. ``"large-himem"`` or ``"LARGE_HIMEM"``),
+        case-insensitively.
+        """
+        from wherobots.db import Runtime  # local import: optional SDK
+
+        name = runtime_name.strip()
+        try:
+            return Runtime(name.lower())
+        except ValueError:
+            pass
+        try:
+            return Runtime[name.upper()]
+        except KeyError:
+            pass
+        valid = ", ".join(r.value for r in Runtime)
+        raise ValueError(
+            f"{runtime_name!r} is not a valid Wherobots runtime; expected one of: {valid}"
+        )
+
 
 # Shared helper -------------------------------------------------------------
 

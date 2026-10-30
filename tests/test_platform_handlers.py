@@ -2126,6 +2126,10 @@ class TestWherobotsExecuteJob:
         _, kwargs = self._run()
         assert kwargs["version"] == "latest"
 
+    def test_runtime_override_reaches_operator(self, fake_wherobots_runtime):
+        _, kwargs = self._run(spark_cluster_size="large-himem", desired_cores="1000")
+        assert kwargs["runtime"] is fake_wherobots_runtime.LARGE_HIMEM
+
 
 class TestWherobotsRunVersion:
     """The Wherobots run-API ``version`` field: "latest" by default, opt-in override (#81)."""
@@ -2197,6 +2201,36 @@ class TestWherobotsRunVersion:
     def test_timeout_honors_override(self):
         built = self._build(max_timeout_hours="1")
         assert built["operator_kwargs"]["timeout_seconds"] == 3600 * 1
+
+
+class TestWherobotsRuntimeSelection:
+    """``spark_cluster_size`` picks the runtime, including himem; cores are the fallback."""
+
+    def _build(self, **overrides):
+        return TestWherobotsRunVersion._build(self, **overrides)
+
+    def test_native_runtime_wins_over_desired_cores(self, fake_wherobots_runtime):
+        built = self._build(
+            spark_cluster_size="large-himem", spark_cluster_desired_worker_cores="1000"
+        )
+        assert built["operator_kwargs"]["runtime"] is fake_wherobots_runtime.LARGE_HIMEM
+        assert built["submit_payload"]["runtime"] is fake_wherobots_runtime.LARGE_HIMEM
+
+    def test_cluster_size_name_still_wins_over_desired_cores(self, fake_wherobots_runtime):
+        built = self._build(spark_cluster_size="XL", spark_cluster_desired_worker_cores="1000")
+        assert built["operator_kwargs"]["runtime"] is fake_wherobots_runtime.X_LARGE
+
+    def test_desired_cores_used_when_size_unset(self, fake_wherobots_runtime):
+        built = self._build(spark_cluster_desired_worker_cores="1000")
+        assert built["operator_kwargs"]["runtime"] is fake_wherobots_runtime.LARGE
+
+    def test_unknown_runtime_name_raises(self, fake_wherobots_runtime):
+        with pytest.raises(ValueError, match="not a valid Wherobots runtime"):
+            self._build(spark_cluster_size="large-hugemem")
+
+    def test_cluster_size_name_is_trimmed(self, fake_wherobots_runtime):
+        built = self._build(spark_cluster_size=" l ")
+        assert built["operator_kwargs"]["runtime"] is fake_wherobots_runtime.LARGE
 
 
 class TestSparkJobLink:

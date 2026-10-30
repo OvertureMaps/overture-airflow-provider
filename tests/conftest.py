@@ -10,11 +10,14 @@ container, which sets ``RUN_E2E=1``. Everywhere else (host dev, the unit CI
 legs) it is excluded from collection so it never fails for lack of Airflow.
 """
 
+import enum
 import importlib
 import os
 import sys
 import types
 from unittest.mock import MagicMock
+
+import pytest
 
 # Skip the container-only e2e suite unless explicitly opted in (see tests/e2e).
 if not os.environ.get("RUN_E2E"):
@@ -59,3 +62,23 @@ for _mod in _OPTIONAL_MODULES:
         importlib.import_module(_mod)
     except Exception:
         _stub_module(_mod)
+
+
+class _FakeWherobotsRuntime(enum.Enum):
+    TINY = "tiny"
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+    X_LARGE = "x-large"
+    XX_LARGE = "2x-large"
+    LARGE_HIMEM = "large-himem"
+    XX_LARGE_HIMEM = "2x-large-himem"
+
+
+@pytest.fixture
+def fake_wherobots_runtime(monkeypatch):
+    """Swap ``wherobots.db.Runtime`` for a real Enum, whether the SDK is installed or stubbed."""
+    import wherobots.db
+
+    monkeypatch.setattr(wherobots.db, "Runtime", _FakeWherobotsRuntime, raising=False)
+    return _FakeWherobotsRuntime

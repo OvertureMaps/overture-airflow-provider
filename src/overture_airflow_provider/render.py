@@ -575,7 +575,11 @@ def _cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--python-packages", default="")
     parser.add_argument("--spark-jar-paths", default="")
     parser.add_argument("--parameters", default="{}", help="JSON string or {} for empty.")
-    parser.add_argument("--spark-cluster-size", default="")
+    parser.add_argument(
+        "--spark-cluster-size",
+        default="",
+        help="Wherobots only: ClusterSize name (XS..XXL) or runtime name (e.g. large-himem).",
+    )
     parser.add_argument("--spark-cluster-desired-worker-cores", default="40")
     parser.add_argument("--spark-cluster-desired-workers", default="")
     parser.add_argument("--max-timeout-hours", default=DEFAULT_MAX_TIMEOUT_HOURS)

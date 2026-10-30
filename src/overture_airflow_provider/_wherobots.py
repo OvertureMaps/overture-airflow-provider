@@ -6,7 +6,7 @@ import shutil
 from collections.abc import Mapping
 
 from overture_airflow_provider._retry_guard import record_launched_run
-from overture_airflow_provider.cluster_sizing import WherobotsClusterSize
+from overture_airflow_provider.cluster_sizing import ClusterSize, WherobotsClusterSize
 from overture_airflow_provider.spark_agnostic_helpers import SparkAgnosticHelper
 from overture_airflow_provider.spark_platform_handlers import registered_catalog_names
 
@@ -340,6 +340,11 @@ def build_wherobots_operator_kwargs(
     stable GA runtime; ``"preview"`` opts into the preview channel; a
     ``None``/empty/missing value omits the field entirely.
 
+    The runtime comes from ``spark_cluster_size`` when set: a ``ClusterSize``
+    name like ``"L"`` (``WherobotsClusterSize.from_cluster_size``) or a native
+    runtime name like ``"large-himem"`` (``WherobotsClusterSize.from_runtime_name``).
+    Otherwise it comes from ``spark_cluster_desired_worker_cores``.
+
     Returns ``{"operator_kwargs", "submit_payload"}``. ``submit_payload`` is
     the JSON-serialisable equivalent used by the Wherobots REST API / CLI.
     """
@@ -388,7 +393,11 @@ def build_wherobots_operator_kwargs(
 
     runtime_name = ""
     if spark_cluster_size:
-        runtime_name = WherobotsClusterSize.from_cluster_size(spark_cluster_size)
+        size = spark_cluster_size.strip()
+        if size.upper() in ClusterSize.__members__:
+            runtime_name = WherobotsClusterSize.from_cluster_size(size)
+        else:
+            runtime_name = WherobotsClusterSize.from_runtime_name(size)
     elif spark_cluster_desired_worker_cores:
         runtime_name = WherobotsClusterSize.from_desired_cores(
             int(spark_cluster_desired_worker_cores)

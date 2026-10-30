@@ -312,22 +312,29 @@ class TestWherobotsClusterSizeFromClusterSize:
     ):
         assert WherobotsClusterSize.from_cluster_size(name) is fake_wherobots_runtime[expected]
 
+    def test_rejects_native_runtime_name(self, fake_wherobots_runtime):
+        with pytest.raises(ValueError, match="not a valid ClusterSize"):
+            WherobotsClusterSize.from_cluster_size("large-himem")
+
+
+class TestWherobotsClusterSizeFromRuntimeName:
     @pytest.mark.parametrize(
         "name", ["large-himem", "LARGE-HIMEM", " large-himem ", "LARGE_HIMEM", "large_himem"]
     )
-    def test_native_runtime_name(self, fake_wherobots_runtime, name):
-        assert WherobotsClusterSize.from_cluster_size(name) is fake_wherobots_runtime.LARGE_HIMEM
+    def test_value_or_member_name(self, fake_wherobots_runtime, name):
+        assert WherobotsClusterSize.from_runtime_name(name) is fake_wherobots_runtime.LARGE_HIMEM
 
-    def test_native_runtime_value_with_leading_digit(self, fake_wherobots_runtime):
-        result = WherobotsClusterSize.from_cluster_size("2x-large-himem")
+    def test_value_with_leading_digit(self, fake_wherobots_runtime):
+        result = WherobotsClusterSize.from_runtime_name("2x-large-himem")
         assert result is fake_wherobots_runtime.XX_LARGE_HIMEM
 
+    def test_rejects_cluster_size_name(self, fake_wherobots_runtime):
+        with pytest.raises(ValueError, match="not a valid Wherobots runtime"):
+            WherobotsClusterSize.from_runtime_name("XL")
+
     def test_unknown_name_lists_valid_choices(self, fake_wherobots_runtime):
-        with pytest.raises(
-            ValueError, match="not a valid Wherobots cluster size or runtime"
-        ) as exc:
-            WherobotsClusterSize.from_cluster_size("huge")
-        assert "XXL" in str(exc.value)
+        with pytest.raises(ValueError, match="not a valid Wherobots runtime") as exc:
+            WherobotsClusterSize.from_runtime_name("huge")
         assert "large-himem" in str(exc.value)
 
 
@@ -335,4 +342,4 @@ def test_installed_wherobots_sdk_resolves_large_himem():
     runtime_cls = getattr(pytest.importorskip("wherobots.db"), "Runtime", None)
     if not isinstance(runtime_cls, type):
         pytest.skip("wherobots SDK is not installed (stubbed)")
-    assert WherobotsClusterSize.from_cluster_size("large-himem") is runtime_cls.LARGE_HIMEM
+    assert WherobotsClusterSize.from_runtime_name("large-himem") is runtime_cls.LARGE_HIMEM

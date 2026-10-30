@@ -2225,8 +2225,12 @@ class TestWherobotsRuntimeSelection:
         assert built["operator_kwargs"]["runtime"] is fake_wherobots_runtime.LARGE
 
     def test_unknown_runtime_name_raises(self, fake_wherobots_runtime):
-        with pytest.raises(ValueError, match="not a valid Wherobots cluster size or runtime"):
+        with pytest.raises(ValueError, match="not a valid Wherobots runtime"):
             self._build(spark_cluster_size="large-hugemem")
+
+    def test_cluster_size_name_is_trimmed(self, fake_wherobots_runtime):
+        built = self._build(spark_cluster_size=" l ")
+        assert built["operator_kwargs"]["runtime"] is fake_wherobots_runtime.LARGE
 
 
 class TestSparkJobLink:

@@ -15,6 +15,12 @@ updates:
       prefix: "chore"
       include: "scope"
     groups:
+      overture-workflows:
+        patterns:
+          - "OvertureMaps/workflows*"
+        update-types:
+          - "minor"
+          - "patch"
       actions-minor-patch:
         update-types:
           - "minor"

@@ -260,6 +260,8 @@ spark_agnostic_task_group(
 - Cluster sizing arguments are ignored. The task's job link points at `ui_url` (default `http://localhost:4040`).
 - AWS SSO profiles that use a `credential_process` can fail inside containers. Export plain credentials first: `eval "$(aws configure export-credentials --profile <p> --format env)"`.
 
+See [`examples/example_local_dag.py`](examples/example_local_dag.py) for a runnable LOCAL DAG.
+
 ## Local rendering
 
 The `overture_airflow_provider.render` module produces the platform submission payload without importing or running any Airflow operators. Use it to drive real cloud resources from the CLI, or to snapshot-test payload shape in CI.

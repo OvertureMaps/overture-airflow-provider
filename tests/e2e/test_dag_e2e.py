@@ -2,13 +2,14 @@
 
 Credential-free: nothing here submits to Glue/Databricks/Wherobots. The point is
 to prove the provider *integrates* with a real Airflow — installs, registers, and
-its all-platforms example DAG parses cleanly through the actual scheduler — which
+its example DAGs parse cleanly through the actual scheduler — which
 unit tests with mocked SDKs cannot guarantee.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -19,6 +20,9 @@ import pytest
 #: DAG id and task-group ids defined in ``examples/example_dag.py``.
 EXAMPLE_DAG_ID = "example_spark_agnostic_all_platforms"
 TASK_GROUPS = ("glue_job", "databricks_job", "wherobots_job")
+#: DAG id and task-group id defined in ``examples/example_local_dag.py``.
+LOCAL_DAG_ID = "example_spark_agnostic_local"
+LOCAL_TASK_GROUP = "local_job"
 #: Tasks each spark-agnostic group expands into (see spark_agnostic_taskgroup).
 GROUP_TASKS = (
     "setup",
@@ -82,6 +86,30 @@ def test_no_dag_import_errors():
 def test_example_dag_registered():
     dag_ids = {row["dag_id"] for row in airflow_json("dags", "list")}
     assert EXAMPLE_DAG_ID in dag_ids, f"{EXAMPLE_DAG_ID} not in {sorted(dag_ids)}"
+    assert LOCAL_DAG_ID in dag_ids, f"{LOCAL_DAG_ID} not in {sorted(dag_ids)}"
+
+
+def test_local_example_dag_expansion():
+    listed = airflow("tasks", "list", LOCAL_DAG_ID)
+    task_ids = {line.strip() for line in listed.splitlines() if line.strip()}
+    missing = {f"{LOCAL_TASK_GROUP}.{task}" for task in GROUP_TASKS} - task_ids
+    assert not missing, f"missing expanded tasks: {sorted(missing)}"
+
+
+def test_local_setup_fails_closed_without_opt_in():
+    """The LOCAL example's real setup task refuses to run without the opt-in env var."""
+    env = {
+        k: v for k, v in os.environ.items() if k != "OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK"
+    }
+    proc = subprocess.run(
+        ["airflow", "tasks", "test", LOCAL_DAG_ID, f"{LOCAL_TASK_GROUP}.setup", "2025-06-01"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    out = proc.stdout + proc.stderr
+    assert "OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1" in out, out
+    assert "development only" in out, out
 
 
 def test_task_group_expansion():

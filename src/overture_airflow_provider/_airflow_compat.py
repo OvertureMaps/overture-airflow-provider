@@ -6,6 +6,9 @@ Symbol                Source
 ``DAG``               ``airflow.sdk.DAG``
 ``task``              ``airflow.sdk.task``
 ``task_group``        ``airflow.sdk.task_group``
+``TaskGroup``         ``airflow.sdk.TaskGroup``
+``TriggerRule``       ``airflow.sdk.TriggerRule``
+``XComArg``           ``airflow.sdk.XComArg``
 ``BaseOperator``      ``airflow.sdk.BaseOperator``
 ``BaseHook``          ``airflow.sdk.bases.hook.BaseHook``
 ``BaseOperatorLink``  ``airflow.sdk.bases.operatorlink.BaseOperatorLink``
@@ -20,7 +23,7 @@ Callers should import from this module rather than directly from
 """
 
 from airflow.exceptions import AirflowException
-from airflow.sdk import DAG, BaseOperator, task, task_group
+from airflow.sdk import DAG, BaseOperator, TaskGroup, TriggerRule, XComArg, task, task_group
 from airflow.sdk.bases.hook import BaseHook
 from airflow.sdk.bases.operatorlink import BaseOperatorLink
 from airflow.sdk.exceptions import AirflowFailException, TaskDeferred
@@ -34,7 +37,10 @@ __all__ = [
     "BaseOperator",
     "BaseOperatorLink",
     "TaskDeferred",
+    "TaskGroup",
+    "TriggerRule",
     "XCom",
+    "XComArg",
     "task",
     "task_group",
 ]

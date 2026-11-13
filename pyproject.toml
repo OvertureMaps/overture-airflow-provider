@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "apache-airflow>=3.3.0",
     "apache-airflow-providers-amazon",
+    "apache-airflow-providers-standard",
     "boto3",
     "overture-core>=0.6.0,<2.0.0",
 ]

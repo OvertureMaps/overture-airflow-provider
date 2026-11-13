@@ -122,6 +122,8 @@ def test_import_does_not_pull_in_airflow():
     """
     code = (
         "import sys, overture_airflow_provider;"
+        "from overture_airflow_provider import "
+        "GlueMatchingConfig, DatabricksMatchingConfig, CorpusDagConfig;"
         "leaked = sorted(m for m in sys.modules"
         " if m == 'airflow' or m.startswith('airflow.')"
         " or m.split('.')[0] in {'databricks', 'wherobots', 'sh'});"
@@ -130,6 +132,16 @@ def test_import_does_not_pull_in_airflow():
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert proc.returncode == 0, f"eager imports leaked:\n{proc.stdout}{proc.stderr}"
+
+
+def test_matching_example_registered_without_optional_sdk_imports():
+    dag_id = "example_per_provider_matching"
+    dag_ids = {row["dag_id"] for row in airflow_json("dags", "list")}
+    assert dag_id in dag_ids
+    listed = airflow("tasks", "list", dag_id)
+    for provider in ("osm", "linz"):
+        assert f"providers.{provider}.match.load_results._complete" in listed
+        assert f"providers.{provider}.finalize_source" in listed
 
 
 def test_setup_info_xcom_roundtrip():

@@ -16,6 +16,7 @@ The provider is intentionally unopinionated: every environment-specific value (S
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Reusable matching workflows](#reusable-matching-workflows)
 - [Operator links](#operator-links)
 - [Failure messages](#failure-messages)
   - [Retries](#retries)
@@ -98,6 +99,164 @@ Switching to Databricks or Wherobots requires only a different `spark_impl_name`
 See [`examples/example_dag.py`](examples/example_dag.py) for a runnable DAG targeting all three platforms.
 
 See [`SPEC.md`](SPEC.md) for the full architecture.
+
+## Reusable matching workflows
+
+`matching_task_group` resolves input/baseline paths, optionally exports Corpus
+tables, runs the published Scala matcher, validates results and provenance, and
+optionally loads every result table into Corpus. Instances can have arbitrary
+names, nested parent groups, or repeated group names (Airflow adds collision
+suffixes). They do not depend on a global `matching_tg` or another instance's XComs.
+
+```python
+from overture_airflow_provider import (
+    CorpusDagConfig,
+    DatabricksMatchingConfig,
+    matching_task_group,
+)
+
+matching = matching_task_group(
+    group_id="match_linz",
+    scenario="overture",
+    theme="divisions",
+    provider="linz",
+    input={
+        "override_paths": {
+            "division": "s3://example-bucket/linz/data/type=division",
+            "division_area": "s3://example-bucket/linz/data/type=division_area",
+        }
+    },
+    baseline={"branch": "main", "version": "{{ params.baseline_version }}"},
+    tables=("division", "division_area"),
+    output_path="s3://example-bucket/matching/linz/{{ run_id }}",
+    run_id="{{ run_id }}",
+    runtime=DatabricksMatchingConfig(
+        databricks_conn_id="example_databricks",
+        job_name="example_matching",
+    ),
+    corpus=CorpusDagConfig(
+        export_dag_id="example_corpus_export",
+        load_dag_id="example_corpus_load",
+        export_output_task_id="output",
+    ),
+    output_corpus_branch="main",
+    provenance_task_factory=publish_matching_metadata,
+)
+
+normalize >> matching.group
+finalize = finalize_source(matching.complete)
+```
+
+`normalize`, `finalize_source`, and `publish_matching_metadata` are supplied by
+the consuming DAG. See [`examples/example_matching_dag.py`](examples/example_matching_dag.py)
+for a credential-free-to-parse, multi-provider scaffold with explicit adapter
+placeholders. Source discovery, unchanged-data gates, normalization, provider
+ordering/concurrency, source success markers, and assemble remain consumer-owned.
+Place the gate before the **whole group**, and finalize only after `complete`.
+Use a failure-sensitive end barrier (for example `NONE_FAILED`) so all-unchanged
+is successful but failed provider processing blocks assembly.
+
+### Execution and inputs
+
+| Config | Matching execution |
+|---|---|
+| `GlueMatchingConfig` | Uses `spark_agnostic_task_group` with `org.overturemaps.matching.Main`. Supply matcher/Sedona JARs, registry, artifact store and Glue config explicitly. Optional files, Spark settings, Iceberg config, pools and retry/timeout settings are forwarded. |
+| `DatabricksMatchingConfig` | Uses an **existing named multi-task job**, not the generic Spark runner. Install `[databricks]`. Exactly one output task matching `output_task_key_contains` (default `assign`) must return notebook JSON containing `resultDataPaths`. Polling occupies a worker. |
+| `CorpusDagConfig` | Names deployed export/load DAGs and the export result task/key; it does not deploy Corpus or import its DAG modules. Export/load triggers wait for completion. `spark_impl_name` independently selects child-DAG execution; it is not inferred from the matcher. |
+
+Wherobots matching is not supported by this API; the generic Spark API's
+Wherobots support does not establish matcher compatibility.
+
+Input and baseline accept native or JSON objects: either `{"branch": "...",
+"version": "..."}` (version optional) or `{"override_paths": {"table": "path"}}`.
+Explicit `tables` are required; maps must contain exactly those tables, with
+nonempty paths. Branch selections require Corpus configuration and the
+`overture` scenario. Set `combine_output=False` on `CorpusDagConfig` when the
+consumer requires separate active/deleted exports. The export result contract
+is `{"data_export": [{"TableName": "...", "exportPath": "..."}]}` for each
+mapped child. Reads use that child's exact DAG/run/task/key, never the latest run.
+
+Matcher arguments may be templated; execution configuration/backend is chosen
+at DAG construction. Supply a **unique output root per invocation**, including
+provider/instance and run identity. A unique `run_id` alone is insufficient:
+Glue reads its manifest from `<output_path>/<output_result_file>` (default
+`data_paths.json`), not from the matcher run subdirectory. Table results must
+share the legacy `<metadata_root>/final/type=<table>` layout.
+
+An empty `output_corpus_branch` or a non-`overture` scenario is match-only.
+`complete` returns `{"loaded": bool, "result_paths": {...},
+"corpus_run_ids": [...]}`; match-only success has `loaded=False` and no child
+load IDs. `result_paths` alone is **not** evidence that loads completed.
+Non-default target branches are assumed to exist. Explicit
+`create_branch=True` requires `create_branch_dag_id`; creation failures block
+loading, including "already exists" unless the child DAG explicitly handles it.
+
+### Provenance and places hooks
+
+When loading can be enabled, `provenance_task_factory` is required. It is called
+at DAG construction with keyword XCom arguments `input_paths`, `baseline_paths`,
+`result_paths`, `metadata_root`, and `parameters`. It must build and return the
+**publishing task's XComArg**. The task must write compatible metadata at the
+supplied root before returning a receipt:
+
+```python
+{
+    "metadata_root": "s3://example-bucket/matching/linz/run",
+    "inputs": [
+        {
+            "path": "s3://example-bucket/linz/data/type=division",
+            "metadata": {"source": {"version": "one"}},
+        },
+        # Include every concrete input table/path, including wildcard expansions.
+    ],
+    "baselines": [
+        {
+            "path": "s3://example-bucket/exports/type=division",
+            "metadata": {"corpus": {"version": "123"}},
+        },
+        # Include every concrete baseline table/path.
+    ],
+}
+```
+
+The provider rejects missing coverage, unrelated paths, unresolved wildcards,
+empty metadata, `_error` entries, and a mismatched root. The adapter owns the
+actual write, exhaustive wildcard expansion, metadata ancestor discovery,
+dataset/license attribution, matcher version/configuration capture, conditional
+writes and redaction. Receipt validation cannot independently prove a remote
+write or discover omitted wildcard matches. Do not wrap a warning-and-fallback
+legacy reader and treat its return as successful publication.
+
+For places, supply `validation_task_factory` when using
+`embeddings_cache_table`. It receives instance-local `input_paths`,
+`baseline_paths`, and `embeddings_cache_table`, and returns a task XComArg or
+TaskGroup that must succeed before matching. The validation job implementation
+and package versions stay in the consumer. `match_history` and `output_debug`
+retain unset/true/false semantics; `previous_metrics_path`,
+`expiration_period_days`, Glue `extra_files` (for example libpostal), JARs and
+tuning remain explicit. No places-specific deployment defaults are inferred.
+
+### Failure handling and migration
+
+Missing/invalid matcher results or provenance fail before loading. Unexpected
+validation, matcher or provenance skips also fail closed. Completion requires
+every mapped load to succeed; failed or unexpectedly skipped export or load
+tasks cannot release source finalization. An intentionally unchanged provider
+remains skipped throughout its group.
+
+Loads are separate transactions, not an atomic multi-table update. Child run
+IDs are deterministic per parent DAG/run/task and configuration; triggers have
+zero retries, never reset existing child runs, and fail on duplicate IDs rather
+than blindly replaying committed loads. After partial failure, inspect and
+reconcile the child runs before using the deployment's recovery procedure.
+Databricks submissions also use a stable idempotency token. A polling timeout
+does not cancel the remote Databricks run.
+
+Release this additive provider API first, update the deployment's pinned
+provider dependency, then migrate and validate consumers. Keep existing loose
+helpers and places DAGs until equivalent behavior is demonstrated. This API
+does not itself change divisions ingest/orchestrator DAGs or make old ingest
+success markers proof of successful matching/loading.
 
 ## Operator links
 

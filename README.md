@@ -45,11 +45,12 @@ registry, wheel and JAR downloads and S3 caching:
 pip install "airflow-provider-overture[overture]"
 ```
 
-Optional extras for platforms that need additional SDKs:
+For Databricks or Wherobots Spark jobs, combine `overture` with the platform
+extra. The `all` extra includes both `overture` and all platform SDKs:
 
 ```bash
-pip install "airflow-provider-overture[databricks]"
-pip install "airflow-provider-overture[wherobots]"
+pip install "airflow-provider-overture[overture,databricks]"
+pip install "airflow-provider-overture[overture,wherobots]"
 pip install "airflow-provider-overture[all]"
 ```
 

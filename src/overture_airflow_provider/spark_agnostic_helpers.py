@@ -122,6 +122,8 @@ class SparkAgnosticHelper:
                 native packages, plus any pure-Python package matching
                 ``force_pip_packages``, e.g. ``['numba==0.59.0']``).
         """
+        pypi = import_overture_core("overture_core.pypi")
+
         # Force-install via pip for caller-configured complex packages.
         excluded_native_packages = [pkg for pkg in packages if self._force_pip_install(pkg)]
         for pkg in excluded_native_packages:
@@ -145,7 +147,6 @@ class SparkAgnosticHelper:
 
         # Download all packages into a temp folder.
         tmp_folder_pypi = tempfile.mkdtemp()
-        pypi = import_overture_core("overture_core.pypi")
         py_pi_downloader = pypi.PyPiDownloader(py_pi_client, tmp_folder_pypi)
         py_pi_downloader.download_packages(packages, python_version=python_version)
 
@@ -244,31 +245,29 @@ class SparkAgnosticHelper:
             print("No job runner wheel found for script extraction")
             return {}
 
-        script_dir = tempfile.mkdtemp()
         script_locations: dict[str, str] = {}
 
-        extracted_files: list[str] = []
-        with zipfile.ZipFile(job_runner_whl, "r") as wheel:
-            for file_info in wheel.filelist:
-                for script_name in script_names:
-                    if file_info.filename.endswith(script_name):
-                        wheel.extract(file_info, script_dir)
-                        extracted_files.append(file_info.filename)
+        with tempfile.TemporaryDirectory() as script_dir:
+            extracted_files: list[str] = []
+            with zipfile.ZipFile(job_runner_whl, "r") as wheel:
+                for file_info in wheel.filelist:
+                    for script_name in script_names:
+                        if file_info.filename.endswith(script_name):
+                            wheel.extract(file_info, script_dir)
+                            extracted_files.append(file_info.filename)
 
-        print(f"Extracted job runner files: {extracted_files}")
+            print(f"Extracted job runner files: {extracted_files}")
 
-        if extracted_files:
-            s3_object = import_overture_core("overture_core.cloud.aws.object")
-            uploaded_scripts = s3_object.upload_directory(
-                script_dir, self.s3_bucket, prefix=self.s3_prefix
-            )
-            for uploaded_path in uploaded_scripts:
-                for script_name in script_names:
-                    if uploaded_path.endswith(script_name):
-                        script_locations[script_name] = uploaded_path
-                        print(f"Job runner uploaded to: {uploaded_path}")
-
-        shutil.rmtree(script_dir)
+            if extracted_files:
+                s3_object = import_overture_core("overture_core.cloud.aws.object")
+                uploaded_scripts = s3_object.upload_directory(
+                    script_dir, self.s3_bucket, prefix=self.s3_prefix
+                )
+                for uploaded_path in uploaded_scripts:
+                    for script_name in script_names:
+                        if uploaded_path.endswith(script_name):
+                            script_locations[script_name] = uploaded_path
+                            print(f"Job runner uploaded to: {uploaded_path}")
 
         return script_locations
 

@@ -23,6 +23,7 @@ x-build: &build
   args:
     AIRFLOW_VERSION: ${AIRFLOW_VERSION:-3.3.1}
     PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+    PROVIDER_EXTRAS: ${PROVIDER_EXTRAS:-}
 
 x-airflow-env: &airflow-env
   AIRFLOW_HOME: /home/airflow/airflow

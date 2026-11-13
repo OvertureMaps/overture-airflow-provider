@@ -8,6 +8,7 @@ unit tests with mocked SDKs cannot guarantee.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import shutil
@@ -124,7 +125,7 @@ def test_import_does_not_pull_in_airflow():
         "import sys, overture_airflow_provider;"
         "leaked = sorted(m for m in sys.modules"
         " if m == 'airflow' or m.startswith('airflow.')"
-        " or m.split('.')[0] in {'databricks', 'wherobots', 'sh'});"
+        " or m.split('.')[0] in {'databricks', 'wherobots', 'sh', 'overture_core'});"
         "print('LEAKED:' + ','.join(leaked));"
         "sys.exit(1 if leaked else 0)"
     )
@@ -137,12 +138,13 @@ def test_setup_info_xcom_roundtrip():
 
     Unit tests cover the to_xcom/rehydrate logic in isolation; this uses the
     live setup_spark_job() so any field added to _setup.py but missing from
-    SERIALIZABLE_KEYS is caught against a real Airflow environment.
+    SERIALIZABLE_KEYS is caught against a real Airflow environment. Without
+    the overture extra, checks the actionable installation error instead.
     """
     from overture_airflow_provider._setup import setup_spark_job
     from overture_airflow_provider.setup_info import SERIALIZABLE_KEYS, to_xcom
 
-    info = setup_spark_job(
+    kwargs = dict(
         spark_impl_name="GLUE_v5",
         sedona_version="1.7.0",
         module_name="my_pkg.jobs",
@@ -151,20 +153,36 @@ def test_setup_info_xcom_roundtrip():
         parameters="{}",
         spark_jar_paths="",
     )
+    if importlib.util.find_spec("overture_core") is None:
+        with pytest.raises(ModuleNotFoundError, match=r"airflow-provider-overture\[overture\]"):
+            setup_spark_job(**kwargs)
+        return
+
+    info = setup_spark_job(**kwargs)
     payload = to_xcom(info)
 
     assert set(payload) == (set(SERIALIZABLE_KEYS) & set(info)) | {"spark_family_name"}
     assert json.loads(json.dumps(payload)) == payload
 
 
-def test_setup_task_executes_credential_free():
+def test_setup_task_handles_optional_dependency():
     """``airflow tasks test`` runs the real setup task with no cloud creds.
 
     Exercises the live PythonOperator + Jinja-rendered op_kwargs + return path
     that DAG-parse checks never touch. The setup task builds version metadata and
     constructs (but never calls) the CodeArtifact client, so it needs no creds.
+    A base-only install must fail with the overture extra's installation hint.
     """
-    out = airflow_combined("tasks", "test", EXAMPLE_DAG_ID, "glue_job.setup", "2025-06-01")
+    args = ("tasks", "test", EXAMPLE_DAG_ID, "glue_job.setup", "2025-06-01")
+    if importlib.util.find_spec("overture_core") is None:
+        proc = subprocess.run(["airflow", *args], capture_output=True, text=True)
+        out = proc.stdout + proc.stderr
+        assert "ModuleNotFoundError: overture-core" in out, out
+        assert "airflow-provider-overture[overture]" in out, out
+        assert "Initialized private PyPI client" not in out, out
+        return
+
+    out = airflow_combined(*args)
     markers = ("run_identifier:", "Initialized private PyPI client", "Platform:")
     assert any(m in out for m in markers), f"no setup markers in output:\n{out}"
 

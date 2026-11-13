@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import zipfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -137,13 +138,17 @@ class TestDownloadAndCachePythonPackages:
             pass
 
         with (
-            patch("overture_core.pypi.PyPiDownloader") as MockDownloader,
+            patch(
+                "overture_airflow_provider.spark_agnostic_helpers.import_overture_core"
+            ) as mock_import,
             patch(
                 "overture_airflow_provider.spark_agnostic_helpers.tempfile.mkdtemp",
                 return_value=tmp_dir,
             ),
         ):
-            MockDownloader.return_value.download_packages.side_effect = fake_download
+            mock_import.return_value.PyPiDownloader.return_value.download_packages.side_effect = (
+                fake_download
+            )
             result = helper.download_and_cache_python_packages(
                 py_pi_client=mock_client,
                 packages=list(requested_packages),
@@ -269,9 +274,11 @@ class TestDownloadAndCacheJars:
         s3_mock = _make_s3_mock(existing_s3_keys)
         helper = _make_helper(s3_mock)
 
-        with patch("overture_core.pypi.HttpDownloader") as MockHttp:
+        with patch(
+            "overture_airflow_provider.spark_agnostic_helpers.import_overture_core"
+        ) as mock_import:
             tmp_dir = tempfile.mkdtemp()
-            MockHttp.return_value = MagicMock()
+            MockHttp = mock_import.return_value.HttpDownloader
 
             def _fake_dl(urls):
                 paths = []
@@ -343,3 +350,28 @@ class TestDownloadAndCacheJars:
         result, _ = self._run(jar_urls=[], pre_provisioned=pre)
         parts = result.split(",")
         assert len(parts) == 2
+
+
+def test_extract_job_runner_scripts_uploads_and_cleans_up(tmp_path):
+    wheel = tmp_path / "runner.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("package/runner.py", "print('job')")
+
+    helper = _make_helper(_make_s3_mock())
+    uri = f"s3://{helper.s3_bucket}/{helper.s3_prefix}/package/runner.py"
+
+    def upload_directory(directory, bucket, prefix):
+        assert os.path.isfile(os.path.join(directory, "package", "runner.py"))
+        assert bucket == helper.s3_bucket
+        assert prefix == helper.s3_prefix
+        return [uri]
+
+    with patch(
+        "overture_airflow_provider.spark_agnostic_helpers.import_overture_core"
+    ) as mock_import:
+        upload = mock_import.return_value.upload_directory
+        upload.side_effect = upload_directory
+        result = helper.extract_job_runner_scripts(str(wheel), ["runner.py"])
+
+    assert result == {"runner.py": uri}
+    assert not os.path.exists(upload.call_args.args[0])

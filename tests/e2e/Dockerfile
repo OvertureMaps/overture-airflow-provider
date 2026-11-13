@@ -2,7 +2,8 @@
 # E2E image: the provider installed into a REAL Apache Airflow.
 # ─────────────────────────────────────────────────────────────────────────────
 # Extends the official Airflow image and installs this provider (no platform
-# extras) plus the test runner. Installing under Airflow's official constraints
+# SDK extras) plus the test runner. PROVIDER_EXTRAS enables the overture extra.
+# Installing under Airflow's official constraints
 # pins apache-airflow-providers-amazon to a version compatible with the exact
 # Airflow release, so pip never silently upgrades/downgrades Airflow itself.
 #
@@ -21,6 +22,7 @@ FROM apache/airflow:${AIRFLOW_VERSION}-python${PYTHON_VERSION}
 # Re-declare so the args are in scope for RUN below.
 ARG AIRFLOW_VERSION
 ARG PYTHON_VERSION
+ARG PROVIDER_EXTRAS=""
 ARG CONSTRAINTS_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 # emSign ECC Root CA - G3 remediation (GHSA-6q48-6c7w-9gw2): the base image's pip
@@ -35,10 +37,10 @@ COPY --chown=airflow:0 src /opt/overture/src
 COPY --chown=airflow:0 tests /opt/overture/tests
 COPY --chown=airflow:0 examples /opt/overture/examples
 
-# Install the provider (core only) + test runner, constrained to this Airflow.
+# Install the provider + test runner, constrained to this Airflow.
 # The constraints file pins an older certifi, so raise it to the fixed floor afterwards.
 RUN pip install --no-cache-dir --constraint "${CONSTRAINTS_URL}" \
-        "/opt/overture" "pytest>=8.0" "pytest-mock>=3.12" \
+        "/opt/overture${PROVIDER_EXTRAS}" "pytest>=8.0" "pytest-mock>=3.12" \
     && pip install --no-cache-dir "certifi>=2026.10.19"
 
 WORKDIR /opt/overture

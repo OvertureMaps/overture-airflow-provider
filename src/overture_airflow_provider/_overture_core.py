@@ -9,7 +9,7 @@ def import_overture_core(module: str) -> ModuleType:
     try:
         return importlib.import_module(module)
     except ModuleNotFoundError as exc:
-        if (exc.name or "").split(".")[0] != "overture_core":
+        if exc.name != "overture_core":
             raise
         raise ModuleNotFoundError(
             "overture-core is required to download, cache and upload Spark job "

@@ -10,17 +10,39 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [{ name = "Overture Maps Foundation" }]
-keywords = ["airflow", "spark", "glue", "databricks", "wherobots", "sedona", "iceberg"]
+maintainers = [{ name = "Overture Maps Foundation" }]
+keywords = [
+    "airflow",
+    "airflow-provider",
+    "apache-airflow",
+    "aws-glue",
+    "databricks",
+    "glue",
+    "iceberg",
+    "overture",
+    "overture-maps",
+    "pyspark",
+    "sedona",
+    "spark",
+    "wherobots",
+]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
     "Framework :: Apache Airflow",
+    "Framework :: Apache Airflow :: Provider",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Distributed Computing",
 ]
 
@@ -49,6 +71,8 @@ Homepage = "https://github.com/OvertureMaps/overture-airflow-provider"
 Repository = "https://github.com/OvertureMaps/overture-airflow-provider"
 Documentation = "https://github.com/OvertureMaps/overture-airflow-provider#readme"
 Issues = "https://github.com/OvertureMaps/overture-airflow-provider/issues"
+Changelog = "https://github.com/OvertureMaps/overture-airflow-provider/releases"
+"Overture Maps" = "https://overturemaps.org"
 
 [project.entry-points."apache_airflow_provider"]
 airflow-provider-overture = "overture_airflow_provider.provider_info:get_provider_info"

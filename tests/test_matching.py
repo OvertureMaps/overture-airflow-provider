@@ -1,10 +1,10 @@
 import json
-from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from overture_airflow_provider._airflow_compat import AirflowFailException
 from overture_airflow_provider._matching import (
     child_run_id,
     export_paths,
@@ -14,26 +14,13 @@ from overture_airflow_provider._matching import (
     path_map,
     selection,
     table_names,
-    validate_provenance,
 )
 
 TABLES = ["division", "division_area"]
 INPUTS = {table: f"s3://feeds/provider=linz/run=one/data/type={table}" for table in TABLES}
 BASELINE = {table: f"s3://baseline/corpus/type={table}" for table in TABLES}
 RESULTS = {table: f"s3://matches/run=one/final/type={table}" for table in TABLES}
-
-
-def receipt(inputs=INPUTS, baseline=BASELINE):
-    return {
-        "metadata_root": "s3://matches/run=one",
-        "inputs": [
-            {"path": path, "metadata": {"source": {"version": "one"}}} for path in inputs.values()
-        ],
-        "baselines": [
-            {"path": path, "metadata": {"corpus": {"snapshot": "123"}}}
-            for path in baseline.values()
-        ],
-    }
+CONTEXT = {"ti": SimpleNamespace(dag_id="test", run_id="run", task_id="outer.linz.requests")}
 
 
 def parameters(**overrides):
@@ -65,7 +52,8 @@ def test_legacy_input_forms_and_table_contract():
         "version": "",
         "paths": {},
     }
-    assert selection({"branch": "test", "version": 123}, TABLES, "overture")["version"] == 123
+    # Corpus DAGs type the version as a string; snapshot IDs often arrive as ints.
+    assert selection({"branch": "test", "version": 123}, TABLES, "overture")["version"] == "123"
     assert table_names("division, division_area") == TABLES
 
 
@@ -139,9 +127,12 @@ def test_export_results_require_every_table_and_one_row_per_run():
         for table in TABLES
     ]
     assert export_paths(outputs, TABLES) == BASELINE
-    for bad in ([outputs[0]], [outputs[0], outputs[0]], [None], [{"data_export": []}]):
+    for bad in ([outputs[0]], [outputs[0], None], [outputs[0], {"data_export": []}]):
         with pytest.raises(ValueError):
             export_paths(bad, TABLES)
+    # Each response must belong to the table requested at the same position.
+    with pytest.raises(ValueError, match="'division' returned table 'division_area'"):
+        export_paths(outputs[::-1], TABLES)
 
 
 def test_load_uri_compatibility_and_child_identity_isolation():
@@ -156,39 +147,24 @@ def test_load_uri_compatibility_and_child_identity_isolation():
     assert first != child_run_id("dag", "run", "outer.linz.load", "division_area", {"a": 1})
 
 
-def test_provenance_covers_concrete_inputs_and_expanded_wildcards():
-    assert validate_provenance(receipt(), output_root(RESULTS), INPUTS, BASELINE) == output_root(
-        RESULTS
+def test_provenance_must_report_the_root_it_published():
+    from overture_airflow_provider.matching_taskgroup import _provenance_ready
+
+    root = output_root(RESULTS)
+    assert _provenance_ready.function(root, root) == root
+    # None is what a skipped publishing task leaves behind.
+    for published in (None, "s3://matches/run=other", {"metadata_root": root}):
+        with pytest.raises(AirflowFailException, match="metadata root"):
+            _provenance_ready.function(published, root)
+
+
+def test_matcher_arguments_match_legacy_and_inject_places_files():
+    from overture_airflow_provider.matching_spark import (
+        _matcher_arguments,
+        spark_matcher_task_factory,
     )
-    wildcard = {
-        table: path.replace("provider=linz", "provider=*") for table, path in INPUTS.items()
-    }
-    assert validate_provenance(receipt(), output_root(RESULTS), wildcard, BASELINE)
 
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda data: data.update(metadata_root="s3://wrong/run"),
-        lambda data: data.update(inputs=[]),
-        lambda data: data["inputs"].pop(),
-        lambda data: data["inputs"][0].update(path="s3://unrelated/data"),
-        lambda data: data["inputs"][0].update(metadata={}),
-        lambda data: data["inputs"][0].update(path="s3://feeds/provider=*/data"),
-        lambda data: data["baselines"][0]["metadata"].update(nested={"_error": "access denied"}),
-    ],
-)
-def test_incomplete_or_failed_provenance_cannot_release_load(mutate):
-    data = deepcopy(receipt())
-    mutate(data)
-    with pytest.raises(ValueError):
-        validate_provenance(data, output_root(RESULTS), INPUTS, BASELINE)
-
-
-def test_glue_payload_matches_legacy_and_injects_places_files():
-    from overture_airflow_provider._matching_glue import _glue_parameters
-
-    conf = _glue_parameters.function(
+    conf = _matcher_arguments.function(
         parameters(), "data_paths.json", "s3://caller/libpostal.tar.gz"
     )
     assert conf["--outputPath"] == "s3a://matches"
@@ -196,67 +172,96 @@ def test_glue_payload_matches_legacy_and_injects_places_files():
     assert conf["--outputResultFile"] == "data_paths.json"
     assert conf["--extra-files"] == "s3://caller/libpostal.tar.gz"
     assert json.loads(conf["--baseline"]) == BASELINE
-    with pytest.raises(ValueError, match="filename"):
-        _glue_parameters.function(parameters(), "", "")
+    for name in ("", "nested/data_paths.json"):
+        with pytest.raises(ValueError, match="filename"):
+            spark_matcher_task_factory(output_result_file=name)
 
 
-def test_glue_manifest_reads_the_invocations_explicit_path(mocker):
-    from io import BytesIO
+def test_manifest_is_read_from_the_invocations_output_path(mocker):
+    from overture_airflow_provider.matching_spark import _read_manifest
 
-    from overture_airflow_provider._matching_glue import _read_manifest
-
-    client = mocker.patch("boto3.client").return_value
-    client.get_object.return_value = {"Body": BytesIO(json.dumps(RESULTS).encode())}
-    assert _read_manifest.function(parameters(), "data_paths.json") == RESULTS
-    client.get_object.assert_called_once_with(Bucket="matches", Key="data_paths.json")
-    client.get_object.side_effect = PermissionError("denied")
-    with pytest.raises(PermissionError):
+    read = mocker.patch("overture_core.cloud.aws.object.get_object_bytes")
+    read.return_value = json.dumps(RESULTS).encode()
+    assert _read_manifest.function(parameters(output_path="s3a://matches/linz/"), "out.json") == (
+        RESULTS
+    )
+    read.assert_called_once_with("matches", "linz/out.json")
+    read.return_value = None
+    with pytest.raises(FileNotFoundError, match="s3://matches/data_paths.json"):
         _read_manifest.function(parameters(), "data_paths.json")
+    with pytest.raises(ValueError, match="S3"):
+        _read_manifest.function(parameters(output_path="gs://matches"), "data_paths.json")
 
 
-def test_load_plan_preserves_corpus_contract_and_does_not_infer_spark_platform():
-    from overture_airflow_provider.matching_taskgroup import _load_plan
+def test_load_and_create_requests_preserve_the_corpus_contract():
+    from overture_airflow_provider.matching_taskgroup import _create_requests, _load_requests
 
-    context = {"ti": SimpleNamespace(dag_id="test", run_id="run", task_id="outer.linz.plan")}
-    plan = _load_plan.function(
-        RESULTS,
-        {"branch": "baseline", "version": 123},
-        "overture",
-        "experiment",
-        "linz",
-        "divisions",
-        "30",
-        "main",
-        True,
-        None,
-        **context,
+    loads = _load_requests.function(
+        RESULTS, "overture", "experiment", "linz", "divisions", "30", None, **CONTEXT
     )
-    assert plan["load"] and plan["create"]
-    assert plan["create_conf"]["BaseVersion"] == 123
-    assert plan["create_conf"]["BaseBranchName"] == "baseline"
-    assert plan["loads"][0]["conf"] == {
+    assert [request["conf"] for request in loads] == [
+        {
+            "ThemeName": "divisions",
+            "TableName": table,
+            "BranchName": "experiment",
+            "InputPath": load_uri(RESULTS[table]),
+            "IdField": "id",
+            "Source": "linz",
+            "ExpirationPeriodDays": 30,
+        }
+        for table in TABLES
+    ]
+    baseline = {"paths": {}, "branch": "baseline", "version": "123"}
+    (create,) = _create_requests.function(
+        TABLES, baseline, "overture", "experiment", "divisions", "main", "GLUE_v5", **CONTEXT
+    )
+    assert create["conf"] == {
         "ThemeName": "divisions",
-        "TableName": "division",
+        "TableNames": "division,division_area",
         "BranchName": "experiment",
-        "InputPath": load_uri(RESULTS["division"]),
-        "IdField": "id",
-        "Source": "linz",
-        "ExpirationPeriodDays": 30,
+        "BaseBranchName": "baseline",
+        "BaseVersion": "123",
+        "SparkImpl": "GLUE_v5",
     }
-    no_load = _load_plan.function(
-        RESULTS,
-        {"branch": "", "version": ""},
-        "overture",
-        "",
-        "linz",
-        "divisions",
-        0,
-        "main",
-        False,
-        "GLUE_v5",
-        **context,
+    direct = {"paths": BASELINE, "branch": "", "version": ""}
+    # No creation for the default branch, and nothing at all for a match-only run.
+    for scenario, branch in (("overture", "main"), ("overture", ""), ("test", "experiment")):
+        assert not _create_requests.function(
+            TABLES, direct, scenario, branch, "divisions", "main", None, **CONTEXT
+        )
+    for scenario, branch in (("overture", ""), ("overture", "none"), ("test", "experiment")):
+        assert not _load_requests.function(
+            RESULTS, scenario, branch, "linz", "divisions", 0, None, **CONTEXT
+        )
+    with pytest.raises(AirflowFailException, match="non-negative"):
+        _load_requests.function(
+            RESULTS, "overture", "main", "linz", "divisions", -1, None, **CONTEXT
+        )
+
+
+def test_export_requests_cover_each_table_only_for_branch_selections():
+    from overture_airflow_provider.matching_taskgroup import _export_parameters
+
+    parsed = selection({"branch": "main", "version": 123}, TABLES, "overture")
+    requests = _export_parameters.function(
+        parsed, TABLES, "divisions", "parquet", True, None, **CONTEXT
     )
-    assert no_load["loads"] == [] and no_load["load"] is False
+    assert [request["conf"] for request in requests] == [
+        {
+            "ThemeName": "divisions",
+            "TableName": table,
+            "BranchName": "main",
+            "Version": "123",
+            "DataFormat": "parquet",
+            "CombineOutput": True,
+        }
+        for table in TABLES
+    ]
+    assert len({request["trigger_run_id"] for request in requests}) == len(TABLES)
+    direct = selection({"override_paths": INPUTS}, TABLES, "overture")
+    assert not _export_parameters.function(
+        direct, TABLES, "divisions", "parquet", True, None, **CONTEXT
+    )
 
 
 def test_child_exports_read_only_exact_mapped_runs(mocker):
@@ -275,7 +280,7 @@ def test_child_exports_read_only_exact_mapped_runs(mocker):
         {"data_export": [{"TableName": table, "exportPath": BASELINE[table]}]} for table in TABLES
     ]
     result = _exported_paths.function(
-        "outer.linz.input.export", "export_dag", "output", "return_value", TABLES, [{}, {}], ti=ti
+        "outer.linz.input.export", "export_dag", "output", "return_value", TABLES, ti=ti
     )
     assert result == BASELINE
     assert [call.kwargs["run_id"] for call in get_one.call_args_list] == [
@@ -284,52 +289,60 @@ def test_child_exports_read_only_exact_mapped_runs(mocker):
     ]
     assert [call.kwargs["map_indexes"] for call in ti.xcom_pull.call_args_list] == [0, 1]
     ti.xcom_pull.side_effect = [None, "other_provider"]
-    with pytest.raises(ValueError, match="Missing"):
+    # Contract violations are permanent: a retry cannot change the outcome.
+    with pytest.raises(AirflowFailException, match="Missing"):
         _exported_paths.function(
-            "outer.linz.input.export",
-            "export_dag",
-            "output",
-            "return_value",
-            TABLES,
-            [{}, {}],
-            ti=ti,
+            "outer.linz.input.export", "export_dag", "output", "return_value", TABLES, ti=ti
         )
     ti.xcom_pull.side_effect = ["linz_division", "linz_area"]
     get_one.side_effect = [
         {"data_export": [{"TableName": table, "exportPath": BASELINE[table]}]}
         for table in reversed(TABLES)
     ]
-    with pytest.raises(ValueError, match="required tables"):
+    with pytest.raises(AirflowFailException, match="returned table"):
         _exported_paths.function(
-            "outer.linz.input.export",
-            "export_dag",
-            "output",
-            "return_value",
-            TABLES,
-            [{}, {}],
-            ti=ti,
+            "outer.linz.input.export", "export_dag", "output", "return_value", TABLES, ti=ti
         )
 
 
 @pytest.mark.parametrize("states", [{}, {"load_0": "success", "load_1": "skipped"}])
-def test_load_receipts_cannot_override_missing_or_skipped_task_states(states):
-    from overture_airflow_provider.matching_taskgroup import _loaded
+def test_completion_requires_every_mapped_load_to_succeed(states):
+    from overture_airflow_provider.matching_taskgroup import _complete
 
     ti = Mock(dag_id="parent", run_id="parent_run")
     ti.xcom_pull.side_effect = ["child_0", "child_1"]
     ti.get_task_states.return_value = {"parent_run": states}
-    with pytest.raises(ValueError, match="Every mapped child"):
-        _loaded.function({"loads": [{}, {}], "result_paths": RESULTS}, "load", ti=ti)
+    with pytest.raises(AirflowFailException, match="Every mapped child"):
+        _complete.function(RESULTS, [{}, {}], "load", ti=ti)
 
 
-def test_missing_load_receipts_and_ambiguous_completion_fail():
-    from overture_airflow_provider.matching_taskgroup import _complete, _loaded
+def test_completion_distinguishes_loaded_match_only_and_missing_requests():
+    from overture_airflow_provider.matching_taskgroup import _complete, _selected_paths
 
-    ti = Mock()
+    ti = Mock(dag_id="parent", run_id="parent_run")
+    ti.xcom_pull.side_effect = ["child_0", "child_1"]
+    ti.get_task_states.return_value = {"parent_run": {"load_0": "success", "load_1": "success"}}
+    assert _complete.function(RESULTS, [{}, {}], "load", ti=ti) == {
+        "loaded": True,
+        "result_paths": RESULTS,
+        "corpus_run_ids": ["child_0", "child_1"],
+    }
+    assert _complete.function(RESULTS, [], "load", ti=Mock()) == {
+        "loaded": False,
+        "result_paths": RESULTS,
+        "corpus_run_ids": [],
+    }
+    # None is what a skipped request task leaves behind; it must not read as match-only.
+    with pytest.raises(AirflowFailException, match="missing"):
+        _complete.function(RESULTS, None, "load", ti=Mock())
+    ti.xcom_pull.side_effect = None
     ti.xcom_pull.return_value = None
-    with pytest.raises(ValueError, match="Missing"):
-        _loaded.function({"loads": [{}, {}], "result_paths": RESULTS}, "outer.linz.load", ti=ti)
-    for loaded, skipped in ((None, None), ({}, {})):
-        with pytest.raises(ValueError):
-            _complete.function(loaded, skipped)
-    assert _complete.function(None, {"loaded": False}) == {"loaded": False}
+    with pytest.raises(AirflowFailException, match="Missing"):
+        _complete.function(RESULTS, [{}, {}], "outer.linz.load", ti=ti)
+
+    direct = {"paths": INPUTS, "branch": "", "version": ""}
+    export = {"paths": {}, "branch": "main", "version": ""}
+    assert _selected_paths.function(direct, None) == INPUTS
+    assert _selected_paths.function(export, BASELINE) == BASELINE
+    with pytest.raises(AirflowFailException, match="Exactly one"):
+        _selected_paths.function(export, None)

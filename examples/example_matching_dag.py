@@ -1,20 +1,54 @@
 """Multi-provider matching scaffold; parses without credentials or optional SDKs.
 
 Replace the source gate, provenance publisher and source finalizer with pipeline
-tasks before running. Configure the existing matcher job and Corpus DAGs in the
-deployment. No discovery, cloud calls or metadata writes happen at DAG parse.
+tasks before running. Configure the matcher JAR, Spark settings and Corpus DAGs
+for the deployment. No discovery, cloud calls or metadata writes happen at DAG
+parse.
 """
 
 from datetime import datetime
 
-from airflow.providers.standard.operators.empty import EmptyOperator
-
 from overture_airflow_provider import (
+    ArtifactStoreConfig,
     CorpusDagConfig,
-    DatabricksMatchingConfig,
+    GlueConfig,
+    PackageRegistryConfig,
     matching_task_group,
+    spark_matcher_task_factory,
 )
-from overture_airflow_provider._airflow_compat import DAG, TaskGroup, TriggerRule, task
+from overture_airflow_provider._airflow_compat import (
+    DAG,
+    EmptyOperator,
+    TaskGroup,
+    TriggerRule,
+    task,
+)
+
+# Forwarded unchanged to the Spark task group that runs the matcher.
+_MATCHER_JOB = dict(
+    spark_impl_name="GLUE_v5",
+    sedona_version="1.7.0",
+    spark_jar_paths="s3://example-bucket/jars/matching-shaded.jar",
+    spark_cluster_desired_worker_cores="160",
+    artifact_store=ArtifactStoreConfig(
+        s3_bucket="example-bucket", s3_root="spark-agnostic-operator"
+    ),
+    package_registry=PackageRegistryConfig(
+        domain="my-domain",
+        domain_owner="123456789012",
+        repository="my-pypi",
+        region="us-east-1",
+        maven_repository="my-maven",
+        maven_repository_path="maven/my-maven",
+    ),
+    glue_config=GlueConfig(iam_role_name="AWSGlueServiceRole"),
+)
+
+_CORPUS = CorpusDagConfig(
+    export_dag_id="example_corpus_export",
+    load_dag_id="example_corpus_load",
+    export_output_task_id="output",
+)
 
 
 @task.short_circuit(ignore_downstream_trigger_rules=False)
@@ -24,9 +58,7 @@ def source_changed(provider):
 
 @task
 def publish_matching_metadata(input_paths, baseline_paths, result_paths, metadata_root, parameters):
-    raise NotImplementedError(
-        "Publish complete metadata, then return the provenance receipt documented in README.md"
-    )
+    raise NotImplementedError("Write the matching metadata at metadata_root, then return it")
 
 
 @task
@@ -63,15 +95,9 @@ with DAG(
                     tables=("division", "division_area"),
                     output_path=f"s3://example-bucket/matching/{provider}/{{{{ run_id }}}}",
                     run_id="{{ run_id }}",
-                    runtime=DatabricksMatchingConfig(
-                        databricks_conn_id="example_databricks",
-                        job_name="example_matching",
-                    ),
-                    corpus=CorpusDagConfig(
-                        export_dag_id="example_corpus_export",
-                        load_dag_id="example_corpus_load",
-                        export_output_task_id="output",
-                    ),
+                    matcher_env="dev",
+                    matcher_task_factory=spark_matcher_task_factory(**_MATCHER_JOB),
+                    corpus=_CORPUS,
                     output_corpus_branch="main",
                     provenance_task_factory=publish_matching_metadata,
                 )

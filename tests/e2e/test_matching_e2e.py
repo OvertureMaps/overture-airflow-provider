@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from airflow.sdk.exceptions import AirflowSkipException
 
-from overture_airflow_provider import CorpusDagConfig, DatabricksMatchingConfig
+from overture_airflow_provider import CorpusDagConfig
 from overture_airflow_provider._airflow_compat import DAG, TaskGroup, TriggerRule, task
 from overture_airflow_provider.matching_taskgroup import matching_task_group
 
@@ -16,17 +16,7 @@ TABLES = ("division", "division_area")
 
 @task
 def publish_provenance(input_paths, baseline_paths, result_paths, metadata_root, parameters):
-    return {
-        "metadata_root": metadata_root,
-        "inputs": [
-            {"path": path, "metadata": {"source": {"version": "one"}}}
-            for path in input_paths.values()
-        ],
-        "baselines": [
-            {"path": path, "metadata": {"corpus": {"version": "123"}}}
-            for path in baseline_paths.values()
-        ],
-    }
+    return metadata_root
 
 
 @task.short_circuit(ignore_downstream_trigger_rules=False)
@@ -50,9 +40,9 @@ def fake_match(parameters, failure):
 
 
 @task
-def validate_cache(input_paths, baseline_paths, embeddings_cache_table, failure):
-    if failure == "validation_skip":
-        raise AirflowSkipException("simulated unexpected validation skip")
+def check_inputs(input_paths, baseline_paths, failure):
+    if failure == "pre_match_skip":
+        raise AirflowSkipException("simulated unexpected pre-match skip")
     return True
 
 
@@ -62,6 +52,7 @@ def validate_cache(input_paths, baseline_paths, embeddings_cache_table, failure)
         ("", True, "main"),
         ("", False, "main"),
         ("", "osm", "main"),
+        ("", True, "experiment"),
         ("load", True, "main"),
         ("load_skip", True, "main"),
         ("export_skip", True, "main"),
@@ -69,7 +60,7 @@ def validate_cache(input_paths, baseline_paths, embeddings_cache_table, failure)
         ("provenance_skip", True, "main"),
         ("matcher", True, "main"),
         ("matcher_skip", True, "main"),
-        ("validation_skip", True, "main"),
+        ("pre_match_skip", True, "main"),
         ("create", True, "experiment"),
         ("", True, ""),
     ],
@@ -81,11 +72,14 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
     import overture_airflow_provider.matching_taskgroup as matching
 
     remote = {}
+    export_versions = set()
+    creates = []
     loads = []
 
     def execute_trigger(self, context):
         conf = self.conf
         if self.trigger_dag_id == "simulated_export":
+            export_versions.add(conf["Version"])
             remote[self.trigger_run_id] = {
                 "data_export": [
                     {
@@ -98,8 +92,10 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
             loads.append((self.task_id, conf["TableName"], conf["Source"]))
             if failure == "load" and conf["TableName"] == "division_area":
                 raise ValueError("simulated mapped load failure")
-        elif failure == "create":
-            raise ValueError("simulated branch creation failure")
+        else:
+            creates.append((conf["BranchName"], conf["BaseBranchName"], conf["BaseVersion"]))
+            if failure == "create":
+                raise ValueError("simulated branch creation failure")
         context["ti"].xcom_push(key="trigger_run_id", value=self.trigger_run_id)
         if conf.get("TableName") == "division_area" and (
             (failure == "load_skip" and self.trigger_dag_id == "simulated_load")
@@ -110,13 +106,6 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
     monkeypatch.setattr(TriggerDagRunOperator, "execute", execute_trigger)
     monkeypatch.setattr(
         matching, "XCom", SimpleNamespace(get_one=lambda **kwargs: remote[kwargs["run_id"]])
-    )
-    monkeypatch.setattr(
-        matching,
-        "_build_matcher",
-        lambda runtime, parameters, output_result_file, worker_cores: fake_match(
-            parameters, failure
-        ),
     )
 
     def provenance_factory(**kwargs):
@@ -156,25 +145,24 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
                                 for table in TABLES
                             }
                         },
-                        baseline={"branch": "main", "version": "123"},
+                        baseline={"branch": "main", "version": 123},
                         output_path=f"s3://matches/{provider}",
                         run_id="{{ run_id }}",
                         tables=TABLES,
-                        runtime=DatabricksMatchingConfig("unused", "unused"),
+                        matcher_env="test",
+                        matcher_task_factory=lambda *, parameters: fake_match(parameters, failure),
                         corpus=CorpusDagConfig(
                             export_dag_id="simulated_export",
                             load_dag_id="simulated_load",
                             export_output_task_id="output",
                             create_branch_dag_id="simulated_create",
                             create_branch=True,
-                            deferrable=False,
                         ),
                         output_corpus_branch=branch,
                         provenance_task_factory=provenance_factory,
-                        validation_task_factory=lambda **kwargs: validate_cache(
+                        pre_match_task_factory=lambda **kwargs: check_inputs(
                             **kwargs, failure=failure
                         ),
-                        embeddings_cache_table="caller.embeddings",
                     )
                     gate >> result.group
                     completions.append(finalized(result.complete))
@@ -219,3 +207,7 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
         assert all(f"providers.{source}." in task_id for task_id, _, source in loads)
     else:
         assert not loads
+    # The DAG renders natively and the caller passed an int; Corpus DAGs need a string.
+    assert export_versions <= {"123"}
+    expected_creates = 2 if selected and branch == "experiment" and failure in ("", "create") else 0
+    assert sorted(creates) == [("experiment", "main", "123")] * expected_creates

@@ -15,6 +15,10 @@ from a single, unified DAG entry point.
 The caller switches engines by changing one argument (`spark_impl_name`) and
 swapping a platform config dataclass. The DAG body does not change.
 
+It also exposes `matching_task_group`, a reusable match-and-Corpus-load
+TaskGroup built around an injected matcher job, so several isolated instances
+can run in one DAG.
+
 Architecture details live in [`SPEC.md`](SPEC.md).
 
 See [`SPEC.md`](SPEC.md) for architecture diagrams, task graph, XCom contract
@@ -138,10 +142,34 @@ Glue/Databricks ignore that kwarg.
 Prefer `spark_cluster_desired_worker_cores` (integer string) in DAG code; it
 is more portable across platforms.
 
+### matching_task_group
+
+- `matcher_env` and `matcher_task_factory` are required. There is no `runtime=`
+  argument and no Glue/Databricks matching config class: build the matcher job
+  with `spark_matcher_task_factory(spark_task_group, **spark_kwargs)`, which
+  forwards every keyword unchanged to the Spark task group.
+- It returns `MatchingTasks(group, matcher, result_paths, complete)`, not a
+  TaskGroup. Wire `upstream >> result.group` and finalize after
+  `result.complete`.
+- `provenance_task_factory` must return the publishing task's output, and that
+  task must return `metadata_root`. The pre-match hook is
+  `pre_match_task_factory(input_paths, baseline_paths)`.
+- Child triggers are mapped over request lists, and an empty list triggers
+  nothing. Airflow cannot map over a custom XCom key, so a request builder must
+  return the list as its return value.
+- Keep the trigger's `conf` out of `template_fields` (`ChildDagRunOperator`) and
+  keep Corpus versions as strings. Airflow renders mapped arguments again, and
+  native rendering turns `"123"` into an int that the Corpus DAGs reject.
+- Wrap in-task contract checks with `_permanent` so a violation raises
+  `AirflowFailException` and is not retried.
+
 ### Airflow compat shim
 
-Always import `DAG`, `task`, `task_group`, `BaseHook`, `BaseOperatorLink` from
+Always import `DAG`, `task`, `task_group`, `BaseHook`, `BaseOperatorLink`,
+`EmptyOperator`, `TriggerDagRunOperator` from
 `overture_airflow_provider._airflow_compat`, never directly from `airflow.*`.
+The two operators load on first access because importing them pulls in
+`airflow.models`.
 
 ### XCom: adding a new setup field
 

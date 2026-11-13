@@ -14,6 +14,10 @@ on one of:
 …with the same caller-facing API. The DAG code does not change when the engine
 changes; only `spark_impl_name` and the platform-specific config dataclass do.
 
+A second, additive task group, `matching_task_group`, composes the Overture
+match-and-load workflow around an injected matcher job (see
+[Matching workflow](#matching-workflow)).
+
 ## Non-goals
 
 - A general Spark abstraction. We only abstract the **submission** of a job, not
@@ -30,9 +34,9 @@ Spark entry points, both Airflow `@task_group`-decorated factories:
   of per-invocation configs.
 
 `matching_task_group(...)` is an additive workflow factory returning
-`MatchingTasks(group, result_paths, complete)`. It composes matching-specific
-transport with the existing Spark API; it does not change that API or its
-platform dispatch.
+`MatchingTasks(group, matcher, result_paths, complete)`. The matcher job is
+injected as a factory; `spark_matcher_task_factory(...)` builds it on the
+existing Spark API without changing that API or its platform dispatch.
 
 Spark configuration dataclasses:
 
@@ -46,9 +50,9 @@ Spark configuration dataclasses:
 | `WherobotsConfig` | Wherobots jobs (role ARN, external id) |
 | `ReportIssueConfig` | Optional; wires a "Report Issue" extra-link onto `execute_spark_job` |
 
-Matching adds `GlueMatchingConfig`, `DatabricksMatchingConfig`, and
-`CorpusDagConfig`. These contain injected execution/transport settings, not
-pipeline topology or package-version discovery.
+Matching adds `CorpusDagConfig`, which holds injected Corpus transport settings,
+not pipeline topology. Matcher execution settings are the Spark task group's own
+arguments, passed through unchanged.
 
 And three enumerations (implemented as plain classes with class-level constants, not Python `enum.Enum`; do not call `.name` on instances):
 
@@ -82,6 +86,11 @@ python_package_utils         ← CodeArtifact pip/maven HTTP clients (overture_c
 
 links.py                     ← SparkJobLink + ReportIssueLink (extra-links)
 _report_issue.py             ← pluggable issue tracker (IssueTracker ABC, GitHub built in)
+
+matching_taskgroup.py        ← public matching_task_group (instance-local workflow)
+matching_spark.py            ← spark_matcher_task_factory (Scala matcher via a Spark task group)
+matching_config.py           ← CorpusDagConfig
+_matching.py                 ← Airflow-free matching payload/result validation
 ```
 
 ## Task graph
@@ -131,15 +140,15 @@ input / baseline selection
     ├─► direct table paths ─────────────────┐
     └─► mapped Corpus exports ─► exact-run results
                                            │
-                              optional validation
+                              optional pre-match check
                                            │
-                                   matcher adapter
+                                  injected matcher job
                                            │
                               validated result paths
                                            │
                          injected provenance publication
                                            │
-                          validated publication receipt
+                            publication confirmed
                                            │
                   ┌────────────────────────┴────────────────────┐
              match-only                              optional branch creation
@@ -152,37 +161,43 @@ input / baseline selection
 ```
 
 `matching_taskgroup.py` builds instance-local dependencies using XComArgs.
-Branches use actual task IDs, including ancestor groups and collision suffixes.
-`_matching.py` owns Airflow-free payload/result/provenance validation.
-`_matching_glue.py` submits the Scala entry point through the existing Spark
-group and reads its S3 manifest. `_matching_databricks.py` preserves existing
-named-job submission and the `assign` task's `resultDataPaths` response, loading
-the optional Databricks hook only at execution. Wherobots matching is deliberately
-unsupported pending equivalent runtime/dependency validation.
+Child-run lookups use actual task IDs, including ancestor groups and collision
+suffixes. There are no branch operators: every export, branch-creation and load
+trigger is mapped over a request list built by an upstream task, and an empty
+list triggers nothing. `_matching.py` owns Airflow-free payload and result
+validation. The matcher job is built by an injected factory, so the matching
+layer has no platform dispatch of its own. `matching_spark.py` provides the
+factory for the published Scala entry point: it converts the argument mapping,
+calls the Spark task group it is given with the caller's keyword arguments
+unchanged, and reads the S3 result manifest. It has been validated on Glue only.
 
 Input and result maps require explicit, exact table coverage. Corpus export
 collection verifies the successful mapped triggers, then reads each exact child
-DAG/run/task/key. Mapped export/load barriers wait for terminal upstream states
-and verify **all** expected triggers succeeded; a skipped map index is not
-success. Branch joins use `NONE_FAILED_MIN_ONE_SUCCESS`; an entirely gated-off
-provider remains skipped. Completion distinguishes match-only from loaded
-results and does not expose a success path around failed branch creation,
-provenance, or loads.
+DAG/run/task/key; each response must name the table requested at the same map
+index. Mapped export/load barriers wait for terminal upstream states and verify
+**all** expected triggers succeeded; a skipped map index is not success. Joins
+use `NONE_FAILED_MIN_ONE_SUCCESS`; an entirely gated-off provider remains
+skipped. Completion distinguishes match-only from loaded results and does not
+expose a success path around failed branch creation, provenance, or loads.
 
-The consumer injects DAG-construction factories for metadata publication and
-optional places validation. Publication precedes loading; its receipt must
-cover concrete input and baseline paths, use the common result root, and contain
-no `_error` fallback entries. Storage IO, exhaustive wildcard/ancestor lineage,
-license attribution, conditional writes and redaction remain adapter obligations;
-receipt validation is not independent remote-write verification.
+The consumer injects DAG-construction factories for the matcher job, metadata
+publication and an optional pre-match check. Publication precedes loading: the
+publishing task must succeed and return the metadata root it wrote. The
+metadata's content, and how strictly unreadable upstream metadata is treated,
+remain publisher obligations.
 
 Child run IDs hash the parent DAG/run/task, operation and configuration.
-Triggers neither retry nor reset child runs. Databricks uses an instance-local
-submission idempotency token. These prevent blind duplicate submissions, but do
-not make separate Corpus table loads atomic or provide automatic partial-commit
-recovery. Consumers must supply collision-free output roots because Glue's
-manifest is directly under `output_path`, while table data is below the matcher
-run directory.
+Triggers do not retry on their own and set `reset_dag_run`, so clearing a
+trigger reruns the same child run instead of failing on the existing ID or
+starting a second run. That keeps one child run per request; it does not make
+separate Corpus table loads atomic. The trigger's `conf` is not a template
+field: Airflow renders mapped arguments again, and native rendering would turn a
+version such as `"123"` into an int that the Corpus DAGs reject. Deterministic
+contract violations raise `AirflowFailException` so DAG-level retries do not
+repeat them. Exports of one selection run one at a time; wider serialisation is
+the caller's pool. Consumers must supply collision-free output roots because the
+Scala matcher's manifest is directly under `output_path`, while table data is
+below the matcher run directory.
 
 Provider gates, normalization, completion markers, ordering/concurrency and
 assemble belong to the consumer. Legacy helpers remain available during

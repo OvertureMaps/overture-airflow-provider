@@ -122,8 +122,7 @@ def test_import_does_not_pull_in_airflow():
     """
     code = (
         "import sys, overture_airflow_provider;"
-        "from overture_airflow_provider import "
-        "GlueMatchingConfig, DatabricksMatchingConfig, CorpusDagConfig;"
+        "from overture_airflow_provider import CorpusDagConfig;"
         "leaked = sorted(m for m in sys.modules"
         " if m == 'airflow' or m.startswith('airflow.')"
         " or m.split('.')[0] in {'databricks', 'wherobots', 'sh'});"

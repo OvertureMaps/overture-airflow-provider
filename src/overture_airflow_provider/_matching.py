@@ -1,6 +1,5 @@
-"""Airflow-free matching payload and provenance validation."""
+"""Airflow-free matching payload and result validation."""
 
-import fnmatch
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -52,7 +51,9 @@ def selection(value: Any, tables: Sequence[str], scenario: str) -> dict:
     if scenario.lower() != "overture":
         raise ValueError("Non-overture scenarios require override_paths")
     version = data.get("version")
-    return {"paths": {}, "branch": branch, "version": version if optional_value(version) else ""}
+    # Corpus DAGs type the version as a string; snapshot IDs often arrive as ints.
+    version = str(version) if optional_value(version) else ""
+    return {"paths": {}, "branch": branch, "version": version}
 
 
 def load_uri(path: str) -> str:
@@ -123,66 +124,16 @@ def child_run_id(dag_id: str, run_id: str, task_id: str, operation: str, conf: d
 
 
 def export_paths(outputs: Sequence[Any], tables: Sequence[str]) -> dict[str, str]:
+    """Map each requested table to the path reported by its own export run."""
+    if len(outputs) != len(tables):
+        raise ValueError("Corpus exports must cover every required table")
     paths = {}
-    for output in outputs:
+    for table, output in zip(tables, outputs, strict=True):
         rows = object_value(output, "Corpus export response").get("data_export")
-        if not isinstance(rows, list) or len(rows) != 1:
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
             raise ValueError("Each Corpus export must return exactly one data_export row")
-        row = rows[0]
-        if not isinstance(row, dict):
-            raise ValueError("Invalid Corpus export row")
-        table = row.get("TableName")
-        if not isinstance(table, str) or table in paths:
-            raise ValueError("Missing or duplicate table in Corpus export response")
-        paths[table] = row.get("exportPath")
+        exported = rows[0].get("TableName")
+        if exported != table:
+            raise ValueError(f"Corpus export for table {table!r} returned table {exported!r}")
+        paths[table] = rows[0].get("exportPath")
     return path_map(paths, tables, "Corpus exports")
-
-
-def _check_metadata(value: Any) -> None:
-    if isinstance(value, dict):
-        if "_error" in value:
-            raise ValueError("Provenance contains an upstream metadata error")
-        for item in value.values():
-            _check_metadata(item)
-    elif isinstance(value, list):
-        for item in value:
-            _check_metadata(item)
-
-
-def validate_provenance(receipt: Any, root: str, inputs: dict, baseline: dict) -> str:
-    """Require published metadata plus concrete lineage for every supplied path."""
-    data = object_value(receipt, "provenance receipt")
-    if data.get("metadata_root") != root:
-        raise ValueError("Provenance receipt metadata_root does not match matching results")
-    _check_metadata(data)
-    for label, expected in (("inputs", inputs), ("baselines", baseline)):
-        entries = data.get(label)
-        if not isinstance(entries, list) or not entries:
-            raise ValueError(f"Provenance receipt requires concrete {label}")
-        concrete = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise ValueError(f"Invalid provenance {label} entry")
-            path = entry.get("path")
-            metadata = entry.get("metadata")
-            if (
-                not isinstance(path, str)
-                or not path
-                or any(char in path for char in "*?[")
-                or not isinstance(metadata, dict)
-                or not metadata
-            ):
-                raise ValueError(
-                    f"Provenance {label} requires concrete paths and non-empty metadata"
-                )
-            concrete.append(load_uri(path))
-        patterns = [load_uri(path) for path in expected.values()]
-        if any(
-            not any(fnmatch.fnmatchcase(path, pattern) for path in concrete) for pattern in patterns
-        ):
-            raise ValueError(f"Provenance {label} does not cover every required input path")
-        if any(
-            not any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns) for path in concrete
-        ):
-            raise ValueError(f"Provenance {label} contains unrelated input paths")
-    return root

@@ -33,15 +33,17 @@ AIRFLOW_VERSION=3.3.1 PYTHON_VERSION=3.12 docker compose run --rm --build e2e
 | `docker-compose.yaml` | `e2e` one-shot service and an opt-in `standalone` service (Airflow UI) under the `manual` profile. |
 | `run-e2e.sh` | In-container entrypoint: `airflow db migrate` -> `airflow dags reserialize` (real parse) -> `pytest`. |
 | `test_dag_e2e.py` | The assertions: no import errors, DAG + provider + extra-links registered, task-group expansion + dependency edges, lazy-import purity, setup-task execution, and the setup_info XCom round-trip. |
-| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances and mapped exports/loads with simulated remote services: changed/unchanged providers, match-only mode, matcher/provenance/create/load failures, and unexpected validation/matcher/provenance/mapped-trigger skips. |
+| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances and mapped exports/creations/loads with simulated remote services: changed/unchanged providers, match-only mode, branch creation, an int Corpus version in a natively rendered DAG, matcher/provenance/create/load failures, and unexpected pre-match/matcher/provenance/mapped-trigger skips. |
 | `run.sh` / `run.ps1` | Host sugar over `docker compose` (`e2e` \| `all` \| `standalone`). |
 
 Platform SDKs (`databricks-sdk`, `wherobots`) are deliberately **not** installed,
 so the example DAG parsing with all three platforms present is a hard gate on the
 lazy-import architecture (no eager Airflow/SDK imports at DAG-parse time).
-The matching scaffold also parses without optional Databricks dependencies.
+The matching scaffold parses the same way: its Spark matcher job is built
+without credentials or optional SDKs.
 Its source gate, metadata writer and finalization placeholders are not executed;
-the scheduler-state tests inject their own adapters and require no cloud access.
+the scheduler-state tests inject their own factories, simulate the child-run
+triggers and require no cloud access.
 
 ## Run the full unit suite under real Airflow
 

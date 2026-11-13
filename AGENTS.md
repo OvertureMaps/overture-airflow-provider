@@ -18,7 +18,9 @@ swapping a platform config dataclass. The DAG body does not change.
 It also exposes `matching_task_group`, which wires a matching workflow out of
 caller-supplied task factories so several isolated instances can run in one
 DAG, and `child_dag_run_task_group`, which triggers child DAG runs with stable
-run IDs.
+run IDs. Their usage docs live in [`docs/matching.md`](docs/matching.md) and
+[`docs/child-dag-runs.md`](docs/child-dag-runs.md); the README only summarises
+them.
 
 Architecture details live in [`SPEC.md`](SPEC.md).
 

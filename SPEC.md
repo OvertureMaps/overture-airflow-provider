@@ -197,8 +197,8 @@ each run, and collects the run IDs in `run_ids`.
 Provider gates, normalization, completion markers, ordering/concurrency and
 assemble belong to the consumer, and so do the input sources, the matcher job,
 metadata publication and the result sink.
-See [matching usage](README.md#reusable-matching-workflows) and
-[child DAG runs](README.md#child-dag-runs).
+See [matching usage](docs/matching.md) and
+[child DAG runs](docs/child-dag-runs.md).
 
 ## Iceberg
 

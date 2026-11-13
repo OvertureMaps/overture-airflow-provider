@@ -23,6 +23,7 @@ The provider is intentionally unopinionated: every environment-specific value (S
     - [What isn't](#what-isnt)
 - [Wherobots runtime selection](#wherobots-runtime-selection)
 - [Databricks runner deployment](#databricks-runner-deployment)
+- [Local Spark (development only)](#local-spark-development-only)
 - [Local rendering](#local-rendering)
 - [Bundle Inspector plugin](#bundle-inspector-plugin)
 - [Reference](#reference)
@@ -226,6 +227,39 @@ A missing asset surfaces as a Databricks cluster-launch error at run time, namin
 
 > While a Databricks job is deferred, the Triggerer may log `aiohttp` "Unclosed client session / connector" ERROR lines. These originate in the upstream `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async client is not explicitly closed on the event loop), not in this provider. The task defers, polls, and resumes correctly regardless. This provider deliberately reuses the installed trigger and does not fork it to silence the message.
 
+## Local Spark (development only)
+
+`LOCAL_v3_5` runs the job on the Airflow worker's own Spark install, so you can iterate on a DAG without cloud cost. It is refused unless the worker environment sets:
+
+```bash
+export OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1
+```
+
+Never set this in staging or production: a DAG pointed at LOCAL there fails at `setup_spark_job` before anything runs.
+
+```python
+from overture_airflow_provider import LocalSparkConfig
+
+spark_agnostic_task_group(
+    group_id="my_spark_job",
+    spark_impl_name="LOCAL_v3_5",
+    local_spark_config=LocalSparkConfig(
+        master="local[*]",  # or "spark://host:7077", or "sc://host:15002" (Spark Connect, PySpark only)
+        python_executable="/path/to/venv/bin/python",  # default: the worker's interpreter
+        aws_profile="my-dev-profile",  # for s3a:// reads and writes
+        extra_packages=["org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1"],
+    ),
+    # ... rest of config unchanged
+)
+```
+
+- The installed PySpark must match the impl's Spark `major.minor` (3.5).
+- Your job's Python packages must already be installed in `python_executable`. The provider does not download wheels for LOCAL runs.
+- Sedona and `hadoop-aws` (matched to the installed Hadoop) are fetched by `spark-submit --packages`. Add anything else, such as the Iceberg runtime, to `extra_packages`.
+- `iceberg_spark_config`, when set, replaces the `IcebergConfig` values for LOCAL runs, for example to point at a local Hadoop catalog.
+- Cluster sizing arguments are ignored. The task's job link points at `ui_url` (default `http://localhost:4040`).
+- AWS SSO profiles that use a `credential_process` can fail inside containers. Export plain credentials first: `eval "$(aws configure export-credentials --profile <p> --format env)"`.
+
 ## Local rendering
 
 The `overture_airflow_provider.render` module produces the platform submission payload without importing or running any Airflow operators. Use it to drive real cloud resources from the CLI, or to snapshot-test payload shape in CI.
@@ -302,6 +336,7 @@ Pass one of these names as `spark_impl_name`:
 | `DATABRICKS_v14`   | Databricks Runtime 14.3 LTS | 3.5.0 | 2.12  | 3.10.12        |
 | `DATABRICKS_v15`   | Databricks Runtime 15.4 LTS | 3.5.0 | 2.12  | 3.11.0         |
 | `WHEROBOTS_v1_5_0` | Wherobots Cloud 1.5.0       | 3.5.0 | 2.12  | 3.11           |
+| `LOCAL_v3_5`       | Local Spark (development)   | 3.5.x | 2.12  | worker's       |
 
 > `SYNAPSE_v3_3_1` and `SYNAPSE_v3_4_1` are defined but not yet active (Azure Synapse support reserved).
 

@@ -11,6 +11,7 @@ The task group calls handlers polymorphically via ``get_platform_handler``; no
 platform-specific branching lives in the orchestration layer.
 """
 
+import logging
 import re
 from abc import ABC, abstractmethod
 
@@ -21,6 +22,7 @@ from overture_airflow_provider._failures import (
     INTERNAL_ERROR,
     PLATFORM_DATABRICKS,
     PLATFORM_GLUE,
+    PLATFORM_LOCAL,
     PLATFORM_WHEROBOTS,
     TIMEOUT,
     FailureInfo,
@@ -29,6 +31,8 @@ from overture_airflow_provider._failures import (
     classify_failure,
 )
 from overture_airflow_provider.spark import SparkFamily
+
+_log = logging.getLogger(__name__)
 
 # Platform-native terminal state -> canonical state (see _failures). Unknown
 # non-success states fall back to FAILED.
@@ -110,6 +114,21 @@ _GLUE_DATABRICKS_DEFAULTS = {
 }
 
 _WHEROBOTS_DEFAULTS = {
+    "mapreduce.fileoutputcommitter.marksuccessfuljobs": "false",
+    "spark.sql.sources.commitProtocolClass": (
+        "org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol"
+    ),
+    "spark.hadoop.mapreduce.fileoutputcommitter.marksuccessfuljobs": "false",
+    "fs.s3a.directory.marker.retention": "delete",
+}
+
+
+# Glue-like defaults without sedona.join.numpartition, which is far too many
+# partitions for a single machine.
+_LOCAL_DEFAULTS = {
+    "spark.driver.extraJavaOptions": "-Djts.overlay=ng",
+    "spark.executor.extraJavaOptions": "-Djts.overlay=ng",
+    "spark.kryoserializer.buffer": "128m",
     "mapreduce.fileoutputcommitter.marksuccessfuljobs": "false",
     "spark.sql.sources.commitProtocolClass": (
         "org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol"
@@ -657,10 +676,136 @@ class WherobotsPlatformHandler(SparkPlatformHandler):
         cancel_wherobots_run(run_id, extra)
 
 
+class LocalPlatformHandler(SparkPlatformHandler):
+    """Development-only handler that runs jobs on a local Spark install."""
+
+    platform_name = PLATFORM_LOCAL
+
+    def describe_failure(
+        self,
+        *,
+        error: BaseException | None = None,
+        payload: dict | None = None,
+        run_id: str | None = None,
+        run_launched: bool = True,
+        is_trigger_failure: bool = False,
+        console_url: str | None = None,
+    ) -> FailureInfo:
+        log_tail = getattr(error, "log_tail", None)
+        state = TIMEOUT if getattr(error, "timed_out", False) else FAILED
+        reason = str(error) if error else None
+        root_cause = bounded_tail(log_tail)
+        return FailureInfo(
+            platform=self.platform_name,
+            job_ref=self._job_ref,
+            run_id=run_id or getattr(error, "run_id", None) or None,
+            state=state,
+            console_url=console_url or self.setup_info.get("local_ui_url") or None,
+            reason=reason,
+            root_cause=root_cause,
+            classification=classify_failure(
+                run_launched=run_launched, is_trigger_failure=is_trigger_failure
+            ),
+            hint=apply_heuristics(reason, root_cause, platform=self.platform_name),
+        )
+
+    def download_python_packages(self, python_packages: str) -> None:
+        from overture_airflow_provider._local import (
+            find_missing_packages,
+            require_local_spark_allowed,
+            resolve_python_executable,
+        )
+
+        require_local_spark_allowed()
+        python_executable = resolve_python_executable(
+            self.setup_info.get("local_python_executable", "")
+        )
+        missing = find_missing_packages(python_executable, python_packages)
+        if missing:
+            _log.warning(
+                "LOCAL does not install packages; not found in %s: %s",
+                python_executable,
+                ", ".join(missing),
+            )
+        return None
+
+    def download_jars(self) -> None:
+        return None
+
+    def setup_cluster(
+        self,
+        python_packages: str,
+        spark_jar_paths: str,
+        extra_spark_conf: dict,
+        extra_spark_env_vars: str,
+        spark_cluster_desired_worker_cores: str,
+        spark_cluster_desired_workers: str,
+        iceberg_spark_config: dict | None = None,
+    ) -> dict:
+        if spark_cluster_desired_worker_cores or spark_cluster_desired_workers:
+            _log.warning("LOCAL ignores cluster sizing; it always runs on this machine.")
+        defaults = dict(_LOCAL_DEFAULTS)
+        if self.setup_info.get("local_enable_s3a", True):
+            from overture_airflow_provider._local import S3A_SPARK_CONF
+
+            defaults.update(S3A_SPARK_CONF)
+        local_iceberg = self.setup_info.get("local_iceberg_spark_config") or {}
+        merged = _merge_spark_conf(
+            defaults, local_iceberg or iceberg_spark_config, extra_spark_conf
+        )
+        return {"merged_spark_conf": merged}
+
+    def submit_job(
+        self,
+        package_info: dict | None,
+        jar_info: dict | None,
+        cluster_info: dict | None,
+        module_name: str,
+        class_name: str,
+        parameters: str,
+        extra_spark_conf: dict,
+        extra_spark_env_vars: str,
+        spark_cluster_size_name: str,
+        spark_cluster_desired_worker_cores: int | None,
+        spark_cluster_desired_workers: int | None,
+        max_timeout_hours: int,
+        iam_role_name: str,
+        wherobots_role_arn: str,
+        task_id: str,
+        context: dict,
+    ) -> dict:
+        from overture_airflow_provider._local import run_local_job
+
+        result = run_local_job(
+            setup_info=self.setup_info,
+            module_name=module_name,
+            class_name=class_name,
+            merged_spark_conf=extra_spark_conf,
+            extra_spark_env_vars=extra_spark_env_vars,
+            max_timeout_hours=max_timeout_hours,
+            context=context,
+        )
+        return {"trigger": None, "result": result}
+
+    def complete_job(
+        self,
+        event: dict | None,
+        context: dict,
+        cluster_info: dict | None = None,
+    ) -> dict:
+        raise RuntimeError("LOCAL jobs run synchronously and never defer.")
+
+    def cancel_run(self, run_id: str, extra: dict | None = None) -> None:
+        from overture_airflow_provider._local import cancel_local_run
+
+        cancel_local_run(run_id, extra)
+
+
 _HANDLERS = {
     SparkFamily.GLUE: GluePlatformHandler,
     SparkFamily.DATABRICKS: DatabricksPlatformHandler,
     SparkFamily.WHEROBOTS: WherobotsPlatformHandler,
+    SparkFamily.LOCAL: LocalPlatformHandler,
 }
 
 

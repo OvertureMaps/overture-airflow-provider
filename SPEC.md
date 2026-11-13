@@ -10,6 +10,7 @@ on one of:
 - AWS Glue (v4 or v5)
 - Databricks (14.3 / 15.4 LTS)
 - Wherobots Cloud (1.5.0)
+- A local Spark install (`LOCAL_v3_5`, development only)
 
 …with the same caller-facing API. The DAG code does not change when the engine
 changes; only `spark_impl_name` and the platform-specific config dataclass do.
@@ -29,7 +30,7 @@ Two entry points, both Airflow `@task_group`-decorated factories:
 - `spark_agnostic_mapped_task_group(...)` — dynamic task mapping over a list
   of per-invocation configs.
 
-Seven typed config dataclasses:
+Eight typed config dataclasses:
 
 | Dataclass | Required for |
 |---|---|
@@ -39,12 +40,13 @@ Seven typed config dataclasses:
 | `GlueConfig` | Glue jobs (IAM role) |
 | `DatabricksConfig` | Databricks jobs (conn id, DBFS layout) |
 | `WherobotsConfig` | Wherobots jobs (role ARN, external id) |
+| `LocalSparkConfig` | LOCAL jobs (master, interpreter, local Iceberg override) |
 | `ReportIssueConfig` | Optional; wires a "Report Issue" extra-link onto `execute_spark_job` |
 
 And three enumerations (implemented as plain classes with class-level constants, not Python `enum.Enum`; do not call `.name` on instances):
 
 - `SparkImpl` — concrete engine version (e.g. `GLUE_v5`, `DATABRICKS_v15`).
-- `SparkFamily` — `GLUE` / `DATABRICKS` / `WHEROBOTS` / `SYNAPSE` (reserved).
+- `SparkFamily` — `GLUE` / `DATABRICKS` / `WHEROBOTS` / `LOCAL` / `SYNAPSE` (reserved).
 - `AwsGlueClusterSize` / `DatabricksClusterSize` / `WherobotsClusterSize` —
   named cluster sizes per platform.
 
@@ -56,12 +58,12 @@ spark_agnostic_taskgroup     ← public @task_group
         ▼
 SparkPlatformHandler ABC     ← dispatch (factory: get_platform_handler)
         │
-   ┌────┼────┐
-   ▼    ▼    ▼
- Glue  DBX  Wherobots        ← per-platform handlers
-   │    │    │
-   ▼    ▼    ▼
- _glue _databricks _wherobots  ← per-platform submit logic (operator boundary)
+   ┌────┼────┬─────────┐
+   ▼    ▼    ▼         ▼
+ Glue  DBX  Wherobots  Local         ← per-platform handlers
+   │    │    │         │
+   ▼    ▼    ▼         ▼
+ _glue _databricks _wherobots _local  ← per-platform submit logic (operator boundary)
         │
         ├──► _failures          ← classify + format job failures (stdlib only)
         │
@@ -175,6 +177,34 @@ args win):
   correctly whether it coexists with a primary catalog or is the only catalog
   configured.
 
+## Local (development only)
+
+`SparkImpl.LOCAL_v3_5` runs the job on the Airflow worker's own Spark install
+instead of a cloud engine. It is meant for development and is refused unless
+the worker sets `OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1`. The guard is
+checked in `setup_spark_job`, `download_python_packages` and at submit, so a
+DAG pointed at LOCAL fails closed in staging or production. `render` never
+checks it.
+
+- `_local.py` holds all runtime logic and imports no Airflow or cloud SDKs.
+- Setup resolves `python_executable` (default: the worker's interpreter),
+  detects the installed PySpark and Hadoop versions, and fails if the Spark
+  `major.minor` differs from the impl's.
+- Python packages are not downloaded: they must already be installed in
+  `python_executable`; missing ones are logged as warnings. JARs (Sedona,
+  `hadoop-aws` matching the detected Hadoop, `extra_packages`) are resolved by
+  `spark-submit --packages`.
+- `master` is `local[...]` or `spark://...` (runs `spark-submit`) or `sc://...`
+  (Spark Connect: runs the runner with `python` and `SPARK_REMOTE`; PySpark only).
+- Scala jobs use the first `spark_jar_paths` entry as the application JAR and
+  receive the same argument contract as Glue.
+- Execution is synchronous, like Wherobots. The process runs in its own
+  session; timeout and task kill terminate its process group. `cancel_run`
+  only kills a pid on the same host whose command line still carries the run
+  marker.
+- Cluster sizing is ignored. `LocalSparkConfig.iceberg_spark_config`, when
+  set, replaces the `IcebergConfig` values for LOCAL runs.
+
 ## Failure enrichment
 
 When `execute_spark_job` raises, the handler's `describe_failure()` method
@@ -278,7 +308,8 @@ bump the major version.
 
 ## Out of scope
 
-- EMR / Synapse / standalone Spark support.
+- EMR / Synapse support.
+- Running LOCAL in staging or production.
 - A non-Airflow runtime.
 - Type-checking gates beyond Ruff.
 - Publishing to PyPI (tracked separately).

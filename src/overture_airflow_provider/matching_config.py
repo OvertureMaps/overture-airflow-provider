@@ -16,7 +16,8 @@ class CorpusDagConfig:
 
     ``create_branch=True`` triggers the create-branch DAG for every non-default
     target branch, so that DAG must succeed when the branch already exists. A
-    failed creation blocks the load. When left off, the target branch must exist.
+    failed or skipped creation blocks the load. When left off, the target branch
+    must exist.
 
     The exports of one input or baseline selection run one at a time. To keep
     exports from different selections or instances apart, use a pool whose slot

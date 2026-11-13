@@ -171,9 +171,10 @@ is successful but failed provider processing blocks assembly.
 | `spark_matcher_task_factory(...)` | Ready-made factory for the published Scala matcher, `org.overturemaps.matching.Main`. Every keyword is forwarded unchanged to the Spark task group (JARs, Sedona version, sizing, retries, pools, Spark settings, platform config), so nothing is defaulted here. To keep a deployment's own defaults and extra links, pass its wrapper around `spark_agnostic_task_group` as the first argument. `extra_files` becomes the job's `--extra-files` (for example libpostal for places). |
 | `CorpusDagConfig` | Names deployed export/load DAGs and the export result task/key; it does not deploy Corpus or import its DAG modules. Triggers wait for completion. `spark_impl_name` independently selects child-DAG execution; it is not inferred from the matcher. |
 
-`spark_matcher_task_factory` reads the matcher's result manifest from S3 and has
-only been validated on Glue; the generic Spark API's Databricks and Wherobots
-support does not establish matcher compatibility. To run the matcher another
+`spark_matcher_task_factory` reads the matcher's result manifest from S3 and is
+written for Glue, the only platform the matcher's Spark entry point runs on
+today. The generic Spark API's Databricks and Wherobots support does not
+establish matcher compatibility. To run the matcher another
 way, for example an existing Databricks job through `DatabricksRunNowOperator`,
 supply your own `matcher_task_factory`. `matching.matcher` is the matcher's task
 group; with `spark_matcher_task_factory` the Spark job is the group
@@ -215,11 +216,13 @@ load IDs. `result_paths` alone is **not** evidence that loads completed.
 By default the target branch must already exist. With `create_branch=True`
 (which requires `create_branch_dag_id`) the create-branch DAG is triggered for
 every non-default target branch, so that DAG must succeed when the branch
-already exists. A failed creation blocks the loads.
+already exists. A failed or skipped creation blocks the loads.
 
 ### Provenance and pre-match hooks
 
-When loading can be enabled, `provenance_task_factory` is required. It is called
+When loading can be enabled, `provenance_task_factory` is required. This is
+checked when the DAG is built and again at run time, once a templated scenario
+has rendered, so no load or branch creation is requested without it. It is called
 at DAG construction with keyword XCom arguments `input_paths`, `baseline_paths`,
 `result_paths`, `metadata_root`, and `parameters`, and must return the
 **publishing task's XComArg**. That task writes the matching metadata at
@@ -240,7 +243,9 @@ it cannot read: raise from the task if a missing lineage entry should stop the
 load.
 
 `pre_match_task_factory` adds an optional check that must succeed before the
-matcher runs. It receives `input_paths` and `baseline_paths` and returns a task
+matcher runs. The matcher always waits for it and for input validation, whether
+or not its factory uses the `parameters` it is given. It receives `input_paths`
+and `baseline_paths` and returns a task
 XComArg or TaskGroup. Places uses it to validate the embeddings cache it passes
 as `embeddings_cache_table`; the validation job and its package versions stay in
 the consumer. `match_history` and `output_debug` retain unset/true/false
@@ -252,8 +257,9 @@ inferred.
 
 Missing or invalid matcher results fail before loading. Unexpected pre-match,
 matcher or provenance skips also fail closed. Completion requires every mapped
-load to succeed; failed or unexpectedly skipped export or load tasks cannot
-release source finalization. An intentionally unchanged provider remains skipped
+load to succeed; failed or unexpectedly skipped export, branch-creation or load
+tasks cannot release source finalization. An intentionally unchanged provider
+remains skipped
 throughout its group. Contract violations raise `AirflowFailException`, so they
 are not retried even when the DAG sets default retries; infrastructure errors
 still follow the DAG's retry policy. Result paths, export paths and child run

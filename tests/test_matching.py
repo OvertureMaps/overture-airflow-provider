@@ -197,7 +197,7 @@ def test_load_and_create_requests_preserve_the_corpus_contract():
     from overture_airflow_provider.matching_taskgroup import _create_requests, _load_requests
 
     loads = _load_requests.function(
-        RESULTS, "overture", "experiment", "linz", "divisions", "30", None, **CONTEXT
+        RESULTS, "overture", "experiment", "linz", "divisions", "30", None, True, **CONTEXT
     )
     assert [request["conf"] for request in loads] == [
         {
@@ -213,7 +213,7 @@ def test_load_and_create_requests_preserve_the_corpus_contract():
     ]
     baseline = {"paths": {}, "branch": "baseline", "version": "123"}
     (create,) = _create_requests.function(
-        TABLES, baseline, "overture", "experiment", "divisions", "main", "GLUE_v5", **CONTEXT
+        TABLES, baseline, "overture", "experiment", "divisions", "main", "GLUE_v5", True, **CONTEXT
     )
     assert create["conf"] == {
         "ThemeName": "divisions",
@@ -227,16 +227,49 @@ def test_load_and_create_requests_preserve_the_corpus_contract():
     # No creation for the default branch, and nothing at all for a match-only run.
     for scenario, branch in (("overture", "main"), ("overture", ""), ("test", "experiment")):
         assert not _create_requests.function(
-            TABLES, direct, scenario, branch, "divisions", "main", None, **CONTEXT
+            TABLES, direct, scenario, branch, "divisions", "main", None, True, **CONTEXT
         )
     for scenario, branch in (("overture", ""), ("overture", "none"), ("test", "experiment")):
         assert not _load_requests.function(
-            RESULTS, scenario, branch, "linz", "divisions", 0, None, **CONTEXT
+            RESULTS, scenario, branch, "linz", "divisions", 0, None, True, **CONTEXT
         )
     with pytest.raises(AirflowFailException, match="non-negative"):
         _load_requests.function(
-            RESULTS, "overture", "main", "linz", "divisions", -1, None, **CONTEXT
+            RESULTS, "overture", "main", "linz", "divisions", -1, None, True, **CONTEXT
         )
+
+
+def test_a_rendered_overture_scenario_cannot_load_or_create_without_provenance():
+    from overture_airflow_provider.matching_taskgroup import _create_requests, _load_requests
+
+    # The scenario can be a template, so only the run-time value can decide this.
+    with pytest.raises(AirflowFailException, match="provenance_task_factory"):
+        _load_requests.function(
+            RESULTS, "overture", "main", "linz", "divisions", 0, None, False, **CONTEXT
+        )
+    baseline = {"paths": {}, "branch": "main", "version": ""}
+    with pytest.raises(AirflowFailException, match="provenance_task_factory"):
+        _create_requests.function(
+            TABLES, baseline, "overture", "experiment", "divisions", "main", None, False, **CONTEXT
+        )
+    # Match-only runs never needed a publisher.
+    assert not _load_requests.function(
+        RESULTS, "test", "main", "linz", "divisions", 0, None, False, **CONTEXT
+    )
+
+
+def test_loads_wait_for_every_requested_branch_creation():
+    from overture_airflow_provider.matching_taskgroup import _branch_ready
+
+    # No creation was requested, so nothing is looked up.
+    _branch_ready.function([], "create_branch", ti=Mock(spec=[]))
+    ti = Mock(dag_id="parent", run_id="parent_run")
+    ti.xcom_pull.return_value = "child_0"
+    ti.get_task_states.return_value = {"parent_run": {"create_branch_0": "success"}}
+    _branch_ready.function([{}], "create_branch", ti=ti)
+    ti.get_task_states.return_value = {"parent_run": {"create_branch_0": "skipped"}}
+    with pytest.raises(AirflowFailException, match="Every mapped child"):
+        _branch_ready.function([{}], "create_branch", ti=ti)
 
 
 def test_export_requests_cover_each_table_only_for_branch_selections():

@@ -93,10 +93,31 @@ def test_match_only_without_corpus_triggers_no_child_runs():
 
 def test_loading_and_factories_are_validated_at_dag_construction():
     with DAG("bad_matching", schedule=None, start_date=datetime(2026, 1, 1)):
-        with pytest.raises(ValueError, match="provenance"):
-            make_group(output_corpus_branch="main", corpus=corpus())
+        # Any Jinja form can render to "overture", not only an expression.
+        for scenario in (
+            "overture",
+            "{{ params.scenario }}",
+            "{% if params.live %}overture{% else %}test{% endif %}",
+        ):
+            with pytest.raises(ValueError, match="provenance"):
+                make_group(scenario=scenario, output_corpus_branch="main", corpus=corpus())
         with pytest.raises(TypeError, match="matcher_task_factory"):
             make_group(matcher_task_factory=lambda *, parameters: {"division": "s3://x"})
+
+
+def test_matcher_waits_for_parameters_even_when_its_factory_ignores_them():
+    @task
+    def preconfigured_match():
+        return {}
+
+    with DAG("matcher_order", schedule=None, start_date=datetime(2026, 1, 1)) as dag:
+        make_group(
+            matcher_task_factory=lambda *, parameters: preconfigured_match(),
+            pre_match_task_factory=check,
+        )
+    matcher = dag.get_task("matching_tg.matcher.preconfigured_match")
+    assert "matching_tg._build_parameters" in matcher.upstream_task_ids
+    assert "matching_tg.pre_match.check" in matcher.get_flat_relative_ids(upstream=True)
 
 
 def test_provenance_is_a_required_dependency_before_loading():

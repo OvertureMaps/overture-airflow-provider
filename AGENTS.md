@@ -162,6 +162,13 @@ is more portable across platforms.
   native rendering turns `"123"` into an int that the Corpus DAGs reject.
 - Wrap in-task contract checks with `_permanent` so a violation raises
   `AirflowFailException` and is not retried.
+- `scenario` can be any Jinja template, so a guard that depends on it must also
+  run in a task on the rendered value (`_load_branch`). The DAG-construction
+  check is only an early error.
+- Anything a mapped trigger gates must first confirm the triggers with
+  `_child_runs`. The request-building upstream succeeds on its own, which
+  satisfies `NONE_FAILED_MIN_ONE_SUCCESS` even when every trigger was skipped.
+- Keep `parameters >> matcher`: a matcher factory may not consume `parameters`.
 
 ### Airflow compat shim
 

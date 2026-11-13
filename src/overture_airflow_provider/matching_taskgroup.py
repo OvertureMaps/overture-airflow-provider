@@ -8,7 +8,6 @@ from typing import Any, Protocol
 
 from overture_airflow_provider._airflow_compat import (
     AirflowFailException,
-    EmptyOperator,
     TaskGroup,
     TriggerDagRunOperator,
     TriggerRule,
@@ -258,21 +257,32 @@ def _provenance_ready(published, root):
     return root
 
 
-def _load_branch(scenario, branch):
+def _load_branch(scenario, branch, provenance):
     """Return the Corpus branch to load into, or ``None`` for a match-only run."""
     if scenario.lower() != "overture" or not optional_value(branch):
         return None
     if not isinstance(branch, str):
         raise ValueError("output_corpus_branch must be a string")
+    # The scenario is known only now, so this is where the requirement can be enforced.
+    if not provenance:
+        raise ValueError("Corpus loading requires provenance_task_factory")
     return branch
 
 
 @task(multiple_outputs=False)
 @_permanent
 def _create_requests(
-    tables, baseline, scenario, branch, theme, default_branch, spark_impl_name, **context
+    tables,
+    baseline,
+    scenario,
+    branch,
+    theme,
+    default_branch,
+    spark_impl_name,
+    provenance,
+    **context,
 ):
-    branch = _load_branch(scenario, branch)
+    branch = _load_branch(scenario, branch, provenance)
     if branch is None or branch == default_branch:
         return []
     conf = {
@@ -286,12 +296,28 @@ def _create_requests(
     return [_trigger_kwargs(conf, "create", context)]
 
 
+@task(trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS, multiple_outputs=False)
+@_permanent
+def _branch_ready(requests, create_task_id, **context):
+    """Release the loads only when every requested branch creation succeeded."""
+    if requests:
+        _child_runs(create_task_id, len(requests), context)
+
+
 @task(multiple_outputs=False)
 @_permanent
 def _load_requests(
-    paths, scenario, branch, provider, theme, expiration_period_days, spark_impl_name, **context
+    paths,
+    scenario,
+    branch,
+    provider,
+    theme,
+    expiration_period_days,
+    spark_impl_name,
+    provenance,
+    **context,
 ):
-    branch = _load_branch(scenario, branch)
+    branch = _load_branch(scenario, branch, provenance)
     expiration = int(expiration_period_days)
     if expiration < 0:
         raise ValueError("expiration_period_days must be non-negative")
@@ -331,10 +357,20 @@ def _match_only(paths):
 
 
 def _load_results(
-    ready, paths, tables, baseline, scenario, branch, provider, theme, expiration, corpus
+    ready,
+    paths,
+    tables,
+    baseline,
+    scenario,
+    branch,
+    provider,
+    theme,
+    expiration,
+    corpus,
+    provenance,
 ):
     requests = _load_requests(
-        paths, scenario, branch, provider, theme, expiration, corpus.spark_impl_name
+        paths, scenario, branch, provider, theme, expiration, corpus.spark_impl_name, provenance
     )
     ready >> requests
     loads = _child_trigger("load", corpus.load_dag_id, requests, corpus, corpus.load_pool)
@@ -347,19 +383,22 @@ def _load_results(
             theme,
             corpus.default_branch,
             corpus.spark_impl_name,
+            provenance,
         )
         ready >> creates
         create = _child_trigger(
             "create_branch", corpus.create_branch_dag_id, creates, corpus, corpus.load_pool
         )
-        # Runs once creation succeeded or was not needed; a failed creation blocks the loads.
-        branch_ready = EmptyOperator(
-            task_id="branch_ready", trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
-        )
-        [creates, create] >> branch_ready >> loads
+        # Passes when no creation was needed; a failed or skipped creation blocks the loads.
+        branch_ready = _branch_ready(creates, create.task_id)
+        create >> branch_ready >> loads
     complete = _complete(paths, requests, loads.task_id)
     loads >> complete
     return complete
+
+
+# An early check only: ``_load_branch`` enforces the requirement once the scenario is rendered.
+_JINJA_MARKERS = ("{{", "{%", "{#")
 
 
 def matching_task_group(
@@ -404,7 +443,9 @@ def matching_task_group(
     ``result.complete >> finalize_source``. No source marker is written here.
     """
     names = table_names(tables)
-    can_load = scenario.lower() == "overture" or "{{" in scenario
+    can_load = scenario.lower() == "overture" or any(
+        marker in scenario for marker in _JINJA_MARKERS
+    )
     if (
         can_load
         and optional_value(output_corpus_branch)
@@ -451,6 +492,9 @@ def matching_task_group(
                 raise TypeError(
                     "matcher_task_factory must return the task output holding the result paths"
                 )
+        # The matcher must wait for input validation and the pre-match check even
+        # when its factory builds a job that does not consume ``parameters``.
+        parameters >> matcher
         results = _results(raw_paths, names)
         # Detect unexpected skips without waking an entirely gated-off provider.
         [inputs, baselines, parameters] >> results
@@ -484,6 +528,7 @@ def matching_task_group(
                     theme,
                     expiration_period_days,
                     corpus,
+                    provenance_task_factory is not None,
                 )
             else:
                 complete = _match_only(results)

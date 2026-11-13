@@ -169,20 +169,27 @@ validation. The matcher job is built by an injected factory, so the matching
 layer has no platform dispatch of its own. `matching_spark.py` provides the
 factory for the published Scala entry point: it converts the argument mapping,
 calls the Spark task group it is given with the caller's keyword arguments
-unchanged, and reads the S3 result manifest. It has been validated on Glue only.
+unchanged, and reads the S3 result manifest. It is written for Glue, the only
+platform the matcher's Spark entry point runs on today; Databricks and
+Wherobots are unverified. Whatever the factory builds, the matcher group is
+made downstream of the validated parameters, so it cannot start before input
+validation and the pre-match check.
 
 Input and result maps require explicit, exact table coverage. Corpus export
 collection verifies the successful mapped triggers, then reads each exact child
 DAG/run/task/key; each response must name the table requested at the same map
-index. Mapped export/load barriers wait for terminal upstream states and verify
-**all** expected triggers succeeded; a skipped map index is not success. Joins
+index. Mapped export, branch-creation and load barriers wait for terminal
+upstream states and verify **all** expected triggers succeeded; a skipped map
+index is not success. Joins
 use `NONE_FAILED_MIN_ONE_SUCCESS`; an entirely gated-off provider remains
 skipped. Completion distinguishes match-only from loaded results and does not
 expose a success path around failed branch creation, provenance, or loads.
 
 The consumer injects DAG-construction factories for the matcher job, metadata
 publication and an optional pre-match check. Publication precedes loading: the
-publishing task must succeed and return the metadata root it wrote. The
+publishing task must succeed and return the metadata root it wrote. A publisher
+is required whenever a load is requested; because the scenario may be a
+template, the request-building tasks enforce this on the rendered value. The
 metadata's content, and how strictly unreadable upstream metadata is treated,
 remain publisher obligations.
 

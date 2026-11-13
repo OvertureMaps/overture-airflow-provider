@@ -62,6 +62,7 @@ def check_inputs(input_paths, baseline_paths, failure):
         ("matcher_skip", True, "main"),
         ("pre_match_skip", True, "main"),
         ("create", True, "experiment"),
+        ("create_skip", True, "experiment"),
         ("", True, ""),
     ],
 )
@@ -97,10 +98,12 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
             if failure == "create":
                 raise ValueError("simulated branch creation failure")
         context["ti"].xcom_push(key="trigger_run_id", value=self.trigger_run_id)
-        if conf.get("TableName") == "division_area" and (
+        table_skip = conf.get("TableName") == "division_area" and (
             (failure == "load_skip" and self.trigger_dag_id == "simulated_load")
             or (failure == "export_skip" and self.trigger_dag_id == "simulated_export")
-        ):
+        )
+        create_skip = failure == "create_skip" and self.trigger_dag_id == "simulated_create"
+        if table_skip or create_skip:
             raise AirflowSkipException("simulated unexpected mapped trigger skip")
 
     monkeypatch.setattr(TriggerDagRunOperator, "execute", execute_trigger)
@@ -209,5 +212,5 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
         assert not loads
     # The DAG renders natively and the caller passed an int; Corpus DAGs need a string.
     assert export_versions <= {"123"}
-    expected_creates = 2 if selected and branch == "experiment" and failure in ("", "create") else 0
-    assert sorted(creates) == [("experiment", "main", "123")] * expected_creates
+    created = selected and branch == "experiment" and failure in ("", "create", "create_skip")
+    assert sorted(creates) == [("experiment", "main", "123")] * (2 if created else 0)

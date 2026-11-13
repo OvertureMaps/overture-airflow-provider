@@ -41,4 +41,6 @@ With `retries=1`, one queue timeout becomes an effective 30-minute wait for capa
 
 `downstream-job` and `trigger/polling` failures raise `AirflowFailException`, which Airflow never retries regardless of the task's `retries=`. The run launched, then failed, or a Triggerer crash happened mid-poll after launch, so re-running it blindly burns another full job at cost instead of fixing anything.
 
+This policy applies both to normal completion callbacks (`execute_complete`) and to terminal failures reported by a trigger (`__fail__`). Classified terminal job failures become `AirflowFailException`; explicit `RetryableJobFailure` capacity failures remain retryable.
+
 Set `retries=1` (or higher) on `execute_spark_job` to recover automatically from transient submission-time infra faults and Glue capacity rejections without risking a silent, full-cost retry of a job that actually ran and failed.

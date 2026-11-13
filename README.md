@@ -1,16 +1,24 @@
-# overture-airflow-provider
+![overture-airflow-provider: cloud-agnostic Spark for Apache Airflow](https://raw.githubusercontent.com/OvertureMaps/overture-airflow-provider/main/docs/assets/hero.svg)
 
-[![PyPI version](https://img.shields.io/pypi/v/airflow-provider-overture.svg)](https://pypi.org/project/airflow-provider-overture/)
-[![Python versions](https://img.shields.io/pypi/pyversions/airflow-provider-overture.svg)](https://pypi.org/project/airflow-provider-overture/)
-[![License: MIT](https://img.shields.io/pypi/l/airflow-provider-overture.svg)](LICENSE)
+[![Test](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/test.yml)
+[![Lint](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/lint.yml)
+[![PyPI](https://img.shields.io/pypi/v/airflow-provider-overture?color=4051CC&labelColor=001A39)](https://pypi.org/project/airflow-provider-overture/)
+[![Python](https://img.shields.io/pypi/pyversions/airflow-provider-overture?color=4051CC&labelColor=001A39)](https://pypi.org/project/airflow-provider-overture/)
+[![Airflow 3.3+](https://img.shields.io/badge/Airflow-3.3%2B-0EC1BD?labelColor=001A39)](https://airflow.apache.org/)
+[![uv](https://img.shields.io/badge/managed%20with-uv-0EC1BD?labelColor=001A39)](https://docs.astral.sh/uv/)
+[![Ruff](https://img.shields.io/badge/lint-ruff-0EC1BD?labelColor=001A39)](https://docs.astral.sh/ruff/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-05A5AF?labelColor=001A39)](LICENSE)
 
 An Apache Airflow provider for running PySpark or Scala/Spark jobs on AWS Glue, Databricks, or Wherobots Cloud from a single DAG-level API.
 
-Write your DAG once and target any supported engine by switching one argument. Cluster shape, Iceberg catalog wiring, JAR and wheel distribution, and per-platform cluster init are all handled by the provider.
+Write a DAG once and target any supported engine by switching one argument. Cluster shape, Iceberg catalog wiring, JAR and wheel distribution, and per-platform cluster init are handled by the provider.
 
-The provider is intentionally unopinionated: every environment-specific value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed in via typed config dataclasses. No org-specific defaults are baked in.
+## Features
 
-> Beta. Tested against real Airflow 3.3 via Docker e2e.
+- Single entry point: `spark_agnostic_task_group` runs the same job on any supported engine; only `spark_impl_name` and the platform config change.
+- Typed configuration: no org-specific defaults; every environment value is passed in.
+- Classified failures with safe retries and console links.
+- Local rendering of submission payloads, plus a Bundle Inspector Airflow UI plugin.
 
 ## Contents
 

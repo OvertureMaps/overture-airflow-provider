@@ -40,6 +40,7 @@ spark_agnostic_task_group(
     glue_config=GlueConfig(...),
     databricks_config=DatabricksConfig(...),
     wherobots_config=WherobotsConfig(...),
+    local_spark_config=LocalSparkConfig(...),
     report_issue_config=ReportIssueConfig(...),
 )
 ```
@@ -125,6 +126,21 @@ AWS region field is `aws_region` (not `region`).
 `"latest"` targets the stable runtime (the API's own default). Only set
 `"preview"` deliberately — the preview stack runs Spark 4 / Scala 2.13 and
 cannot load Scala 2.12 JARs. `None` omits the field from submissions.
+
+### LocalSparkConfig (development only)
+
+`spark_impl_name="LOCAL_v3_5"` runs on the worker's own Spark install. It is
+refused unless the worker sets `OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1`
+(checked at setup, package download and submit; never in `render`). Do not add
+other ways to bypass this guard. Logic lives in `_local.py`, which must stay
+free of Airflow and cloud SDK imports.
+
+`master` must start with `local`, `spark://` or `sc://`. Python packages must be
+pre-installed in `python_executable`; JARs come from `--packages`, so Iceberg
+runtime JARs go in `extra_packages`. `iceberg_spark_config`, when set, replaces
+the `IcebergConfig` values. Sizing kwargs are ignored. New `local_*` setup
+fields go through `_local.local_setup_info_fields` (shared by `_setup` and
+`render`) and `SERIALIZABLE_KEYS`.
 
 ### Cluster sizing classes
 

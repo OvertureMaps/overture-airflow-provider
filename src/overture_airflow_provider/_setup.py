@@ -10,14 +10,16 @@ import json
 
 from overture_core.cloud.aws.codeartifact import CodeArtifactPyPiClient
 
+from overture_airflow_provider._local import local_setup_info_fields
 from overture_airflow_provider.config import (
     ArtifactStoreConfig,
     DatabricksConfig,
     GlueConfig,
+    LocalSparkConfig,
     PackageRegistryConfig,
     WherobotsConfig,
 )
-from overture_airflow_provider.spark import SparkImpl, SparkSedona
+from overture_airflow_provider.spark import SparkFamily, SparkImpl, SparkSedona
 
 
 def setup_spark_job(
@@ -33,6 +35,7 @@ def setup_spark_job(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
 ) -> dict:
     """Initialize Spark job environment and return a flat ``setup_info`` dict.
 
@@ -46,6 +49,7 @@ def setup_spark_job(
     glue_config = glue_config or GlueConfig()
     databricks_config = databricks_config or DatabricksConfig()
     wherobots_config = wherobots_config or WherobotsConfig()
+    local_spark_config = local_spark_config or LocalSparkConfig()
 
     # Always join all non-empty parts so Scala jobs (module_name="") still keep
     # class_name in the run identifier; fall back to bare job_name only when
@@ -64,17 +68,23 @@ def setup_spark_job(
     spark_version_for_sedona = SparkSedona.getSparkVersionForSedona(spark_version, sedona_version)
     geotools_wrapper_version = SparkSedona.getGeotoolsWrapperVersion(sedona_version)
 
+    local_hadoop_version = ""
+    if spark_family == SparkFamily.LOCAL:
+        local_hadoop_version = _check_local_spark(local_spark_config, spark_version)
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     run_identifier = f"{full_job_name}_{timestamp}"
     print(f"run_identifier: {run_identifier}")
 
-    py_pi_client = CodeArtifactPyPiClient(
-        domain_owner=package_registry.domain_owner,
-        domain=package_registry.domain,
-        repository=package_registry.repository,
-        region_name=package_registry.region,
-    )
-    print("Initialized private PyPI client")
+    py_pi_client = None
+    if spark_family != SparkFamily.LOCAL:
+        py_pi_client = CodeArtifactPyPiClient(
+            domain_owner=package_registry.domain_owner,
+            domain=package_registry.domain,
+            repository=package_registry.repository,
+            region_name=package_registry.region,
+        )
+        print("Initialized private PyPI client")
 
     if isinstance(parameters, str):
         resolved_parameters = parameters
@@ -144,6 +154,7 @@ def setup_spark_job(
         "glue_max_queue_wait_hours": glue_config.max_queue_wait_hours,
         "glue_waiter_delay_seconds": glue_config.waiter_delay_seconds,
         "iam_role_name": glue_config.iam_role_name,
+        **local_setup_info_fields(local_spark_config, local_hadoop_version),
         # Registry params stored for client reconstruction after XCom round-trip
         "codeartifact_domain_owner": package_registry.domain_owner,
         "codeartifact_domain": package_registry.domain,
@@ -161,3 +172,24 @@ def setup_spark_job(
             )
         ),
     }
+
+
+def _check_local_spark(local_spark_config: LocalSparkConfig, spark_version: str) -> str:
+    """Refuse LOCAL unless allowed, check the installed pyspark, return its Hadoop version."""
+    from overture_airflow_provider._local import (
+        inspect_local_spark,
+        require_local_spark_allowed,
+        resolve_python_executable,
+    )
+
+    require_local_spark_allowed()
+    python_executable = resolve_python_executable(local_spark_config.python_executable)
+    detected = inspect_local_spark(
+        python_executable=python_executable,
+        spark_submit_path=local_spark_config.spark_submit_path,
+        master=local_spark_config.master,
+        expected_version=spark_version,
+        enable_s3a=local_spark_config.enable_s3a,
+    )
+    print(f"Local pyspark {detected['spark_version']} (Hadoop {detected['hadoop_version']})")
+    return detected.get("hadoop_version") or ""

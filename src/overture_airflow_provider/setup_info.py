@@ -69,6 +69,17 @@ SERIALIZABLE_KEYS = (
     "glue_max_queue_wait_hours",
     "glue_waiter_delay_seconds",
     "iam_role_name",
+    "local_master",
+    "local_python_executable",
+    "local_spark_submit_path",
+    "local_driver_memory",
+    "local_enable_s3a",
+    "local_aws_profile",
+    "local_iceberg_spark_config",
+    "local_extra_packages",
+    "local_ui_url",
+    "local_work_dir",
+    "local_hadoop_version",
     "codeartifact_domain_owner",
     "codeartifact_domain",
     "codeartifact_repository",
@@ -102,10 +113,12 @@ def rehydrate(serialized: dict) -> dict:
     full = dict(serialized)
     full["spark_impl"] = SparkImpl.from_str(serialized["spark_impl_name"])
     full["spark_family"] = SparkFamily[serialized["spark_family_name"]]
-    full["py_pi_client"] = CodeArtifactPyPiClient(
-        domain_owner=serialized["codeartifact_domain_owner"],
-        domain=serialized["codeartifact_domain"],
-        repository=serialized["codeartifact_repository"],
-        region_name=serialized["codeartifact_region"],
-    )
+    full["py_pi_client"] = None
+    if full["spark_family"] != SparkFamily.LOCAL:
+        full["py_pi_client"] = CodeArtifactPyPiClient(
+            domain_owner=serialized["codeartifact_domain_owner"],
+            domain=serialized["codeartifact_domain"],
+            repository=serialized["codeartifact_repository"],
+            region_name=serialized["codeartifact_region"],
+        )
     return full

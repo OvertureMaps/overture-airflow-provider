@@ -544,6 +544,75 @@ class WherobotsConfig:
     version: str | None = "latest"
 
 
+#: Worker environment variable that must be ``"1"`` for the ``LOCAL`` platform to run.
+LOCAL_SPARK_ALLOW_ENV_VAR = "OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK"
+
+LOCAL_SPARK_MASTER_PREFIXES = ("local", "spark://", "sc://")
+
+
+@dataclass
+class LocalSparkConfig:
+    """Development-only settings for the ``LOCAL`` Spark platform (``LOCAL_v3_5``).
+
+    Runs the job on a Spark installation reachable from the Airflow worker
+    instead of a cloud service. It is **fail-closed**: every ``LOCAL`` run
+    raises unless the worker sets ``OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1``,
+    so a DAG pointed at ``LOCAL`` by mistake cannot run in a deployment that
+    never sets it (staging, production).
+
+    The job's own Python code (and ``apache-sedona``) must already be
+    installed in ``python_executable``'s environment; ``python_packages`` is
+    only checked, never downloaded. ``package_registry`` / ``artifact_store``
+    are accepted but not used.
+
+    Args:
+        master: Spark master URL. ``local[*]`` (default) / ``local[N]`` run
+            ``spark-submit`` on the worker; ``spark://host:port`` submits to a
+            standalone cluster; ``sc://host:port`` runs the PySpark job as a
+            Spark Connect client (no Scala jobs, no ``--packages``/``--jars``).
+        python_executable: Interpreter whose environment holds pyspark and the
+            job's packages. Empty uses the Airflow worker's own interpreter.
+        spark_submit_path: ``spark-submit`` to use. Empty uses the one next to
+            ``python_executable`` (installed by the pyspark wheel), else
+            ``spark-submit`` on ``PATH``.
+        driver_memory: ``--driver-memory`` for ``spark-submit``.
+        enable_s3a: Add ``hadoop-aws`` (matching the installed Hadoop) and map
+            ``s3://`` to S3A so jobs can read and write S3 with the default
+            AWS credential chain. Local paths always work.
+        aws_profile: Optional ``AWS_PROFILE`` exported to the job process.
+        iceberg_spark_config: JSON object (string or dict) that replaces
+            ``IcebergConfig.spark_config`` / ``s3tables_spark_config`` for
+            ``LOCAL`` runs, e.g. a Hadoop catalog in a temp directory. Empty
+            reuses the ``IcebergConfig`` the other platforms use.
+        extra_packages: Extra Maven coordinates for ``--packages`` (e.g. the
+            Iceberg Spark runtime and AWS bundle when using a REST catalog).
+        ui_url: Spark UI URL surfaced through ``SparkJobLink``.
+        work_dir: Working directory for the job process. Empty uses a fresh
+            temporary directory, retained after the run for relative outputs.
+
+    Raises:
+        ValueError: If ``master`` is not a ``local``, ``spark://`` or ``sc://`` URL.
+    """
+
+    master: str = "local[*]"
+    python_executable: str = ""
+    spark_submit_path: str = ""
+    driver_memory: str = "4g"
+    enable_s3a: bool = True
+    aws_profile: str = ""
+    iceberg_spark_config: str | dict = "{}"
+    extra_packages: list[str] = field(default_factory=list)
+    ui_url: str = "http://localhost:4040"
+    work_dir: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.master.startswith(LOCAL_SPARK_MASTER_PREFIXES):
+            raise ValueError(
+                f"LocalSparkConfig.master must start with one of "
+                f"{LOCAL_SPARK_MASTER_PREFIXES}, got {self.master!r}"
+            )
+
+
 @dataclass
 class ReportIssueConfig:
     """Opt-in "Report Issue" operator link pointing at an issue tracker.

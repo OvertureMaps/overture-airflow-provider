@@ -3,7 +3,8 @@
 Two public entry points:
 
 - ``spark_agnostic_task_group`` — single TaskGroup that runs one Spark job on
-  a caller-selected platform (Glue, Databricks, or Wherobots).
+  a caller-selected platform (Glue, Databricks, Wherobots, or the
+  development-only LOCAL platform).
 - ``spark_agnostic_mapped_task_group`` — same TaskGroup, dynamically mapped
   over a list of parameter sets so one DAG can fan out N parallel Spark jobs.
 
@@ -56,6 +57,7 @@ from overture_airflow_provider.config import (
     DatabricksConfig,
     GlueConfig,
     IcebergConfig,
+    LocalSparkConfig,
     PackageRegistryConfig,
     ReportIssueConfig,
     WherobotsConfig,
@@ -118,6 +120,7 @@ def spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
     max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     report_issue_config: ReportIssueConfig | None = None,
 ):
@@ -169,6 +172,9 @@ def spark_agnostic_task_group(
             the ``databricks_default`` connection and the default workspace paths.
         wherobots_config: Wherobots execution settings (role ARN, external ID,
             AWS region). Required for Wherobots runs that use Iceberg.
+        local_spark_config: Development-only ``LOCAL`` platform settings (master,
+            interpreter, S3A, Iceberg override). ``LOCAL`` runs refuse to start
+            unless the worker sets ``OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1``.
         max_timeout_hours: Job run timeout, in hours. Defaults to ``"8"``.
 
         report_issue_config: Opt-in "Report Issue" operator link. Off by
@@ -204,6 +210,7 @@ def spark_agnostic_task_group(
         glue_config=glue_config,
         databricks_config=databricks_config,
         wherobots_config=wherobots_config,
+        local_spark_config=local_spark_config,
         max_timeout_hours=max_timeout_hours,
         report_issue_config=report_issue_config,
     )
@@ -272,6 +279,7 @@ def _spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
     max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     report_issue_config: ReportIssueConfig | None = None,
 ):
@@ -311,6 +319,7 @@ def _spark_agnostic_task_group(
             glue_config=glue_config,
             databricks_config=databricks_config,
             wherobots_config=wherobots_config,
+            local_spark_config=local_spark_config,
         )
         print(f"Platform: {setup_info['spark_family'].name}")
         print(f"Spark / Sedona: {setup_info['spark_version']} / {setup_info['sedona_version']}")

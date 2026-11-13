@@ -33,6 +33,7 @@ from overture_airflow_provider._databricks import (
     setup_databricks_cluster,
 )
 from overture_airflow_provider._glue import build_glue_operator_kwargs
+from overture_airflow_provider._local import build_local_command, local_setup_info_fields
 from overture_airflow_provider._wherobots import build_wherobots_operator_kwargs
 from overture_airflow_provider.config import (
     DEFAULT_MAX_TIMEOUT_HOURS,
@@ -40,6 +41,7 @@ from overture_airflow_provider.config import (
     DatabricksConfig,
     GlueConfig,
     IcebergConfig,
+    LocalSparkConfig,
     PackageRegistryConfig,
     WherobotsConfig,
 )
@@ -48,6 +50,7 @@ from overture_airflow_provider.runner_assets import _RUNNER_FILES, _file_sha256,
 from overture_airflow_provider.spark import SparkFamily, SparkImpl, SparkSedona
 from overture_airflow_provider.spark_platform_handlers import (
     GluePlatformHandler,
+    LocalPlatformHandler,
     WherobotsPlatformHandler,
     _merge_spark_conf,
 )
@@ -141,6 +144,7 @@ def _build_render_setup_info(
     glue_config: GlueConfig,
     databricks_config: DatabricksConfig,
     wherobots_config: WherobotsConfig,
+    local_spark_config: LocalSparkConfig | None = None,
 ) -> dict:
     """Build setup_info without importing the Airflow-touching ``_setup`` module.
 
@@ -220,6 +224,7 @@ def _build_render_setup_info(
         "glue_max_queue_wait_hours": glue_config.max_queue_wait_hours,
         "glue_waiter_delay_seconds": glue_config.waiter_delay_seconds,
         "iam_role_name": glue_config.iam_role_name,
+        **local_setup_info_fields(local_spark_config or LocalSparkConfig()),
         "codeartifact_domain_owner": package_registry.domain_owner,
         "codeartifact_domain": package_registry.domain,
         "codeartifact_repository": package_registry.repository,
@@ -356,6 +361,16 @@ def _wherobots_cli(payload_path_var: str = "$PAYLOAD") -> list[str]:
     ]
 
 
+def _local_cli(built: dict) -> list[str]:
+    env = " ".join(f"{k}={shlex.quote(v)}" for k, v in built["env"].items())
+    return [
+        "# Direct preview command: the provider's LOCAL opt-in guard is not enforced here.",
+        "# Add hadoop-aws matching your installed Hadoop to --packages when S3A is enabled.",
+        *(f"# {w}" for w in built["warnings"]),
+        f"{env} {shlex.join(built['argv'])}",
+    ]
+
+
 def render_spark_job(
     spark_impl_name: str,
     module_name: str,
@@ -381,6 +396,7 @@ def render_spark_job(
     dag_id: str = "",
     pre_resolved_package_info: dict | None = None,
     pre_resolved_jar_info: dict | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
 ) -> RenderResult:
     """Render the platform submission payload without invoking Airflow.
 
@@ -395,6 +411,7 @@ def render_spark_job(
     glue_config = glue_config or GlueConfig()
     databricks_config = databricks_config or DatabricksConfig()
     wherobots_config = wherobots_config or WherobotsConfig()
+    local_spark_config = local_spark_config or LocalSparkConfig()
     iceberg_config = iceberg_config or IcebergConfig()
     extra_spark_conf = extra_spark_conf or {}
 
@@ -411,6 +428,7 @@ def render_spark_job(
         glue_config=glue_config,
         databricks_config=databricks_config,
         wherobots_config=wherobots_config,
+        local_spark_config=local_spark_config,
     )
 
     family: SparkFamily = setup_info["spark_family"]
@@ -540,6 +558,39 @@ def render_spark_job(
             cli=cli,
         )
 
+    if family == SparkFamily.LOCAL:
+        handler = LocalPlatformHandler(setup_info)
+        cluster_spec = handler.setup_cluster(
+            python_packages=python_packages,
+            spark_jar_paths=spark_jar_paths,
+            extra_spark_conf=extra_spark_conf,
+            extra_spark_env_vars=extra_spark_env_vars,
+            spark_cluster_desired_worker_cores="",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=iceberg_spark_config,
+        )
+        merged_conf = cluster_spec["merged_spark_conf"]
+        built = build_local_command(
+            setup_info,
+            module_name=module_name,
+            class_name=class_name,
+            merged_spark_conf=merged_conf,
+            runner_path=str(get_runner_path("local")),
+            python_executable=local_spark_config.python_executable or "python",
+            spark_submit=local_spark_config.spark_submit_path or "spark-submit",
+            extra_spark_env_vars=extra_spark_env_vars,
+        )
+        return RenderResult(
+            platform="local",
+            spark_impl_name=spark_impl_name,
+            setup_info=setup_info,
+            merged_spark_conf=merged_conf,
+            cluster_spec=cluster_spec,
+            operator_kwargs=built,
+            submit_payload=None,
+            cli=_local_cli(built),
+        )
+
     raise ValueError(f"Unsupported Spark family: {family}")
 
 
@@ -614,6 +665,7 @@ def _cli(argv: list[str] | None = None) -> int:
         spark_jar_paths=_pick("spark_jar_paths", args.spark_jar_paths),
         parameters=parameters,
         extra_spark_conf=_pick("extra_spark_conf", {}),
+        extra_spark_env_vars=_pick("extra_spark_env_vars", "{}"),
         spark_cluster_size=_pick("spark_cluster_size", args.spark_cluster_size),
         spark_cluster_desired_worker_cores=_pick(
             "spark_cluster_desired_worker_cores",
@@ -629,6 +681,7 @@ def _cli(argv: list[str] | None = None) -> int:
         glue_config=_build_config_obj(GlueConfig, config.get("glue")),
         databricks_config=_build_config_obj(DatabricksConfig, config.get("databricks")),
         wherobots_config=_build_config_obj(WherobotsConfig, config.get("wherobots")),
+        local_spark_config=_build_config_obj(LocalSparkConfig, config.get("local")),
         task_id=_pick("task_id", args.task_id),
         dag_id=_pick("dag_id", args.dag_id),
         pre_resolved_package_info=config.get("pre_resolved_package_info"),

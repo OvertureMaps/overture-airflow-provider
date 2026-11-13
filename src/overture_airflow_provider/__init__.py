@@ -7,7 +7,7 @@ Public surface (lazily loaded — see ``__getattr__``):
     SparkImpl, SparkFamily, SparkSedona  – platform/version enums
     AwsGlueClusterSize, DatabricksClusterSize, WherobotsClusterSize
     PackageRegistryConfig, ArtifactStoreConfig, IcebergConfig,
-    GlueConfig, DatabricksConfig, WherobotsConfig  – caller-facing config
+    GlueConfig, DatabricksConfig, WherobotsConfig, LocalSparkConfig  – caller-facing config
 
 Symbols are imported lazily so that ``import overture_airflow_provider`` does
 not pull in ``airflow.models`` (and its platform-specific deps) unless the
@@ -31,6 +31,7 @@ _LAZY_IMPORTS = {
     "DatabricksConfig": ("config", "DatabricksConfig"),
     "GlueConfig": ("config", "GlueConfig"),
     "IcebergConfig": ("config", "IcebergConfig"),
+    "LocalSparkConfig": ("config", "LocalSparkConfig"),
     "PackageRegistryConfig": ("config", "PackageRegistryConfig"),
     "RenderResult": ("render", "RenderResult"),
     "ReportIssueConfig": ("config", "ReportIssueConfig"),
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
         DatabricksConfig,
         GlueConfig,
         IcebergConfig,
+        LocalSparkConfig,
         PackageRegistryConfig,
         ReportIssueConfig,
         WherobotsConfig,

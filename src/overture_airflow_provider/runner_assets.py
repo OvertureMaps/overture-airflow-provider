@@ -34,6 +34,7 @@ _RUNNER_FILES: dict[str, str] = {
     "glue_scala": "job_runner_glue.scala",  # materialised from SCALA_RUNNER_SOURCE
     "databricks": "job_runner_databricks.py",
     "wherobots": "job_runner_wherobots.py",
+    "local": "job_runner_local.py",
 }
 
 # Matches DatabricksConfig.cluster_init_script_name's default (config.py).
@@ -50,7 +51,7 @@ def get_runner_path(platform: str) -> pathlib.Path:
 
     Args:
         platform: One of ``"glue"``, ``"glue_scala"``, ``"databricks"``,
-            ``"wherobots"``.
+            ``"wherobots"``, ``"local"``.
 
     Returns:
         Absolute :class:`pathlib.Path` to the runner file.
@@ -109,8 +110,8 @@ def upload_runners_to_s3(
         overrides: Optional ``{platform: s3_uri}`` mapping. When a platform
             appears here its URI is returned as-is and the bundled file is not
             uploaded.
-        platforms: Subset of platforms to process. Defaults to all four:
-            ``"glue"``, ``"glue_scala"``, ``"databricks"``, ``"wherobots"``.
+        platforms: Subset of platforms to process. Defaults to all:
+            ``"glue"``, ``"glue_scala"``, ``"databricks"``, ``"wherobots"``, ``"local"``.
 
     Returns:
         Dict mapping platform name → ``s3://bucket/key`` URI.

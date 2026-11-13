@@ -236,6 +236,8 @@ export OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1
 ```
 
 Never set this in staging or production: a DAG pointed at LOCAL there fails at `setup_spark_job` before anything runs.
+The guard applies to provider-managed tasks, not direct Spark commands, including commands produced by `render`.
+LOCAL is not a data sandbox: S3A and the default Iceberg configuration can access real resources using the worker's credentials.
 
 ```python
 from overture_airflow_provider import LocalSparkConfig
@@ -253,14 +255,16 @@ spark_agnostic_task_group(
 )
 ```
 
-- The installed PySpark must match the impl's Spark `major.minor` (3.5).
+- The installed PySpark and `spark-submit` must match the impl's Spark `major.minor` (3.5); use a matching Hadoop distribution for S3A. Spark Connect requires only PySpark on the client.
 - Your job's Python packages must already be installed in `python_executable`. The provider does not download wheels for LOCAL runs.
-- Sedona and `hadoop-aws` (matched to the installed Hadoop) are fetched by `spark-submit --packages`. Add anything else, such as the Iceberg runtime, to `extra_packages`.
+- Sedona and `hadoop-aws` (matched to the installed PySpark Hadoop) are fetched by `spark-submit --packages`. Add anything else, such as the Iceberg runtime, to `extra_packages`. Spark Connect needs these dependencies and its static configuration on the server instead.
 - `iceberg_spark_config`, when set, replaces the `IcebergConfig` values for LOCAL runs, for example to point at a local Hadoop catalog.
 - Cluster sizing arguments are ignored. The task's job link points at `ui_url` (default `http://localhost:4040`).
+- LOCAL runs on a POSIX Airflow worker (Linux or macOS). Opt in and install matching dependencies on every worker that can run its tasks; `localhost` URLs refer to that worker. The default temporary working directory is retained, including any relative output.
+- Cancellation terminates the local process group. For Spark Connect, server-side execution and cleanup depend on the remote server.
 - AWS SSO profiles that use a `credential_process` can fail inside containers. Export plain credentials first: `eval "$(aws configure export-credentials --profile <p> --format env)"`.
 
-See [`examples/example_local_dag.py`](examples/example_local_dag.py) for a runnable LOCAL DAG.
+See [`examples/example_local_dag.py`](examples/example_local_dag.py) for a LOCAL configuration example.
 
 ## Local rendering
 

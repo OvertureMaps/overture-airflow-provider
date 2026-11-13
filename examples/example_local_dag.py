@@ -6,8 +6,8 @@ everywhere but fails at ``setup`` in staging and production.
 
 Before triggering it on a dev worker:
 
-* Install PySpark 3.5 and the job's own package (``my-pkg``) into the
-  interpreter named by ``python_executable``.
+* Replace the placeholder job and interpreter, and install PySpark 3.5,
+  ``apache-sedona``, and the job's package in that interpreter.
 * Export ``OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1`` for the worker.
 
 ``package_registry`` and ``artifact_store`` are passed so the call matches
@@ -42,8 +42,7 @@ with DAG(
         parameters=json.dumps(
             {
                 "input": "/tmp/spark-agnostic-example/in/",
-                # s3:// paths also work: they are mapped to s3a and use aws_profile.
-                "output": "s3://my-dev-bucket/spark-agnostic-example/out/",
+                "output": "/tmp/spark-agnostic-example/out/",
             }
         ),
         artifact_store=ArtifactStoreConfig(
@@ -62,7 +61,7 @@ with DAG(
             master="local[*]",  # or "spark://host:7077", or "sc://host:15002" (PySpark only)
             python_executable="/opt/venvs/spark-dev/bin/python",
             driver_memory="8g",
-            aws_profile="my-dev-profile",
+            # aws_profile="my-dev-profile",  # for s3:// / s3a:// paths
             # Keep Iceberg writes on the laptop instead of the shared catalog.
             iceberg_spark_config={
                 "spark.sql.catalog.local": "org.apache.iceberg.spark.SparkCatalog",

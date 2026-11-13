@@ -113,10 +113,12 @@ def rehydrate(serialized: dict) -> dict:
     full = dict(serialized)
     full["spark_impl"] = SparkImpl.from_str(serialized["spark_impl_name"])
     full["spark_family"] = SparkFamily[serialized["spark_family_name"]]
-    full["py_pi_client"] = CodeArtifactPyPiClient(
-        domain_owner=serialized["codeartifact_domain_owner"],
-        domain=serialized["codeartifact_domain"],
-        repository=serialized["codeartifact_repository"],
-        region_name=serialized["codeartifact_region"],
-    )
+    full["py_pi_client"] = None
+    if full["spark_family"] != SparkFamily.LOCAL:
+        full["py_pi_client"] = CodeArtifactPyPiClient(
+            domain_owner=serialized["codeartifact_domain_owner"],
+            domain=serialized["codeartifact_domain"],
+            repository=serialized["codeartifact_repository"],
+            region_name=serialized["codeartifact_region"],
+        )
     return full

@@ -1,9 +1,13 @@
 """Tests for the development-only LOCAL Spark platform."""
 
 import json
+import logging
+import os
+import runpy
 import socket
 import subprocess
 import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,7 +24,8 @@ from overture_airflow_provider._local import (
 )
 from overture_airflow_provider._setup import setup_spark_job
 from overture_airflow_provider.config import LOCAL_SPARK_ALLOW_ENV_VAR, LocalSparkConfig
-from overture_airflow_provider.render import render_spark_job
+from overture_airflow_provider.render import _cli, render_spark_job
+from overture_airflow_provider.runner_assets import get_runner_path
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
 from overture_airflow_provider.spark import SparkFamily, SparkImpl
 from overture_airflow_provider.spark_platform_handlers import (
@@ -72,17 +77,16 @@ def deny_local(monkeypatch):
 
 
 def _setup(**kwargs):
-    with patch("overture_airflow_provider._setup.CodeArtifactPyPiClient"):
-        return setup_spark_job(
-            spark_impl_name="LOCAL_v3_5",
-            sedona_version="1.7.0",
-            module_name="pkg.mod",
-            class_name="Job",
-            job_name="",
-            parameters="{}",
-            spark_jar_paths="",
-            **kwargs,
-        )
+    return setup_spark_job(
+        spark_impl_name="LOCAL_v3_5",
+        sedona_version="1.7.0",
+        module_name="pkg.mod",
+        class_name="Job",
+        job_name="",
+        parameters="{}",
+        spark_jar_paths="",
+        **kwargs,
+    )
 
 
 class TestConfig:
@@ -100,12 +104,23 @@ class TestSetupGuard:
         with pytest.raises(LocalSparkNotAllowedError, match=LOCAL_SPARK_ALLOW_ENV_VAR):
             _setup()
 
+    def test_setup_refuses_non_posix_workers(self, allow_local):
+        with patch.object(_local.os, "name", "nt"), pytest.raises(RuntimeError, match="POSIX"):
+            _local.require_local_spark_allowed()
+
     def test_setup_detects_hadoop_version(self, allow_local):
         detected = {"spark_version": "3.5.3", "hadoop_version": "3.3.4"}
-        with patch.object(_local, "detect_local_spark", return_value=detected):
+        with (
+            patch.object(_local, "inspect_local_spark", return_value=detected),
+            patch("overture_airflow_provider._setup.CodeArtifactPyPiClient") as setup_client,
+        ):
             info = _setup(local_spark_config=LocalSparkConfig(aws_profile="dev"))
+        setup_client.assert_not_called()
         assert info["local_hadoop_version"] == "3.3.4"
-        restored = rehydrate(to_xcom(info))
+        with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient") as xcom_client:
+            restored = rehydrate(to_xcom(info))
+        xcom_client.assert_not_called()
+        assert restored["py_pi_client"] is None
         assert restored["spark_family"] == SparkFamily.LOCAL
         assert restored["local_aws_profile"] == "dev"
         assert restored["local_hadoop_version"] == "3.3.4"
@@ -130,6 +145,86 @@ class TestSetupGuard:
                 spark_jar_paths="",
             )
         assert info["local_hadoop_version"] == ""
+
+
+class TestInstalledSpark:
+    def test_accepts_matching_spark_submit_version(self):
+        detected = {"spark_version": "3.5.2", "hadoop_version": "3.3.4"}
+        with (
+            patch.object(_local, "detect_local_spark", return_value=detected),
+            patch.object(_local, "resolve_spark_submit", return_value="/spark-submit"),
+            patch.object(
+                subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "", "Spark version 3.5.3"),
+            ) as run,
+        ):
+            result = _local.inspect_local_spark(
+                python_executable="/python",
+                spark_submit_path="",
+                master="local[*]",
+                expected_version="3.5.0",
+                enable_s3a=True,
+            )
+        assert result["spark_submit"] == "/spark-submit"
+        assert result["hadoop_version"] == "3.3.4"
+        assert run.call_args.args[0] == ["/spark-submit", "--version"]
+
+    def test_checks_spark_submit_version(self):
+        with (
+            patch.object(_local, "detect_local_spark", return_value={"spark_version": "3.5.2"}),
+            patch.object(_local, "resolve_spark_submit", return_value="/spark-submit"),
+            patch.object(
+                subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "", "Spark version 4.0.0"),
+            ),
+            pytest.raises(ValueError, match="spark-submit 4.0.0"),
+        ):
+            _local.inspect_local_spark(
+                python_executable="/python",
+                spark_submit_path="",
+                master="local[*]",
+                expected_version="3.5.0",
+                enable_s3a=False,
+            )
+
+    def test_fails_when_s3a_hadoop_version_is_missing(self):
+        with (
+            patch.object(_local, "detect_local_spark", return_value={"spark_version": "3.5.2"}),
+            patch.object(_local, "resolve_spark_submit", return_value="/spark-submit"),
+            patch.object(
+                subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "", "Spark version 3.5.2"),
+            ),
+            pytest.raises(RuntimeError, match="Hadoop version"),
+        ):
+            _local.inspect_local_spark(
+                python_executable="/python",
+                spark_submit_path="",
+                master="local[*]",
+                expected_version="3.5.0",
+                enable_s3a=True,
+            )
+
+    def test_connect_does_not_require_spark_submit_or_hadoop(self):
+        with (
+            patch.object(
+                _local,
+                "detect_local_spark",
+                return_value={"spark_version": "3.5.2", "hadoop_version": None},
+            ),
+            patch.object(_local, "resolve_spark_submit") as resolve,
+        ):
+            _local.inspect_local_spark(
+                python_executable="/python",
+                spark_submit_path="",
+                master="sc://localhost:15002",
+                expected_version="3.5.0",
+                enable_s3a=True,
+            )
+        resolve.assert_not_called()
 
 
 class TestBuildCommand:
@@ -209,11 +304,15 @@ def _context():
 
 def _run(setup_info, script, max_timeout_hours=1):
     argv = [sys.executable, "-c", script]
-    built = {"argv": argv, "env": {}, "mode": "spark-submit", "warnings": []}
+    built = {"argv": argv, "env": {"FOO": "bar"}, "mode": "spark-submit", "warnings": []}
     context, ti = _context()
     with (
         patch.object(_local, "build_local_command", return_value=built),
-        patch.object(_local, "resolve_spark_submit", return_value="spark-submit"),
+        patch.object(
+            _local,
+            "inspect_local_spark",
+            return_value={"hadoop_version": "3.3.4", "spark_submit": "spark-submit"},
+        ),
     ):
         result = run_local_job(
             setup_info=setup_info,
@@ -227,6 +326,7 @@ def _run(setup_info, script, max_timeout_hours=1):
     return result, ti
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LOCAL process control requires POSIX")
 class TestRunLocalJob:
     def test_success_records_run_and_returns_ui_url(self, allow_local, tmp_path):
         info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
@@ -236,6 +336,11 @@ class TestRunLocalJob:
         keys = [c.kwargs["key"] for c in ti.xcom_push.call_args_list]
         assert "spark_agnostic" in keys
         assert len(keys) == 2
+
+    def test_local_job_does_not_inherit_spark_remote(self, allow_local, tmp_path, monkeypatch):
+        monkeypatch.setenv("SPARK_REMOTE", "sc://elsewhere:15002")
+        info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
+        _run(info, "import os; assert 'SPARK_REMOTE' not in os.environ")
 
     def test_failure_carries_log_tail(self, allow_local, tmp_path):
         info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
@@ -251,6 +356,24 @@ class TestRunLocalJob:
         with pytest.raises(LocalSparkJobFailed) as exc_info:
             _run(info, "import time; time.sleep(30)", max_timeout_hours=0.5 / 3600)
         assert exc_info.value.timed_out
+
+    def test_timeout_escalates_when_job_ignores_sigterm(self, allow_local, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.1)
+        info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
+        script = (
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('ready', flush=True); time.sleep(30)"
+        )
+        with pytest.raises(LocalSparkJobFailed) as exc_info:
+            _run(info, script, max_timeout_hours=0.5 / 3600)
+        assert exc_info.value.timed_out
+        assert "ready" in exc_info.value.log_tail
+
+    def test_job_command_is_not_logged(self, allow_local, tmp_path, caplog):
+        info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
+        with caplog.at_level(logging.INFO):
+            _run(info, "# secret-value\nprint('ok')")
+        assert "secret-value" not in caplog.text
 
     def test_submit_refuses_without_opt_in(self, deny_local):
         with pytest.raises(LocalSparkNotAllowedError):
@@ -271,6 +394,7 @@ class TestDescribeFailure:
         assert "python_executable" in info.hint
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LOCAL process control requires POSIX")
 class TestCancel:
     def test_refuses_other_host(self):
         with pytest.raises(RuntimeError, match="only be cancelled there"):
@@ -302,6 +426,31 @@ class TestCancel:
             proc.kill()
             proc.wait()
 
+    def test_cancel_escalates_when_job_ignores_sigterm(self, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.1)
+        marker = "local-cancel-ignore-term"
+        script = (
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('ready', flush=True); time.sleep(60)"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script, marker],
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            assert proc.stdout.readline().strip() == "ready"
+            cancel_local_run(
+                "r", {"pid": proc.pid, "hostname": socket.gethostname(), "marker": marker}
+            )
+            assert proc.wait(timeout=5) != 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+
 
 def test_render_local_needs_no_opt_in(deny_local):
     result = render_spark_job(
@@ -313,3 +462,65 @@ def test_render_local_needs_no_opt_in(deny_local):
     assert result.platform == "local"
     assert result.operator_kwargs["argv"][0] == "spark-submit"
     assert any("spark-submit" in line for line in result.cli)
+
+
+def test_render_local_includes_extra_environment(deny_local):
+    result = render_spark_job(
+        spark_impl_name="LOCAL_v3_5",
+        module_name="pkg.mod",
+        class_name="Job",
+        parameters={},
+        extra_spark_env_vars='{"EXAMPLE_VAR": "value"}',
+    )
+    assert result.operator_kwargs["env"]["EXAMPLE_VAR"] == "value"
+    assert "EXAMPLE_VAR=value" in result.cli[-1]
+
+
+def test_render_cli_passes_extra_environment(deny_local, tmp_path, capsys):
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "spark_impl_name": "LOCAL_v3_5",
+                "module_name": "pkg.mod",
+                "class_name": "Job",
+                "extra_spark_env_vars": {"EXAMPLE_VAR": "value"},
+            }
+        )
+    )
+    assert _cli(["--config", str(config)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["operator_kwargs"]["env"]["EXAMPLE_VAR"] == "value"
+
+
+def test_local_runner_does_not_silence_unexpected_conf_errors(monkeypatch):
+    spark = MagicMock()
+    spark.conf.set.side_effect = ValueError("invalid setting")
+
+    class Job:
+        def run(self, params, spark):
+            return None
+
+    sql = types.ModuleType("pyspark.sql")
+    sql.SparkSession = MagicMock()
+    sql.SparkSession.builder.getOrCreate.return_value = spark
+    job = types.ModuleType("local_test_job")
+    job.Job = Job
+    monkeypatch.setitem(sys.modules, "pyspark.sql", sql)
+    monkeypatch.setitem(sys.modules, "local_test_job", job)
+    monkeypatch.setenv("SPARK_REMOTE", "sc://localhost:15002")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "job_runner_local.py",
+            "--module_name",
+            "local_test_job",
+            "--class_name",
+            "Job",
+            "--extra_spark_conf",
+            '{"spark.invalid": "x"}',
+        ],
+    )
+    with pytest.raises(ValueError, match="invalid setting"):
+        runpy.run_path(str(get_runner_path("local")))

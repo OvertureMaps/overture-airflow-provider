@@ -364,8 +364,8 @@ def _wherobots_cli(payload_path_var: str = "$PAYLOAD") -> list[str]:
 def _local_cli(built: dict) -> list[str]:
     env = " ".join(f"{k}={shlex.quote(v)}" for k, v in built["env"].items())
     return [
-        "# Development only: the worker must set OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1.",
-        "# At run time hadoop-aws matching the installed Hadoop is added to --packages.",
+        "# Direct preview command: the provider's LOCAL opt-in guard is not enforced here.",
+        "# Add hadoop-aws matching your installed Hadoop to --packages when S3A is enabled.",
         *(f"# {w}" for w in built["warnings"]),
         f"{env} {shlex.join(built['argv'])}",
     ]
@@ -391,12 +391,12 @@ def render_spark_job(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
-    local_spark_config: LocalSparkConfig | None = None,
     max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     task_id: str = "execute_spark_job",
     dag_id: str = "",
     pre_resolved_package_info: dict | None = None,
     pre_resolved_jar_info: dict | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
 ) -> RenderResult:
     """Render the platform submission payload without invoking Airflow.
 
@@ -578,6 +578,7 @@ def render_spark_job(
             runner_path=str(get_runner_path("local")),
             python_executable=local_spark_config.python_executable or "python",
             spark_submit=local_spark_config.spark_submit_path or "spark-submit",
+            extra_spark_env_vars=extra_spark_env_vars,
         )
         return RenderResult(
             platform="local",
@@ -664,6 +665,7 @@ def _cli(argv: list[str] | None = None) -> int:
         spark_jar_paths=_pick("spark_jar_paths", args.spark_jar_paths),
         parameters=parameters,
         extra_spark_conf=_pick("extra_spark_conf", {}),
+        extra_spark_env_vars=_pick("extra_spark_env_vars", "{}"),
         spark_cluster_size=_pick("spark_cluster_size", args.spark_cluster_size),
         spark_cluster_desired_worker_cores=_pick(
             "spark_cluster_desired_worker_cores",

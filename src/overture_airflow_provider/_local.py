@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 from overture_airflow_provider.config import LOCAL_SPARK_ALLOW_ENV_VAR, coerce_config_dict
 from overture_airflow_provider.spark import SparkSedona
@@ -96,22 +97,31 @@ def local_setup_info_fields(config, hadoop_version: str = "") -> dict:
 
 
 def require_local_spark_allowed() -> None:
-    """Raise unless the worker set ``OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1``."""
+    """Enforce the development opt-in and supported worker platform."""
     if os.environ.get(LOCAL_SPARK_ALLOW_ENV_VAR) != "1":
         raise LocalSparkNotAllowedError(
             f"The LOCAL Spark platform is for development only and is disabled on this "
             f"worker. Set {LOCAL_SPARK_ALLOW_ENV_VAR}=1 in the worker environment to use it."
         )
+    if os.name != "posix":
+        raise RuntimeError(
+            "LOCAL Spark execution requires a POSIX Airflow worker (Linux or macOS)."
+        )
 
 
 def resolve_python_executable(python_executable: str) -> str:
-    return python_executable or sys.executable
+    executable = python_executable or sys.executable
+    if os.path.dirname(executable):
+        return str(pathlib.Path(executable).absolute())
+    return shutil.which(executable) or executable
 
 
 def resolve_spark_submit(python_executable: str, spark_submit_path: str) -> str:
     """``spark_submit_path``, else the pyspark wheel's script next to the interpreter, else PATH."""
     if spark_submit_path:
-        return spark_submit_path
+        if os.path.dirname(spark_submit_path):
+            return str(pathlib.Path(spark_submit_path).absolute())
+        return shutil.which(spark_submit_path) or spark_submit_path
     candidate = pathlib.Path(python_executable).parent / "spark-submit"
     if candidate.exists():
         return str(candidate)
@@ -141,13 +151,47 @@ def detect_local_spark(python_executable: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def check_spark_version(expected: str, detected: str) -> None:
-    """Raise when the installed pyspark's major.minor differs from the SparkImpl's."""
+def check_spark_version(expected: str, detected: str, *, component: str = "pyspark") -> None:
+    """Raise when an installed Spark component's major.minor differs from the SparkImpl's."""
     if expected.split(".")[:2] != detected.split(".")[:2]:
         raise ValueError(
-            f"Installed pyspark {detected} does not match the LOCAL SparkImpl's Spark "
+            f"Installed {component} {detected} does not match the LOCAL SparkImpl's Spark "
             f"{expected} (major.minor must match)."
         )
+
+
+def inspect_local_spark(
+    *,
+    python_executable: str,
+    spark_submit_path: str,
+    master: str,
+    expected_version: str,
+    enable_s3a: bool,
+) -> dict:
+    """Validate the interpreter and, for spark-submit, the actual Spark executable."""
+    detected = detect_local_spark(python_executable)
+    check_spark_version(expected_version, detected["spark_version"])
+    if is_spark_connect(master):
+        return detected
+
+    spark_submit = resolve_spark_submit(python_executable, spark_submit_path)
+    proc = subprocess.run(
+        [spark_submit, "--version"], capture_output=True, text=True, timeout=120, check=False
+    )
+    output = proc.stdout + "\n" + proc.stderr
+    match = re.search(r"\bversion\s+(\d+\.\d+(?:\.\d+)?)", output, re.IGNORECASE)
+    if proc.returncode != 0 or match is None:
+        raise RuntimeError(
+            f"Could not determine Spark version from {spark_submit}: {output[-2000:]}"
+        )
+    check_spark_version(expected_version, match.group(1), component="spark-submit")
+    if enable_s3a and not detected.get("hadoop_version"):
+        raise RuntimeError(
+            f"Could not determine the Hadoop version in {python_executable}; "
+            "install a complete PySpark distribution or disable LocalSparkConfig.enable_s3a."
+        )
+    detected["spark_submit"] = spark_submit
+    return detected
 
 
 def _requirement_name(requirement: str) -> str:
@@ -224,6 +268,7 @@ def build_local_command(
     runner_path: str,
     python_executable: str,
     spark_submit: str,
+    extra_spark_env_vars: str = "{}",
 ) -> dict:
     """Build the job command without touching the environment.
 
@@ -240,6 +285,14 @@ def build_local_command(
     }
     if setup_info.get("local_aws_profile"):
         env["AWS_PROFILE"] = setup_info["local_aws_profile"]
+    env.update(
+        {
+            k: _conf_value(v)
+            for k, v in coerce_config_dict(
+                extra_spark_env_vars or "{}", field_name="extra_spark_env_vars"
+            ).items()
+        }
+    )
     warnings: list[str] = []
 
     if is_spark_connect(master):
@@ -353,17 +406,20 @@ def run_local_job(
     context,
 ) -> dict:
     """Run the job to completion as a child process, streaming its output to the task log."""
-    from overture_airflow_provider._retry_guard import record_launched_run
     from overture_airflow_provider.runner_assets import get_runner_path
 
     require_local_spark_allowed()
     python_executable = resolve_python_executable(setup_info.get("local_python_executable", ""))
     master = setup_info.get("local_master") or "local[*]"
-    spark_submit = (
-        ""
-        if is_spark_connect(master)
-        else resolve_spark_submit(python_executable, setup_info.get("local_spark_submit_path", ""))
+    detected = inspect_local_spark(
+        python_executable=python_executable,
+        spark_submit_path=setup_info.get("local_spark_submit_path", ""),
+        master=master,
+        expected_version=setup_info["spark_version"],
+        enable_s3a=setup_info.get("local_enable_s3a", True),
     )
+    setup_info = {**setup_info, "local_hadoop_version": detected.get("hadoop_version") or ""}
+    spark_submit = "" if is_spark_connect(master) else detected["spark_submit"]
     built = build_local_command(
         setup_info,
         module_name=module_name,
@@ -372,23 +428,24 @@ def run_local_job(
         runner_path=str(get_runner_path("local")),
         python_executable=python_executable,
         spark_submit=spark_submit,
+        extra_spark_env_vars=extra_spark_env_vars,
     )
     for warning in built["warnings"]:
         log.warning(warning)
 
     env = os.environ.copy()
+    if not is_spark_connect(master):
+        env.pop("SPARK_REMOTE", None)
     env.update(built["env"])
-    env.update(
-        {
-            k: _conf_value(v)
-            for k, v in coerce_config_dict(
-                extra_spark_env_vars or "{}", field_name="extra_spark_env_vars"
-            ).items()
-        }
-    )
     work_dir = setup_info.get("local_work_dir") or tempfile.mkdtemp(prefix="overture-local-spark-")
     ui_url = setup_info.get("local_ui_url") or ""
-    log.info("Running local Spark job (%s) in %s:\n%s", built["mode"], work_dir, built["argv"])
+    return _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, context)
+
+
+def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, context) -> dict:
+    from overture_airflow_provider._retry_guard import record_launched_run
+
+    log.info("Running local Spark job (%s) in %s", built["mode"], work_dir)
 
     proc = subprocess.Popen(
         built["argv"],
@@ -402,10 +459,13 @@ def run_local_job(
     )
     run_id = f"local-{proc.pid}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
     timed_out = threading.Event()
+    finished = threading.Event()
 
     def _on_timeout():
         timed_out.set()
         _kill_process_group(proc.pid)
+        if not finished.wait(_KILL_GRACE_SECONDS):
+            _kill_process_group(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
     timer = threading.Timer(max_timeout_hours * 3600, _on_timeout)
     timer.daemon = True
@@ -431,6 +491,7 @@ def run_local_job(
             log.info("%s", line)
         returncode = proc.wait()
     finally:
+        finished.set()
         timer.cancel()
         _terminate(proc)
 
@@ -470,7 +531,16 @@ def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
             f"Local run {run_id} was started on {hostname}, not {socket.gethostname()}; "
             "it can only be cancelled there."
         )
-    if not _is_local_run_process(int(pid), extra.get("marker") or _RUNNER_MARKER):
+    pid = int(pid)
+    marker = extra.get("marker") or _RUNNER_MARKER
+    if not _is_local_run_process(pid, marker):
         log.info("Local run %s (pid %s) is no longer running", run_id, pid)
         return
-    _kill_process_group(int(pid))
+    _kill_process_group(pid)
+    deadline = time.monotonic() + _KILL_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        if not _is_local_run_process(pid, marker):
+            return
+        time.sleep(0.1)
+    if _is_local_run_process(pid, marker):
+        _kill_process_group(pid, getattr(signal, "SIGKILL", signal.SIGTERM))

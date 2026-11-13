@@ -76,13 +76,15 @@ def setup_spark_job(
     run_identifier = f"{full_job_name}_{timestamp}"
     print(f"run_identifier: {run_identifier}")
 
-    py_pi_client = CodeArtifactPyPiClient(
-        domain_owner=package_registry.domain_owner,
-        domain=package_registry.domain,
-        repository=package_registry.repository,
-        region_name=package_registry.region,
-    )
-    print("Initialized private PyPI client")
+    py_pi_client = None
+    if spark_family != SparkFamily.LOCAL:
+        py_pi_client = CodeArtifactPyPiClient(
+            domain_owner=package_registry.domain_owner,
+            domain=package_registry.domain,
+            repository=package_registry.repository,
+            region_name=package_registry.region,
+        )
+        print("Initialized private PyPI client")
 
     if isinstance(parameters, str):
         resolved_parameters = parameters
@@ -175,15 +177,19 @@ def setup_spark_job(
 def _check_local_spark(local_spark_config: LocalSparkConfig, spark_version: str) -> str:
     """Refuse LOCAL unless allowed, check the installed pyspark, return its Hadoop version."""
     from overture_airflow_provider._local import (
-        check_spark_version,
-        detect_local_spark,
+        inspect_local_spark,
         require_local_spark_allowed,
         resolve_python_executable,
     )
 
     require_local_spark_allowed()
     python_executable = resolve_python_executable(local_spark_config.python_executable)
-    detected = detect_local_spark(python_executable)
+    detected = inspect_local_spark(
+        python_executable=python_executable,
+        spark_submit_path=local_spark_config.spark_submit_path,
+        master=local_spark_config.master,
+        expected_version=spark_version,
+        enable_s3a=local_spark_config.enable_s3a,
+    )
     print(f"Local pyspark {detected['spark_version']} (Hadoop {detected['hadoop_version']})")
-    check_spark_version(spark_version, detected["spark_version"])
     return detected.get("hadoop_version") or ""

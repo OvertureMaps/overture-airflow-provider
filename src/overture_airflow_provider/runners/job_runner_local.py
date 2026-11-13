@@ -15,6 +15,7 @@ Args (``--key value`` pairs via ``sys.argv``):
 
 import inspect
 import json
+import os
 import sys
 from importlib import import_module
 
@@ -49,11 +50,17 @@ if "spark" in sig.parameters:
 
     spark = SparkSession.builder.getOrCreate()
     for k, v in json.loads(extra_spark_conf_raw).items():
+        if not os.environ.get("SPARK_REMOTE") and k.startswith("spark."):
+            continue
         try:
             spark.conf.set(k, v)
-        except Exception as exc:  # noqa: BLE001
-            # Static confs were already applied at launch by spark-submit --conf.
-            print(f"Skipping spark conf {k}: {exc}")
+        except Exception as exc:
+            if (
+                not os.environ.get("SPARK_REMOTE")
+                or getattr(exc, "getErrorClass", lambda: None)() != "CANNOT_MODIFY_CONFIG"
+            ):
+                raise
+            print(f"Cannot apply static Spark Connect config {k}: {exc}")
     run_kwargs["spark"] = spark
 elif hasattr(instance, "init_spark_for_platform"):
     instance.init_spark_for_platform(extra_spark_conf=extra_spark_conf_raw)

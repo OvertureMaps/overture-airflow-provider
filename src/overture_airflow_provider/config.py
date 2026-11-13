@@ -588,7 +588,7 @@ class LocalSparkConfig:
             Iceberg Spark runtime and AWS bundle when using a REST catalog).
         ui_url: Spark UI URL surfaced through ``SparkJobLink``.
         work_dir: Working directory for the job process. Empty uses a fresh
-            temporary directory.
+            temporary directory, retained after the run for relative outputs.
 
     Raises:
         ValueError: If ``master`` is not a ``local``, ``spark://`` or ``sc://`` URL.

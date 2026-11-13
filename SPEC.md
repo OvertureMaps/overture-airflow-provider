@@ -187,9 +187,10 @@ DAG pointed at LOCAL fails closed in staging or production. `render` never
 checks it.
 
 - `_local.py` holds all runtime logic and imports no Airflow or cloud SDKs.
-- Setup resolves `python_executable` (default: the worker's interpreter),
-  detects the installed PySpark and Hadoop versions, and fails if the Spark
-  `major.minor` differs from the impl's.
+- Setup and submission resolve `python_executable` (default: the worker's
+  interpreter), detect its PySpark and Hadoop versions, and check both PySpark
+  and `spark-submit` against the impl's Spark `major.minor`. Spark Connect
+  requires only the client PySpark version check.
 - Python packages are not downloaded: they must already be installed in
   `python_executable`; missing ones are logged as warnings. JARs (Sedona,
   `hadoop-aws` matching the detected Hadoop, `extra_packages`) are resolved by

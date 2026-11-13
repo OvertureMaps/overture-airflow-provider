@@ -108,6 +108,8 @@ def test_local_setup_fails_closed_without_opt_in():
         env=env,
     )
     out = proc.stdout + proc.stderr
+    assert "Task failed with exception" in out, out
+    assert "LocalSparkNotAllowedError" in out, out
     assert "OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1" in out, out
     assert "development only" in out, out
 

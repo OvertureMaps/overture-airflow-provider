@@ -1,22 +1,23 @@
-"""Execute real Airflow branches and mapping with credential-free remote adapters."""
+"""Run matching groups through real Airflow scheduling, with simulated child DAG runs."""
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 from airflow.sdk.exceptions import AirflowSkipException
 
-from overture_airflow_provider import CorpusDagConfig
-from overture_airflow_provider._airflow_compat import DAG, TaskGroup, TriggerRule, task
-from overture_airflow_provider.matching_taskgroup import matching_task_group
+from overture_airflow_provider import child_dag_run_task_group, matching_task_group
+from overture_airflow_provider._airflow_compat import (
+    DAG,
+    EmptyOperator,
+    TaskGroup,
+    TriggerDagRunOperator,
+    TriggerRule,
+    task,
+)
 
 pytestmark = pytest.mark.e2e
 TABLES = ("division", "division_area")
-
-
-@task
-def publish_provenance(input_paths, baseline_paths, result_paths, metadata_root, parameters):
-    return metadata_root
+PROVIDERS = ("osm", "linz")
 
 
 @task.short_circuit(ignore_downstream_trigger_rules=False)
@@ -25,108 +26,86 @@ def changed(selected):
 
 
 @task
+def check_inputs(input_paths, baseline_paths, failure):
+    if failure == "pre_match":
+        raise ValueError("simulated pre-match failure")
+    return True
+
+
+@task
+def fake_match(input_paths, baseline_paths, provider, failure):
+    if failure == "matcher":
+        raise ValueError("simulated matcher failure")
+    if failure == "matcher_skip":
+        raise AirflowSkipException("simulated matcher skip")
+    return {table: f"s3://matches/{provider}/type={table}" for table in TABLES}
+
+
+@task
+def publish(input_paths, baseline_paths, result_paths, failure):
+    if failure == "provenance":
+        raise ValueError("simulated provenance failure")
+    return "published"
+
+
+@task
+def load_requests(provider, result_paths, load):
+    if not load:
+        return []
+    return [
+        {"table": table, "path": path, "source": provider, "version": "123"}
+        for table, path in result_paths.items()
+    ]
+
+
+@task
 def finalized(completion):
     return completion
 
 
-@task
-def fake_match(parameters, failure):
-    if failure == "matcher":
-        raise ValueError("simulated matcher failure")
-    if failure == "matcher_skip":
-        raise AirflowSkipException("simulated unexpected matcher skip")
-    root = parameters["outputPath"] + "/" + parameters["runId"]
-    return {table: f"{root}/final/type={table}" for table in TABLES}
-
-
-@task
-def check_inputs(input_paths, baseline_paths, failure):
-    if failure == "pre_match_skip":
-        raise AirflowSkipException("simulated unexpected pre-match skip")
-    return True
-
-
 @pytest.mark.parametrize(
-    "failure,selected,branch",
+    "failure,selected,load",
     [
-        ("", True, "main"),
-        ("", False, "main"),
-        ("", "osm", "main"),
-        ("", True, "experiment"),
-        ("load", True, "main"),
-        ("load_skip", True, "main"),
-        ("export_skip", True, "main"),
-        ("provenance", True, "main"),
-        ("provenance_skip", True, "main"),
-        ("matcher", True, "main"),
-        ("matcher_skip", True, "main"),
-        ("pre_match_skip", True, "main"),
-        ("create", True, "experiment"),
-        ("create_skip", True, "experiment"),
-        ("", True, ""),
+        ("", True, True),
+        ("", False, True),
+        ("", "osm", True),
+        ("", True, False),
+        ("pre_match", True, True),
+        ("matcher", True, True),
+        ("matcher_skip", True, True),
+        ("provenance", True, True),
+        ("load", True, True),
+        ("load_skip", True, True),
     ],
 )
-def test_matching_execution_states(monkeypatch, failure, selected, branch):
-    from airflow.providers.standard.operators.empty import EmptyOperator
-    from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
-
-    import overture_airflow_provider.matching_taskgroup as matching
-
-    remote = {}
-    export_versions = set()
-    creates = []
+def test_matching_execution_states(monkeypatch, failure, selected, load):
     loads = []
+    versions = set()
 
     def execute_trigger(self, context):
         conf = self.conf
-        if self.trigger_dag_id == "simulated_export":
-            export_versions.add(conf["Version"])
-            remote[self.trigger_run_id] = {
-                "data_export": [
-                    {
-                        "TableName": conf["TableName"],
-                        "exportPath": f"s3://baseline/{conf['BranchName']}/type={conf['TableName']}",
-                    }
-                ]
-            }
-        elif self.trigger_dag_id == "simulated_load":
-            loads.append((self.task_id, conf["TableName"], conf["Source"]))
-            if failure == "load" and conf["TableName"] == "division_area":
-                raise ValueError("simulated mapped load failure")
-        else:
-            creates.append((conf["BranchName"], conf["BaseBranchName"], conf["BaseVersion"]))
-            if failure == "create":
-                raise ValueError("simulated branch creation failure")
+        if failure == "load_skip" and conf["table"] == "division_area":
+            raise AirflowSkipException("simulated trigger skip, before the run ID is pushed")
         context["ti"].xcom_push(key="trigger_run_id", value=self.trigger_run_id)
-        table_skip = conf.get("TableName") == "division_area" and (
-            (failure == "load_skip" and self.trigger_dag_id == "simulated_load")
-            or (failure == "export_skip" and self.trigger_dag_id == "simulated_export")
-        )
-        create_skip = failure == "create_skip" and self.trigger_dag_id == "simulated_create"
-        if table_skip or create_skip:
-            raise AirflowSkipException("simulated unexpected mapped trigger skip")
+        loads.append((self.task_id, conf["source"], conf["table"], self.trigger_run_id))
+        versions.add(conf["version"])
+        if failure == "load" and conf["table"] == "division_area":
+            raise ValueError("simulated child run failure")
 
     monkeypatch.setattr(TriggerDagRunOperator, "execute", execute_trigger)
-    monkeypatch.setattr(
-        matching, "XCom", SimpleNamespace(get_one=lambda **kwargs: remote[kwargs["run_id"]])
-    )
 
-    def provenance_factory(**kwargs):
-        result = publish_provenance(**kwargs)
-        if failure in ("provenance", "provenance_skip"):
+    def sink_factory(provider):
+        def build(*, result_paths):
+            return child_dag_run_task_group(
+                "load",
+                trigger_dag_id="simulated_load",
+                requests=load_requests(provider, result_paths, load),
+            ).run_ids
 
-            @task
-            def rejected(receipt):
-                if failure == "provenance_skip":
-                    raise AirflowSkipException("simulated unexpected provenance skip")
-                raise ValueError("simulated provenance publication failure")
+        return build
 
-            return rejected(result)
-        return result
-
-    dag_id = f"matching_states_{failure or 'ok'}_{selected}_{branch or 'no_load'}"
     with DAG(
-        dag_id,
+        f"matching_states_{failure or 'ok'}_{selected}_{load}",
         schedule=None,
         start_date=datetime(2026, 1, 1, tzinfo=UTC),
         default_args={"retries": 0},
@@ -134,38 +113,22 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
     ) as dag:
         completions = []
         with TaskGroup("providers"):
-            for provider in ("osm", "linz"):
+            for provider in PROVIDERS:
                 with TaskGroup(provider):
                     gate = changed(selected is True or selected == provider)
                     result = matching_task_group(
                         group_id="arbitrary",
-                        scenario="overture",
-                        theme="divisions",
-                        provider=provider,
-                        input={
-                            "override_paths": {
-                                table: f"s3://feeds/{provider}/data/type={table}"
-                                for table in TABLES
-                            }
-                        },
-                        baseline={"branch": "main", "version": 123},
-                        output_path=f"s3://matches/{provider}",
-                        run_id="{{ run_id }}",
                         tables=TABLES,
-                        matcher_env="test",
-                        matcher_task_factory=lambda *, parameters: fake_match(parameters, failure),
-                        corpus=CorpusDagConfig(
-                            export_dag_id="simulated_export",
-                            load_dag_id="simulated_load",
-                            export_output_task_id="output",
-                            create_branch_dag_id="simulated_create",
-                            create_branch=True,
+                        input={table: f"s3://feeds/{provider}/type={table}" for table in TABLES},
+                        baseline={table: f"s3://baseline/type={table}" for table in TABLES},
+                        pre_match_task_factory=lambda **paths: check_inputs(
+                            **paths, failure=failure
                         ),
-                        output_corpus_branch=branch,
-                        provenance_task_factory=provenance_factory,
-                        pre_match_task_factory=lambda **kwargs: check_inputs(
-                            **kwargs, failure=failure
+                        matcher_task_factory=lambda provider=provider, **paths: fake_match(
+                            **paths, provider=provider, failure=failure
                         ),
+                        provenance_task_factory=lambda **paths: publish(**paths, failure=failure),
+                        sink_task_factory=sink_factory(provider),
                     )
                     gate >> result.group
                     completions.append(finalized(result.complete))
@@ -181,36 +144,44 @@ def test_matching_execution_states(monkeypatch, failure, selected, branch):
     sync_bag_to_db(bag, "dags-folder", None)
     run = dag.test()
     states = {(ti.task_id, ti.map_index): ti.state for ti in run.get_task_instances()}
-    expected = "failed" if selected and failure else "success"
-    assert run.state == expected
-    for provider in ("osm", "linz"):
-        complete_id = f"providers.{provider}.arbitrary.load_results._complete"
-        final_id = f"providers.{provider}.finalized"
+
+    # A skip stops the steps after it without failing the run; it is never a completion.
+    assert run.state == (
+        "failed" if selected and failure and failure != "matcher_skip" else "success"
+    )
+    for provider in PROVIDERS:
+        prefix = f"providers.{provider}.arbitrary."
+        complete = states[(prefix + "sink.load.run_ids", -1)]
+        final = states[(f"providers.{provider}.finalized", -1)]
         if not (selected is True or selected == provider):
             assert all(
                 state == "skipped"
                 for (task_id, _), state in states.items()
-                if task_id.startswith(f"providers.{provider}.arbitrary.")
+                if task_id.startswith(prefix)
             )
-            assert states[(complete_id, -1)] == "skipped"
-            assert states[(final_id, -1)] == "skipped"
+            assert final == "skipped"
         elif failure:
-            assert states[(complete_id, -1)] != "success"
-            assert states[(final_id, -1)] != "success"
+            assert complete != "success" and final != "success"
         else:
-            assert states[(complete_id, -1)] == "success"
-            assert states[(final_id, -1)] == "success"
-    if selected and failure in ("", "load", "load_skip") and branch:
-        assert {(source, table) for _, table, source in loads} == {
-            (provider, table)
-            for provider in ("osm", "linz")
-            if selected is True or selected == provider
-            for table in TABLES
-        }
-        assert all(f"providers.{source}." in task_id for task_id, _, source in loads)
-    else:
-        assert not loads
-    # The DAG renders natively and the caller passed an int; Corpus DAGs need a string.
-    assert export_versions <= {"123"}
-    created = selected and branch == "experiment" and failure in ("", "create", "create_skip")
-    assert sorted(creates) == [("experiment", "main", "123")] * (2 if created else 0)
+            assert complete == "success" and final == "success"
+    if failure in ("pre_match", "matcher", "matcher_skip"):
+        assert all(
+            states[(f"providers.{provider}.arbitrary.result_paths", -1)] != "success"
+            for provider in PROVIDERS
+        )
+
+    loaded = selected and load and failure in ("", "load", "load_skip")
+    expected = {
+        (provider, table)
+        for provider in PROVIDERS
+        if loaded and (selected is True or selected == provider)
+        for table in TABLES
+        if not (failure == "load_skip" and table == "division_area")
+    }
+    assert {(source, table) for _, source, table, _ in loads} == expected
+    assert all(task_id.startswith(f"providers.{source}.") for task_id, source, _, _ in loads)
+    # The DAG renders natively; a mapped conf must still arrive as the request built it.
+    assert versions <= {"123"}
+    run_ids = [run_id for *_, run_id in loads]
+    assert len(set(run_ids)) == len(run_ids)
+    assert all(run_id.startswith("child__") for run_id in run_ids)

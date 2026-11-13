@@ -14,8 +14,9 @@ on one of:
 …with the same caller-facing API. The DAG code does not change when the engine
 changes; only `spark_impl_name` and the platform-specific config dataclass do.
 
-A second, additive task group, `matching_task_group`, composes the Overture
-match-and-load workflow around an injected matcher job (see
+Two additive task groups sit beside it. `matching_task_group` wires a matching
+workflow out of caller-supplied task factories, and `child_dag_run_task_group`
+triggers child DAG runs with stable run IDs (see
 [Matching workflow](#matching-workflow)).
 
 ## Non-goals
@@ -34,9 +35,12 @@ Spark entry points, both Airflow `@task_group`-decorated factories:
   of per-invocation configs.
 
 `matching_task_group(...)` is an additive workflow factory returning
-`MatchingTasks(group, matcher, result_paths, complete)`. The matcher job is
-injected as a factory; `spark_matcher_task_factory(...)` builds it on the
-existing Spark API without changing that API or its platform dispatch.
+`MatchingTasks(group, matcher, result_paths, complete)`. Every step except path
+checking is a factory supplied by the caller, so it adds no configuration
+classes and no platform dispatch.
+
+`child_dag_run_task_group(...)` returns `ChildDagRuns(group, run_ids)`: one
+child DAG run per request, each with a stable run ID.
 
 Spark configuration dataclasses:
 
@@ -49,10 +53,6 @@ Spark configuration dataclasses:
 | `DatabricksConfig` | Databricks jobs (conn id, DBFS layout) |
 | `WherobotsConfig` | Wherobots jobs (role ARN, external id) |
 | `ReportIssueConfig` | Optional; wires a "Report Issue" extra-link onto `execute_spark_job` |
-
-Matching adds `CorpusDagConfig`, which holds injected Corpus transport settings,
-not pipeline topology. Matcher execution settings are the Spark task group's own
-arguments, passed through unchanged.
 
 And three enumerations (implemented as plain classes with class-level constants, not Python `enum.Enum`; do not call `.name` on instances):
 
@@ -87,10 +87,8 @@ python_package_utils         ← CodeArtifact pip/maven HTTP clients (overture_c
 links.py                     ← SparkJobLink + ReportIssueLink (extra-links)
 _report_issue.py             ← pluggable issue tracker (IssueTracker ABC, GitHub built in)
 
-matching_taskgroup.py        ← public matching_task_group (instance-local workflow)
-matching_spark.py            ← spark_matcher_task_factory (Scala matcher via a Spark task group)
-matching_config.py           ← CorpusDagConfig
-_matching.py                 ← Airflow-free matching payload/result validation
+matching_taskgroup.py        ← public matching_task_group (wiring around caller-supplied task factories)
+child_dag_runs.py            ← public child_dag_run_task_group (mapped child DAG runs, stable run IDs)
 ```
 
 ## Task graph
@@ -136,80 +134,71 @@ side.
 ## Matching workflow
 
 ```
-input / baseline selection
-    ├─► direct table paths ─────────────────┐
-    └─► mapped Corpus exports ─► exact-run results
-                                           │
-                              optional pre-match check
-                                           │
-                                  injected matcher job
-                                           │
-                              validated result paths
-                                           │
-                         injected provenance publication
-                                           │
-                            publication confirmed
-                                           │
-                  ┌────────────────────────┴────────────────────┐
-             match-only                              optional branch creation
-                  │                                            │
-                  │                                    mapped Corpus loads
-                  │                                            │
-                  │                                  all-load success check
-                  └────────────────────────┬────────────────────┘
-                                        complete
+input paths ────┐
+                ├─► optional pre-match check ─► matcher ─► checked result paths
+baseline paths ─┘                                                  │
+                                                       optional provenance task
+                                                                   │
+                                                             optional sink
+                                                                   │
+                                                               complete
 ```
 
-`matching_taskgroup.py` builds instance-local dependencies using XComArgs.
-Child-run lookups use actual task IDs, including ancestor groups and collision
-suffixes. There are no branch operators: every export, branch-creation and load
-trigger is mapped over a request list built by an upstream task, and an empty
-list triggers nothing. `_matching.py` owns Airflow-free payload and result
-validation. The matcher job is built by an injected factory, so the matching
-layer has no platform dispatch of its own. `matching_spark.py` provides the
-factory for the published Scala entry point: it converts the argument mapping,
-calls the Spark task group it is given with the caller's keyword arguments
-unchanged, and reads the S3 result manifest. It is written for Glue, the only
-platform the matcher's Spark entry point runs on today; Databricks and
-Wherobots are unverified. Whatever the factory builds, the matcher group is
-made downstream of the validated parameters, so it cannot start before input
-validation and the pre-match check.
+`matching_taskgroup.py` only wires. `input` and `baseline` are `{table: path}`
+maps, given directly, as a task output, or built by a zero-argument factory; a
+`paths` task checks each against `tables`. The matcher, the pre-match check, the
+provenance task and the sink are caller-supplied factories. Each is called once
+at DAG construction, inside its own subgroup, and must build its tasks there;
+the matcher, provenance and sink factories return a task output.
+`result_paths` checks that the matcher's results cover exactly the requested
+tables. The module has no platform dispatch and no domain vocabulary: the
+matcher's arguments and output layout, the metadata that is published and what
+the sink does all belong to the factories.
 
-Input and result maps require explicit, exact table coverage. Corpus export
-collection verifies the successful mapped triggers, then reads each exact child
-DAG/run/task/key; each response must name the table requested at the same map
-index. Mapped export, branch-creation and load barriers wait for terminal
-upstream states and verify **all** expected triggers succeeded; a skipped map
-index is not success. Joins
-use `NONE_FAILED_MIN_ONE_SUCCESS`; an entirely gated-off provider remains
-skipped. Completion distinguishes match-only from loaded results and does not
-expose a success path around failed branch creation, provenance, or loads.
+Dependencies are set between the step subgroups as well as through XComArgs, so
+a step waits for every task of the steps before it, even when its factory
+ignores their outputs or leaves its own tasks unchained. A factory whose output
+comes from a task built outside its subgroup is rejected at DAG construction,
+since that task would not wait.
+The group sets no trigger rules. A failed or skipped step stops the later ones,
+so `complete`, the output of the last configured step, succeeds only when every
+step did. A skip is never a completion and does not fail the DAG run; a
+gated-off instance stays skipped throughout. Deterministic contract violations
+(a map that does not cover `tables`) raise `AirflowFailException` so DAG-level
+retries do not repeat them.
 
-The consumer injects DAG-construction factories for the matcher job, metadata
-publication and an optional pre-match check. Publication precedes loading: the
-publishing task must succeed and return the metadata root it wrote. A publisher
-is required whenever a load is requested; because the scenario may be a
-template, the request-building tasks enforce this on the rendered value. The
-metadata's content, and how strictly unreadable upstream metadata is treated,
-remain publisher obligations.
+Instances are independent. Nothing is addressed by a task ID string, so ancestor
+groups and collision suffixes need no handling.
 
-Child run IDs hash the parent DAG/run/task, operation and configuration.
-Triggers do not retry on their own and set `reset_dag_run`, so clearing a
-trigger reruns the same child run instead of failing on the existing ID or
-starting a second run. That keeps one child run per request; it does not make
-separate Corpus table loads atomic. The trigger's `conf` is not a template
-field: Airflow renders mapped arguments again, and native rendering would turn a
-version such as `"123"` into an int that the Corpus DAGs reject. Deterministic
-contract violations raise `AirflowFailException` so DAG-level retries do not
-repeat them. Exports of one selection run one at a time; wider serialisation is
-the caller's pool. Consumers must supply collision-free output roots because the
-Scala matcher's manifest is directly under `output_path`, while table data is
-below the matcher run directory.
+### Child DAG runs
+
+`child_dag_runs.py` maps `ChildDagRunOperator`, a `TriggerDagRunOperator`
+subclass, over a list of `conf` requests with `.expand(conf=...)`, waits for
+each run, and collects the run IDs in `run_ids`.
+
+- The run ID hashes the parent DAG ID, run ID, trigger task ID, map index and
+  `conf`. It is set in `execute`, and triggers set `reset_dag_run`, so clearing
+  or retrying a trigger reruns the same child run instead of failing on the
+  existing ID or starting a second run. Triggers do not retry unless the caller
+  raises `retries`.
+- `run_ids` takes the triggers' `trigger_run_id` XComs as a declared input and
+  fails unless there is one per request. It carries the only custom trigger rule
+  (`NONE_FAILED_MIN_ONE_SUCCESS`): an empty request list skips the mapped
+  trigger, and `run_ids` must still run to return an empty list. A trigger
+  skipped for any other reason leaves fewer run IDs than requests and fails it.
+  An entirely gated-off group stays skipped.
+- Airflow does not render values resolved from a task output under `.expand`, so
+  `conf` stays a template field and request values keep their types under native
+  rendering. `expand_kwargs` over a task output renders them again and would
+  turn `"123"` into an int.
+- A trigger that waits for its child run cannot return that run's output, so the
+  helper returns run IDs and leaves reading a child's XCom to the caller.
 
 Provider gates, normalization, completion markers, ordering/concurrency and
-assemble belong to the consumer. Legacy helpers remain available during
-migration; publish/install the provider before changing consumer imports.
-See [matching usage and adapter contracts](README.md#reusable-matching-workflows).
+assemble belong to the consumer, and so do the input sources, the matcher job,
+metadata publication and the result sink.
+See [matching usage](README.md#reusable-matching-workflows) and
+[child DAG runs](README.md#child-dag-runs).
 
 ## Iceberg
 

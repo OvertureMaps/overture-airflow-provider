@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "airflow-provider-overture"
 version = "0.0.0"
-description = "Airflow provider with a Spark-agnostic task group for AWS Glue, Databricks, or Wherobots, and a reusable matching task group."
+description = "Airflow provider with a Spark-agnostic task group for AWS Glue, Databricks, or Wherobots, plus reusable matching and child-DAG-run task groups."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

@@ -17,6 +17,7 @@ The provider is intentionally unopinionated: every environment-specific value (S
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Reusable matching workflows](#reusable-matching-workflows)
+- [Child DAG runs](#child-dag-runs)
 - [Operator links](#operator-links)
 - [Failure messages](#failure-messages)
   - [Retries](#retries)
@@ -102,183 +103,175 @@ See [`SPEC.md`](SPEC.md) for the full architecture.
 
 ## Reusable matching workflows
 
-`matching_task_group` resolves input/baseline paths, optionally exports Corpus
-tables, runs the matcher, validates its results, waits for provenance to be
-published, and optionally loads every result table into Corpus. Instances can
-have arbitrary names, nested parent groups, or repeated group names (Airflow
-adds collision suffixes). They do not depend on a global `matching_tg` or
-another instance's XComs.
+`matching_task_group` wires one matching workflow out of task factories the
+caller supplies. It resolves the input and baseline paths, runs an optional
+pre-match check, runs the matcher, checks that the results cover the requested
+tables, then runs an optional provenance task and an optional sink. It does not
+know which matcher runs, where the inputs come from or where the results go.
+Instances can have arbitrary names, nested parent groups, or repeated group
+names (Airflow adds collision suffixes), and they share no task IDs or XComs.
 
 ```python
-from overture_airflow_provider import (
-    CorpusDagConfig,
-    matching_task_group,
-    spark_matcher_task_factory,
-)
+from overture_airflow_provider import child_dag_run_task_group, matching_task_group
+
+
+def load_tables(*, result_paths):
+    loads = child_dag_run_task_group(
+        "load",
+        trigger_dag_id="example_load_table",
+        requests=load_requests(result_paths),
+    )
+    return loads.run_ids
+
 
 matching = matching_task_group(
     group_id="match_linz",
-    scenario="overture",
-    theme="divisions",
-    provider="linz",
-    input={
-        "override_paths": {
-            "division": "s3://example-bucket/linz/data/type=division",
-            "division_area": "s3://example-bucket/linz/data/type=division_area",
-        }
-    },
-    baseline={"branch": "main", "version": "{{ params.baseline_version }}"},
     tables=("division", "division_area"),
-    output_path="s3://example-bucket/matching/linz/{{ run_id }}",
-    run_id="{{ run_id }}",
-    matcher_env="dev",
-    matcher_task_factory=spark_matcher_task_factory(
-        spark_impl_name="GLUE_v5",
-        sedona_version="1.7.0",
-        spark_jar_paths="s3://example-bucket/jars/matching-shaded.jar",
-        spark_cluster_desired_worker_cores="400",
-        package_registry=package_registry,
-        artifact_store=artifact_store,
-        glue_config=glue_config,
-    ),
-    corpus=CorpusDagConfig(
-        export_dag_id="example_corpus_export",
-        load_dag_id="example_corpus_load",
-        export_output_task_id="output",
-    ),
-    output_corpus_branch="main",
+    input={
+        "division": "s3://example-bucket/linz/data/type=division",
+        "division_area": "s3://example-bucket/linz/data/type=division_area",
+    },
+    baseline=export_baseline,
+    pre_match_task_factory=check_inputs,
+    matcher_task_factory=run_matcher,
     provenance_task_factory=publish_matching_metadata,
+    sink_task_factory=load_tables,
 )
 
 normalize >> matching.group
 finalize = finalize_source(matching.complete)
 ```
 
-`normalize`, `finalize_source`, `publish_matching_metadata` and the Spark config
-objects are supplied by the consuming DAG. See [`examples/example_matching_dag.py`](examples/example_matching_dag.py)
-for a credential-free-to-parse, multi-provider scaffold with explicit adapter
-placeholders. Source discovery, unchanged-data gates, normalization, provider
-ordering/concurrency, source success markers, and assemble remain consumer-owned.
-Place the gate before the **whole group**, and finalize only after `complete`.
-Use a failure-sensitive end barrier (for example `NONE_FAILED`) so all-unchanged
-is successful but failed provider processing blocks assembly.
+`normalize`, `finalize_source`, `export_baseline`, `check_inputs`, `run_matcher`,
+`publish_matching_metadata` and `load_requests` are supplied by the consuming
+DAG. See [`examples/example_matching_dag.py`](examples/example_matching_dag.py)
+for a credential-free-to-parse, multi-provider scaffold whose matcher is a
+`spark_agnostic_task_group` job. Source discovery, unchanged-data gates,
+normalization, provider ordering/concurrency, source success markers, and
+assemble remain consumer-owned. Place the gate before the **whole group**, and
+finalize only after `complete`. Use a failure-sensitive end barrier (for example
+`NONE_FAILED`) so all-unchanged is successful but failed provider processing
+blocks assembly.
 
-### Matcher, inputs and Corpus
+### Arguments and result
 
 | Argument | Role |
 |---|---|
-| `matcher_task_factory` | Builds the matcher job at DAG construction. It is called with the keyword XCom argument `parameters` (the matcher's argument mapping) and must return the task output holding the result paths: a `{table: path}` mapping or its JSON string. |
-| `spark_matcher_task_factory(...)` | Ready-made factory for the published Scala matcher, `org.overturemaps.matching.Main`. Every keyword is forwarded unchanged to the Spark task group (JARs, Sedona version, sizing, retries, pools, Spark settings, platform config), so nothing is defaulted here. To keep a deployment's own defaults and extra links, pass its wrapper around `spark_agnostic_task_group` as the first argument. `extra_files` becomes the job's `--extra-files` (for example libpostal for places). |
-| `CorpusDagConfig` | Names deployed export/load DAGs and the export result task/key; it does not deploy Corpus or import its DAG modules. Triggers wait for completion. `spark_impl_name` independently selects child-DAG execution; it is not inferred from the matcher. |
+| `tables` | Required. Table names, as a sequence or a comma-separated string. The input, baseline and result maps must each contain exactly these tables, with non-empty paths. |
+| `input`, `baseline` | Required. A `{table: path}` map: a mapping, its JSON string, a task output, or a zero-argument factory that builds the tasks producing one (an export, for example) and returns their output. |
+| `matcher_task_factory` | Required. Called with the task outputs `input_paths` and `baseline_paths`. It builds the matcher job and returns the task output holding the results: a `{table: path}` mapping or its JSON string. |
+| `pre_match_task_factory` | Optional. Called with `input_paths` and `baseline_paths`. It builds the tasks that must succeed before the matcher starts. |
+| `provenance_task_factory` | Optional. Called with `input_paths`, `baseline_paths` and `result_paths`. It returns the output of the task that publishes the matching metadata. |
+| `sink_task_factory` | Optional. Called with `result_paths`. It builds the tasks that store the results and returns the output of the last one. |
 
-`spark_matcher_task_factory` reads the matcher's result manifest from S3 and is
-written for Glue, the only platform the matcher's Spark entry point runs on
-today. The generic Spark API's Databricks and Wherobots support does not
-establish matcher compatibility. To run the matcher another
-way, for example an existing Databricks job through `DatabricksRunNowOperator`,
-supply your own `matcher_task_factory`. `matching.matcher` is the matcher's task
-group; with `spark_matcher_task_factory` the Spark job is the group
-`f"{matching.matcher.group_id}.spark"`.
+Each factory is called once, with keyword arguments, when the DAG is built. The
+call happens inside the factory's own subgroup (`input`, `baseline`,
+`pre_match`, `matcher`, `provenance` or `sink`), so it must build its tasks in
+that call. The steps run in the order of the table, and each one waits for every
+task of the steps before it, whether or not its own tasks use their outputs: the
+matcher waits for the pre-match check, and the sink waits for the provenance
+task.
 
-`matcher_env` is required and is passed to the matcher as `environment`.
+`matching_task_group` returns `MatchingTasks`:
 
-Input and baseline accept native or JSON objects: either `{"branch": "...",
-"version": "..."}` (version optional) or `{"override_paths": {"table": "path"}}`.
-Explicit `tables` are required; maps must contain exactly those tables, with
-nonempty paths. Branch selections require Corpus configuration and the
-`overture` scenario. A version is always sent to the Corpus DAGs as a string,
-including when it was given as a number or the DAG renders templates as native
-objects. With `combine_output=False` the export writes active and deleted
-records separately and the matcher receives only the active path. The export
-result contract is `{"data_export": [{"TableName": "...", "exportPath": "..."}]}`
-for each mapped child. Reads use that child's exact DAG/run/task/key, never the
-latest run.
+| Field | Meaning |
+|---|---|
+| `group` | The whole workflow. Gate it with `upstream >> matching.group`. |
+| `matcher` | The `matcher` subgroup, holding whatever the matcher factory built. |
+| `result_paths` | The checked `{table: path}` results. |
+| `complete` | The output of the last configured step: the sink, else the provenance task, else `result_paths`. Finalize after this. |
 
-The exports of one input or baseline selection run one at a time. If the export
-DAG cannot run two exports at once, also give `export_pool` a one-slot pool so
-selections and instances queue behind each other. Triggers block a worker while
-they wait (`deferrable=False`), which holds the slot. With `deferrable=True` the
-pool must count deferred tasks, or the slot is released as soon as a trigger
-defers.
+`result_paths` alone is **not** evidence that a provenance task or sink
+finished.
 
-Matcher arguments may be templated; the matcher job is built at DAG
-construction. Supply a **unique output root per invocation**, including
-provider/instance and run identity. A unique `run_id` alone is insufficient:
-`spark_matcher_task_factory` reads its manifest from
-`<output_path>/<output_result_file>` (default `data_paths.json`), not from the
-matcher run subdirectory. Table results must share the legacy
-`<metadata_root>/final/type=<table>` layout.
-
-An empty `output_corpus_branch` or a non-`overture` scenario is match-only.
-`complete` returns `{"loaded": bool, "result_paths": {...},
-"corpus_run_ids": [...]}`; match-only success has `loaded=False` and no child
-load IDs. `result_paths` alone is **not** evidence that loads completed.
-By default the target branch must already exist. With `create_branch=True`
-(which requires `create_branch_dag_id`) the create-branch DAG is triggered for
-every non-default target branch, so that DAG must succeed when the branch
-already exists. A failed or skipped creation blocks the loads.
-
-### Provenance and pre-match hooks
-
-When loading can be enabled, `provenance_task_factory` is required. This is
-checked when the DAG is built and again at run time, once a templated scenario
-has rendered, so no load or branch creation is requested without it. It is called
-at DAG construction with keyword XCom arguments `input_paths`, `baseline_paths`,
-`result_paths`, `metadata_root`, and `parameters`, and must return the
-**publishing task's XComArg**. That task writes the matching metadata at
-`metadata_root` and returns the root:
+A matcher factory built on the Spark task group looks like this:
 
 ```python
-@task
-def publish_matching_metadata(input_paths, baseline_paths, result_paths, metadata_root, parameters):
-    write_matching_metadata(metadata_root, input_paths, baseline_paths, result_paths, parameters)
-    return metadata_root
+def run_matcher(*, input_paths, baseline_paths):
+    parameters = matcher_parameters(input_paths, baseline_paths)  # returns a JSON string
+    job = spark_agnostic_task_group(group_id="spark", parameters=parameters, **spark_job)
+    results = matcher_results()  # returns {table: path}
+    job >> results
+    return results
 ```
 
-Loading starts only after this task succeeds and returns the expected root. A
-failed, skipped or mismatched publication blocks it. What goes into the metadata
-(wildcard expansion, upstream lineage, license attribution, redaction) is the
-publisher's responsibility, and so is how strictly it treats upstream metadata
-it cannot read: raise from the task if a missing lineage entry should stop the
-load.
+The matcher's arguments, its output layout and how its results are read back
+belong to the factory. Give each instance and each run its own output location.
+What the provenance task writes, and how strictly it treats upstream metadata it
+cannot read, is the publisher's responsibility: raise from the task if a missing
+entry should stop the sink.
 
-`pre_match_task_factory` adds an optional check that must succeed before the
-matcher runs. The matcher always waits for it and for input validation, whether
-or not its factory uses the `parameters` it is given. It receives `input_paths`
-and `baseline_paths` and returns a task
-XComArg or TaskGroup. Places uses it to validate the embeddings cache it passes
-as `embeddings_cache_table`; the validation job and its package versions stay in
-the consumer. `match_history` and `output_debug` retain unset/true/false
-semantics; `previous_metrics_path`, `expiration_period_days`, `extra_files`,
-JARs and tuning remain explicit. No places-specific deployment defaults are
-inferred.
+### Failure handling
 
-### Failure handling and migration
+The group sets no trigger rules of its own. A step that fails stops every later
+step, so `complete` does not succeed and finalization chained after it does not
+run. A step that is skipped also stops the later steps, without failing the DAG
+run: an intentionally unchanged provider stays skipped throughout its group, and
+so does everything after a check, matcher or publisher that skips itself. In
+both cases a provider is finished only when `complete` succeeded.
 
-Missing or invalid matcher results fail before loading. Unexpected pre-match,
-matcher or provenance skips also fail closed. Completion requires every mapped
-load to succeed; failed or unexpectedly skipped export, branch-creation or load
-tasks cannot release source finalization. An intentionally unchanged provider
-remains skipped
-throughout its group. Contract violations raise `AirflowFailException`, so they
-are not retried even when the DAG sets default retries; infrastructure errors
-still follow the DAG's retry policy. Result paths, export paths and child run
-IDs are written to the task logs.
+Input, baseline or result maps that do not cover `tables` raise
+`AirflowFailException`, so they are not retried even when the DAG sets default
+retries. The caller's own tasks follow the caller's retry policy. When the DAG
+is built, a factory that returns something other than a task output raises
+`TypeError`, and one that returns the output of a task built outside the call
+raises `ValueError`, because that task would not wait for the earlier steps.
+Result paths are written to the task log.
 
-Loads are separate transactions, not an atomic multi-table update. Child run
-IDs are deterministic per parent DAG/run/task and configuration, and triggers
-have zero retries. To retry after a child run fails, fix the cause and clear the
-failed trigger task (`export`, `create_branch` or `load`): the same child run is
-cleared and rerun, and the tasks downstream pick up its results. Clearing a
-trigger that already succeeded reruns its child run too, so clearing a load
-replays that load, and clearing the whole DAG run reruns every child run under
-its original ID.
+## Child DAG runs
 
-Release this additive provider API first, update the deployment's pinned
-provider dependency, then migrate and validate consumers. Keep existing loose
-helpers and places DAGs until equivalent behavior is demonstrated. This API
-does not itself change divisions ingest/orchestrator DAGs or make old ingest
-success markers proof of successful matching/loading.
+`child_dag_run_task_group` triggers one run of another DAG per request, waits
+for each run, and returns the run IDs once every run has succeeded. It suits a
+matching sink that loads one table per child run, and it works without
+`matching_task_group`.
+
+```python
+from overture_airflow_provider import child_dag_run_task_group
+
+loads = child_dag_run_task_group(
+    "load",
+    trigger_dag_id="example_load_table",
+    requests=load_requests(result_paths),
+    max_active_tis_per_dagrun=1,
+)
+
+upstream >> loads.group
+finalize = finalize_source(loads.run_ids)
+```
+
+| Argument | Role |
+|---|---|
+| `trigger_dag_id` | The DAG to run. |
+| `requests` | The `conf` mapping of each child run: a list, or a task output resolving to one. A task may return an empty list, which triggers nothing. An empty literal list is rejected when the DAG is built. |
+| `retries` | Retries of each trigger, `0` by default. A retry reruns the same child run. |
+| `max_active_tis_per_dagrun` | How many triggers may run at once. `1` runs the requests one at a time. |
+| other keywords | Passed to the trigger operator, for example `pool`, `deferrable` or `poke_interval`. |
+
+It returns `ChildDagRuns(group, run_ids)`. `run_ids` holds one run ID per
+request, and an empty list when there were no requests. A failed child run fails
+its trigger, and a request left without a run ID, for example because its
+trigger was skipped, fails `run_ids`. When an upstream gate skips the whole
+group, `run_ids` is skipped too.
+
+Each child run ID is derived from the parent DAG run, the trigger task, the
+request's position and its `conf`, and triggers set `reset_dag_run`. To retry
+after a child run fails, fix the cause and clear the failed trigger: the same
+child run is cleared and rerun instead of failing on the existing ID or starting
+a second run. Clearing a trigger that already succeeded reruns its child run
+too. The child runs are independent, so one failing does not undo the others.
+
+Requests from a task output reach the child DAG as the task built them: Airflow
+does not render them again, so a string such as `"123"` stays a string even in a
+DAG that renders templates as native objects. A literal request list is rendered
+like any other templated argument.
+
+The helper returns run IDs only, because a trigger that waits for its child run
+cannot return that run's output. To read it, pull the child's XCom by the
+returned run ID in a task of your own.
+
+Triggers block a worker while they wait unless `deferrable=True`. A deferred
+trigger releases its pool slot unless the pool counts deferred tasks, so a pool
+that serialises child runs must count them.
 
 ## Operator links
 

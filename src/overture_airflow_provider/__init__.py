@@ -3,8 +3,8 @@
 Public surface (lazily loaded — see ``__getattr__``):
     spark_agnostic_task_group         – main TaskGroup factory
     spark_agnostic_mapped_task_group  – dynamically-mapped variant
-    matching_task_group, MatchingTasks  – matching/export/provenance/load workflow
-    spark_matcher_task_factory, CorpusDagConfig  – matcher job and Corpus transport
+    matching_task_group, MatchingTasks  – matching workflow built from task factories
+    child_dag_run_task_group, ChildDagRuns  – child DAG runs with stable run IDs
     render_spark_job, RenderResult    – Airflow-free payload renderer
     SparkImpl, SparkFamily, SparkSedona  – platform/version enums
     AwsGlueClusterSize, DatabricksClusterSize, WherobotsClusterSize
@@ -29,10 +29,10 @@ except PackageNotFoundError:  # package not installed (e.g. source checkout)
 _LAZY_IMPORTS = {
     "ArtifactStoreConfig": ("config", "ArtifactStoreConfig"),
     "AwsGlueClusterSize": ("cluster_sizing", "AwsGlueClusterSize"),
+    "ChildDagRuns": ("child_dag_runs", "ChildDagRuns"),
     "DatabricksClusterSize": ("cluster_sizing", "DatabricksClusterSize"),
     "DatabricksConfig": ("config", "DatabricksConfig"),
     "GlueConfig": ("config", "GlueConfig"),
-    "CorpusDagConfig": ("matching_config", "CorpusDagConfig"),
     "MatchingTasks": ("matching_taskgroup", "MatchingTasks"),
     "IcebergConfig": ("config", "IcebergConfig"),
     "PackageRegistryConfig": ("config", "PackageRegistryConfig"),
@@ -44,8 +44,8 @@ _LAZY_IMPORTS = {
     "WherobotsClusterSize": ("cluster_sizing", "WherobotsClusterSize"),
     "WherobotsConfig": ("config", "WherobotsConfig"),
     "render_spark_job": ("render", "render_spark_job"),
+    "child_dag_run_task_group": ("child_dag_runs", "child_dag_run_task_group"),
     "matching_task_group": ("matching_taskgroup", "matching_task_group"),
-    "spark_matcher_task_factory": ("matching_spark", "spark_matcher_task_factory"),
     "spark_agnostic_mapped_task_group": (
         "spark_agnostic_taskgroup",
         "spark_agnostic_mapped_task_group",
@@ -70,6 +70,10 @@ def __getattr__(name: str) -> Any:
 
 
 if TYPE_CHECKING:
+    from overture_airflow_provider.child_dag_runs import (  # noqa: F401
+        ChildDagRuns,
+        child_dag_run_task_group,
+    )
     from overture_airflow_provider.cluster_sizing import (  # noqa: F401
         AwsGlueClusterSize,
         DatabricksClusterSize,
@@ -85,10 +89,6 @@ if TYPE_CHECKING:
         WherobotsConfig,
     )
     from overture_airflow_provider.links import SparkJobLink  # noqa: F401
-    from overture_airflow_provider.matching_config import CorpusDagConfig  # noqa: F401
-    from overture_airflow_provider.matching_spark import (  # noqa: F401
-        spark_matcher_task_factory,
-    )
     from overture_airflow_provider.matching_taskgroup import (  # noqa: F401
         MatchingTasks,
         matching_task_group,

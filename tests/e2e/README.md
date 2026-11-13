@@ -33,7 +33,7 @@ AIRFLOW_VERSION=3.3.1 PYTHON_VERSION=3.12 docker compose run --rm --build e2e
 | `docker-compose.yaml` | `e2e` one-shot service and an opt-in `standalone` service (Airflow UI) under the `manual` profile. |
 | `run-e2e.sh` | In-container entrypoint: `airflow db migrate` -> `airflow dags reserialize` (real parse) -> `pytest`. |
 | `test_dag_e2e.py` | The assertions: no import errors, DAG + provider + extra-links registered, task-group expansion + dependency edges, lazy-import purity, setup-task execution, and the setup_info XCom round-trip. |
-| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances and mapped exports/creations/loads with simulated remote services: changed/unchanged providers, match-only mode, branch creation, an int Corpus version in a natively rendered DAG, matcher/provenance/create/load failures, and unexpected pre-match/matcher/provenance/create/mapped-trigger skips. |
+| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances whose sink is a `child_dag_run_task_group`, with simulated child runs: changed/unchanged providers, an empty request list, a string request value in a natively rendered DAG, pre-match/matcher/provenance/child-run failures, a matcher that skips, and a trigger skipped before it has a run ID. |
 | `run.sh` / `run.ps1` | Host sugar over `docker compose` (`e2e` \| `all` \| `standalone`). |
 
 Platform SDKs (`databricks-sdk`, `wherobots`) are deliberately **not** installed,

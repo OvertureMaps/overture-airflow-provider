@@ -15,9 +15,10 @@ from a single, unified DAG entry point.
 The caller switches engines by changing one argument (`spark_impl_name`) and
 swapping a platform config dataclass. The DAG body does not change.
 
-It also exposes `matching_task_group`, a reusable match-and-Corpus-load
-TaskGroup built around an injected matcher job, so several isolated instances
-can run in one DAG.
+It also exposes `matching_task_group`, which wires a matching workflow out of
+caller-supplied task factories so several isolated instances can run in one
+DAG, and `child_dag_run_task_group`, which triggers child DAG runs with stable
+run IDs.
 
 Architecture details live in [`SPEC.md`](SPEC.md).
 
@@ -142,33 +143,41 @@ Glue/Databricks ignore that kwarg.
 Prefer `spark_cluster_desired_worker_cores` (integer string) in DAG code; it
 is more portable across platforms.
 
-### matching_task_group
+### matching_task_group and child_dag_run_task_group
 
-- `matcher_env` and `matcher_task_factory` are required. There is no `runtime=`
-  argument and no Glue/Databricks matching config class: build the matcher job
-  with `spark_matcher_task_factory(spark_task_group, **spark_kwargs)`, which
-  forwards every keyword unchanged to the Spark task group.
+- `matching_task_group` is wiring only. Matcher arguments, data sources, sinks,
+  path layouts and domain vocabulary belong in the caller's factories, never in
+  `matching_taskgroup.py`.
+- `tables`, `input`, `baseline` and `matcher_task_factory` are required;
+  `pre_match_task_factory`, `provenance_task_factory` and `sink_task_factory`
+  are optional. There is no `runtime=`, `scenario=` or config class.
 - It returns `MatchingTasks(group, matcher, result_paths, complete)`, not a
   TaskGroup. Wire `upstream >> result.group` and finalize after
   `result.complete`.
-- `provenance_task_factory` must return the publishing task's output, and that
-  task must return `metadata_root`. The pre-match hook is
-  `pre_match_task_factory(input_paths, baseline_paths)`.
-- Child triggers are mapped over request lists, and an empty list triggers
-  nothing. Airflow cannot map over a custom XCom key, so a request builder must
-  return the list as its return value.
-- Keep the trigger's `conf` out of `template_fields` (`ChildDagRunOperator`) and
-  keep Corpus versions as strings. Airflow renders mapped arguments again, and
-  native rendering turns `"123"` into an int that the Corpus DAGs reject.
+- Factories are called once, with keyword arguments, at DAG construction, inside
+  their own subgroup, and must build their tasks in that call (`_require_built`
+  rejects a task built elsewhere, which would not wait for earlier steps). The
+  matcher, provenance and sink factories return a task output; the pre-match
+  factory's return value is ignored. `input` and `baseline` may be a
+  zero-argument factory.
+- Keep the explicit `>>` between step subgroups: a factory may ignore the
+  outputs it is given or leave its own tasks unchained, and the next step must
+  still wait for all of them.
+- Keep default trigger rules in `matching_taskgroup.py`, so a failed or skipped
+  step stops the later ones and `complete` cannot succeed around it. The one
+  custom rule is on `run_ids` in `child_dag_runs.py`: it must run when an empty
+  request list skipped the mapped trigger, and it then requires one run ID per
+  request.
+- Map the trigger with `.expand(conf=requests)`, not `expand_kwargs`. Airflow
+  does not render values resolved from a task output under `.expand`, so `"123"`
+  stays a string under native rendering; `expand_kwargs` renders them again.
+- Airflow cannot map over a custom XCom key, so a request builder must return
+  the list as its return value. An empty list triggers nothing.
+- `child_dag_run_task_group` returns `ChildDagRuns(group, run_ids)`. The run ID
+  is set in `ChildDagRunOperator.execute` and paired with `reset_dag_run=True`;
+  keep both, or clearing a trigger fails on the existing run ID.
 - Wrap in-task contract checks with `_permanent` so a violation raises
   `AirflowFailException` and is not retried.
-- `scenario` can be any Jinja template, so a guard that depends on it must also
-  run in a task on the rendered value (`_load_branch`). The DAG-construction
-  check is only an early error.
-- Anything a mapped trigger gates must first confirm the triggers with
-  `_child_runs`. The request-building upstream succeeds on its own, which
-  satisfies `NONE_FAILED_MIN_ONE_SUCCESS` even when every trigger was skipped.
-- Keep `parameters >> matcher`: a matcher factory may not consume `parameters`.
 
 ### Airflow compat shim
 

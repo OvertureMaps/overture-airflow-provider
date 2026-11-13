@@ -26,7 +26,7 @@ def get_provider_info() -> dict:
         "description": (
             "Spark-agnostic Airflow TaskGroup for submitting PySpark and Scala jobs to "
             "AWS Glue, Databricks, or Wherobots Cloud from a single platform-agnostic DAG "
-            "entry point, plus a reusable matching and Corpus-load TaskGroup."
+            "entry point, plus reusable matching and child-DAG-run TaskGroups."
         ),
         "versions": [_package_version()],
         "operators": [

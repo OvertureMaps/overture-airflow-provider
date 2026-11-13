@@ -122,7 +122,6 @@ def test_import_does_not_pull_in_airflow():
     """
     code = (
         "import sys, overture_airflow_provider;"
-        "from overture_airflow_provider import CorpusDagConfig;"
         "leaked = sorted(m for m in sys.modules"
         " if m == 'airflow' or m.startswith('airflow.')"
         " or m.split('.')[0] in {'databricks', 'wherobots', 'sh'});"
@@ -139,7 +138,8 @@ def test_matching_example_registered_without_optional_sdk_imports():
     assert dag_id in dag_ids
     listed = airflow("tasks", "list", dag_id)
     for provider in ("osm", "linz"):
-        assert f"providers.{provider}.match.load_results._complete" in listed
+        assert f"providers.{provider}.match.matcher.spark.execute_spark_job" in listed
+        assert f"providers.{provider}.match.sink.load.run_ids" in listed
         assert f"providers.{provider}.finalize_source" in listed
 
 

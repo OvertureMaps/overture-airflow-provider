@@ -1,16 +1,24 @@
-# overture-airflow-provider
+![overture-airflow-provider: cloud-agnostic Spark for Apache Airflow](https://raw.githubusercontent.com/OvertureMaps/overture-airflow-provider/main/docs/assets/hero.svg)
 
-[![PyPI version](https://img.shields.io/pypi/v/airflow-provider-overture.svg)](https://pypi.org/project/airflow-provider-overture/)
-[![Python versions](https://img.shields.io/pypi/pyversions/airflow-provider-overture.svg)](https://pypi.org/project/airflow-provider-overture/)
-[![License: MIT](https://img.shields.io/pypi/l/airflow-provider-overture.svg)](LICENSE)
+[![Test](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/test.yml)
+[![Lint](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/OvertureMaps/overture-airflow-provider/actions/workflows/lint.yml)
+[![PyPI](https://img.shields.io/pypi/v/airflow-provider-overture?color=4051CC&labelColor=001A39)](https://pypi.org/project/airflow-provider-overture/)
+[![Python](https://img.shields.io/pypi/pyversions/airflow-provider-overture?color=4051CC&labelColor=001A39)](https://pypi.org/project/airflow-provider-overture/)
+[![Airflow 3.3+](https://img.shields.io/badge/Airflow-3.3%2B-0EC1BD?labelColor=001A39)](https://airflow.apache.org/)
+[![uv](https://img.shields.io/badge/managed%20with-uv-0EC1BD?labelColor=001A39)](https://docs.astral.sh/uv/)
+[![Ruff](https://img.shields.io/badge/lint-ruff-0EC1BD?labelColor=001A39)](https://docs.astral.sh/ruff/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-05A5AF?labelColor=001A39)](LICENSE)
 
 An Apache Airflow provider for running PySpark or Scala/Spark jobs on AWS Glue, Databricks, or Wherobots Cloud from a single DAG-level API.
 
-Write your DAG once and target any supported engine by switching one argument. Cluster shape, Iceberg catalog wiring, JAR and wheel distribution, and per-platform cluster init are all handled by the provider.
+Write a DAG once and target any supported engine by switching one argument. Cluster shape, Iceberg catalog wiring, JAR and wheel distribution, and per-platform cluster init are handled by the provider.
 
-The provider is intentionally unopinionated: every environment-specific value (S3 buckets, IAM roles, catalog endpoints, package registries) is passed in via typed config dataclasses. No org-specific defaults are baked in.
+## Features
 
-> Beta. Tested against real Airflow 3.3 via Docker e2e.
+- Single entry point: `spark_agnostic_task_group` runs the same job on any supported engine; only `spark_impl_name` and the platform config change.
+- Typed configuration: no org-specific defaults; every environment value is passed in.
+- Classified failures with safe retries and console links.
+- Local rendering of submission payloads, plus a Bundle Inspector Airflow UI plugin.
 
 ## Contents
 
@@ -18,17 +26,11 @@ The provider is intentionally unopinionated: every environment-specific value (S
 - [Quick start](#quick-start)
 - [Operator links](#operator-links)
 - [Failure messages](#failure-messages)
-  - [Retries](#retries)
-    - [What's retryable](#whats-retryable)
-    - [What isn't](#what-isnt)
 - [Wherobots runtime selection](#wherobots-runtime-selection)
 - [Databricks runner deployment](#databricks-runner-deployment)
 - [Local rendering](#local-rendering)
 - [Bundle Inspector plugin](#bundle-inspector-plugin)
 - [Reference](#reference)
-  - [Supported versions](#supported-versions)
-  - [Spark platform matrix](#spark-platform-matrix)
-  - [Apache Sedona](#apache-sedona)
 - [Development](#development)
 
 ## Install
@@ -101,223 +103,31 @@ See [`SPEC.md`](SPEC.md) for the full architecture.
 
 ## Operator links
 
-### Job console link
-
-The `execute_spark_job` task automatically gets a "Spark Job" link in the Airflow UI that opens the platform's job-run console (Glue, Databricks, or Wherobots). No configuration is needed; the link is attached automatically when the provider is installed.
-
-### Report Issue link
-
-`ReportIssueConfig` adds a "Report Issue" button to the execute task that opens a pre-filled GitHub issue form when a job fails. The link is push-based: the config is written to XCom at task start, so the button renders even if the run fails mid-flight.
-
-```python
-from overture_airflow_provider import ReportIssueConfig, spark_agnostic_task_group
-
-spark_agnostic_task_group(
-    "my_glue_job",
-    spark_impl_name="GLUE_v5",
-    report_issue_config=ReportIssueConfig(
-        enabled=True,
-        target="my-org/my-repo",  # GitHub owner/repo
-        labels=["spark-failure"],  # optional labels pre-applied to the issue
-    ),
-    # ... rest of config unchanged
-)
-```
-
-The button is off by default (`enabled=False`). Only `"github"` ships built in; additional trackers are pluggable via `_report_issue.IssueTracker` and `register_tracker` without touching the link or operator code.
+The `execute_spark_job` task gets a "Spark Job" console link automatically, plus an opt-in, pluggable "Report Issue" link. See [`docs/operator-links.md`](docs/operator-links.md).
 
 ## Failure messages
 
-When a Spark job fails, the provider emits a classified error instead of a raw platform exception. Every failure includes a category, a reason, an optional root-cause tail, an actionable hint, and a direct console link where available:
-
-```
-Spark job FAILED on GLUE (downstream job error, not a provider/submit fault).
-  run:     jr_abc1234567890      state: FAILED
-  reason:  Job run failed with exit code 1
-  cause:   java.lang.OutOfMemoryError: Java heap space
-  hint:    OOM: increase worker size/cores or reduce partition size.
-  console: https://us-east-1.console.aws.amazon.com/glue/home#/etl/jobs/run/details/jr_abc1234567890
-```
-
-Classifications: `downstream-job`, `submit/config`, `trigger/polling`, `platform/infra`, `platform/capacity`.
-
-The hint layer scans the reason and root-cause text for known patterns (IAM denials, auth errors, OOM, throttling, missing resources, Glue capacity rejections) and appends an actionable message automatically.
-
-### Retries
-
-`execute_spark_job` defaults to `retries=0`: a job that fails costs real compute to re-run, so this provider doesn't retry by default.
-
-Every failure classification above already carries a `run_launched` signal, whether the job reached the platform before it failed. Raising `retries` is a small, safe adjustment on top of that existing signal: the exception type just follows it.
-
-#### What's retryable
-
-`submit/config` failures raise the retryable `AirflowException`. The run never reached the platform (a worker recycling mid-submit, a bad cluster policy), so nothing ran and nothing costs money to redo.
-
-`platform/capacity` failures are retryable too, for the same reason. On Glue, a run submitted with `JobRunQueuingEnabled` waits in Glue's run queue for about 15 minutes; if the account's DPU ceiling never frees up, Glue fails the run with `ErrorMessage: "Exceeded maximum concurrent compute"` and `ExecutionTime: 0`. The run has an id, but no job code ran and nothing was written, so the provider raises `RetryableJobFailure` (an `AirflowException` subclass) instead of `AirflowFailException`:
-
-```
-Spark job FAILED on GLUE (platform capacity failure: the run never started, safe to retry).
-  run:     jr_abc1234567890      state: FAILED
-  reason:  Exceeded maximum concurrent compute
-  hint:    Glue capacity: the account's DPU ceiling was hit. A run with ExecutionTime 0 never started and is safe to retry; raise retries on execute_spark_job or stagger concurrent submits.
-  console: https://us-west-2.console.aws.amazon.com/glue/home#/etl/jobs/run/details/jr_abc1234567890
-```
-
-With `retries=1`, one queue timeout becomes an effective 30-minute wait for capacity, which is usually enough for a nightly fan-out peak to drain. The detection is Glue-only and requires both the capacity error message and `ExecutionTime` of 0 (or missing): a run that carries the same message but actually executed stays `downstream-job` and is never retried. The retry try's pre-submit stale-run scan only looks at active runs, so the FAILED capacity run is left alone and a fresh run is submitted.
-
-#### What isn't
-
-`downstream-job` and `trigger/polling` failures raise `AirflowFailException`, which Airflow never retries regardless of the task's `retries=`. The run launched, then failed, or a Triggerer crash happened mid-poll after launch, so re-running it blindly burns another full job at cost instead of fixing anything.
-
-Set `retries=1` (or higher) on `execute_spark_job` to recover automatically from transient submission-time infra faults and Glue capacity rejections without risking a silent, full-cost retry of a job that actually ran and failed.
+Failures are classified (`downstream-job`, `submit/config`, `trigger/polling`, `platform/infra`, `platform/capacity`) with a reason, root-cause tail, hint, and console link. Submit and capacity faults are retryable via `retries=`; jobs that ran and failed never are. See [`docs/failure-messages.md`](docs/failure-messages.md).
 
 ## Wherobots runtime selection
 
-On Wherobots, `spark_cluster_desired_worker_cores` picks a general-purpose runtime (`small` through `2x-large`). To run a task group on a specific runtime instead, such as a memory-optimized one for a job whose executors run out of memory, set `spark_cluster_size_name`:
-
-```python
-spark_agnostic_task_group(
-    group_id="my_spark_job",
-    spark_impl_name="WHEROBOTS_v1_5_0",
-    spark_cluster_desired_worker_cores="1000",  # still sizes Glue / Databricks runs
-    spark_cluster_size_name="large-himem",  # Wherobots only
-    # ... rest of config unchanged
-)
-```
-
-`spark_cluster_size_name` takes a `ClusterSize` name (`"XS"` to `"XXL"`) or any runtime name the installed `wherobots` SDK defines, such as `"large-himem"`, `"2x-large-himem"`, or `"x-large-hicpu"`. Matching is case-insensitive, and the kwarg is templated. When set, it wins over `spark_cluster_desired_worker_cores` on Wherobots. Glue and Databricks ignore it, so the same DAG keeps running unchanged on those platforms. An unknown name fails `execute_spark_job` before anything is submitted, and the error lists the valid names. Your Wherobots organization needs access to the chosen runtime.
+Set `spark_cluster_size_name` (for example `"large-himem"`) to pick a specific Wherobots runtime; Glue and Databricks ignore it. See [`docs/wherobots-runtime-selection.md`](docs/wherobots-runtime-selection.md).
 
 ## Databricks runner deployment
 
-A Databricks run needs two workspace assets: the runner notebook (`job_runner_databricks`) and the cluster init script (`agnostic_operator_cluster_init_databricks.sh`). Both ship with the provider.
-
-The `setup_cluster` task uploads both on the worker at execute time, the way Glue and Wherobots runners get staged to S3. Nothing runs at DAG parse time. Each asset lands at a content-hash-keyed path under `DatabricksConfig.workspace_scripts_path_template` (after `{s3_assets_root}` substitution):
-
-- `{scripts_path}/runners/{sha256[:12]}-job_runner_databricks`
-- `{scripts_path}/runners/{sha256[:12]}-agnostic_operator_cluster_init_databricks.sh`
-
-The run's `notebook_path` and `init_scripts` point at those paths. A `workspace get-status` check skips any path that already exists. A concurrent upload of the same hash counts as success. A new provider version writes new paths instead of overwriting files that in-flight clusters, or another environment sharing the workspace, still use.
-
-The upload uses the same Airflow connection as the submit path (`DatabricksConfig.cluster_conf["databricks_conn_id"]`), through `DatabricksSdkHook`. All of its auth modes work: PAT, OAuth M2M, Azure service principal, and federated OIDC.
-
-> [!IMPORTANT]
-> The connection's identity needs write access to `{scripts_path}/runners`, since the task creates that folder and imports into it. The default `/Shared/{s3_assets_root}` path needs no extra grant: Databricks gives every workspace user `CAN MANAGE` on `/Shared`. A custom path outside `/Shared` needs an explicit `CAN_EDIT` or `CAN_MANAGE` grant for that identity.
-
-### Using pre-deployed assets
-
-Set `DatabricksConfig(stage_workspace_assets=False)` to keep deploying the assets yourself, for example when Airflow workers hold no workspace write credentials. The run then references the fixed paths `{scripts_path}/job_runner_databricks` and `{scripts_path}/{cluster_init_script_name}`, with no workspace call at setup time. Deploy them via CI/CD or the bundled helpers:
-
-```python
-from overture_airflow_provider.runner_assets import (
-    upload_databricks_init_script_to_workspace,
-    upload_databricks_runner_to_workspace,
-)
-
-host, token = "https://my-workspace.cloud.databricks.com", "dapi..."
-upload_databricks_runner_to_workspace(host, token, "/Shared/<s3_assets_root>/job_runner_databricks")
-upload_databricks_init_script_to_workspace(
-    host, token, "/Shared/<s3_assets_root>/agnostic_operator_cluster_init_databricks.sh"
-)
-```
-
-A non-default `DatabricksConfig.cluster_init_script_name` means you supply your own init script. The provider never stages it, even with staging on, and references it at `{scripts_path}/{cluster_init_script_name}`. The runner notebook is still staged.
-
-A missing asset surfaces as a Databricks cluster-launch error at run time, naming the missing path.
-
-> While a Databricks job is deferred, the Triggerer may log `aiohttp` "Unclosed client session / connector" ERROR lines. These originate in the upstream `apache-airflow-providers-databricks` `DatabricksExecutionTrigger` (its async client is not explicitly closed on the event loop), not in this provider. The task defers, polls, and resumes correctly regardless. This provider deliberately reuses the installed trigger and does not fork it to silence the message.
+`setup_cluster` stages the runner notebook and init script into the workspace by default; `stage_workspace_assets=False` keeps deployment manual. See [`docs/databricks-runner-deployment.md`](docs/databricks-runner-deployment.md).
 
 ## Local rendering
 
-The `overture_airflow_provider.render` module produces the platform submission payload without importing or running any Airflow operators. Use it to drive real cloud resources from the CLI, or to snapshot-test payload shape in CI.
-
-```bash
-# Render the payload to stdout as JSON.
-uv run python -m overture_airflow_provider.render \
-    --spark-impl GLUE_v5 --module-name my_module --class-name MyJob
-
-# Render to a directory and emit an executable cli.sh.
-uv run python -m overture_airflow_provider.render \
-    --spark-impl GLUE_v5 --module-name my_module --class-name MyJob \
-    --out ./rendered/
-
-bash ./rendered/cli.sh   # invokes aws glue create-job / start-job-run
-```
-
-You can also drive it from Python:
-
-```python
-from overture_airflow_provider import render_spark_job
-
-result = render_spark_job(
-    spark_impl_name="DATABRICKS_v15",
-    module_name="my_module",
-    class_name="MyJob",
-    parameters={"date": "2024-01-01"},
-)
-print(result.submit_payload)  # equivalent to `databricks jobs submit --json`
-print(result.operator_kwargs)  # what the Airflow operator would receive
-result.write_to("./out/")  # dump JSON payloads + cli.sh
-```
-
-Pass `pre_resolved_package_info=` or `pre_resolved_jar_info=` with real S3 URIs from a previous `download_python_packages_*` or `download_jars_*` run to skip the `s3://.../REPLACE-ME.whl` placeholders.
+`python -m overture_airflow_provider.render` produces the platform submission payload without running Airflow. See [`docs/local-rendering.md`](docs/local-rendering.md).
 
 ## Bundle Inspector plugin
 
-Installing this package registers `bundle_inspector`, an Airflow plugin (not related to `spark_agnostic_task_group`) for browsing Overture bundles in S3 by pipeline stage, theme, schema version, and run ID. It is served as an Airflow 3 FastAPI app. No plugins-folder drop-in needed, no separate install step: it ships in this package and shows up under **Browse -> Bundle Inspector** once the provider is installed.
-
-Configure it via the `[bundle_inspector]` section in `airflow.cfg`:
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `s3_bucket` | yes | S3 bucket containing bundle data |
-| `environment` | no (default `dev`) | Environment name (`dev`, `staging`, `prod`) |
-| `athena_output_bucket` | no | S3 bucket for Athena query results; falls back to `overture-bundle-inspector-athena-output-<environment>` |
-| `user` | no | Namespace prefix under the bucket, read only when `environment` is `dev` |
-
-Each option is also settable via its `AIRFLOW__BUNDLE_INSPECTOR__<OPTION>` environment variable (e.g. `AIRFLOW__BUNDLE_INSPECTOR__S3_BUCKET`), Airflow's standard override convention for provider config, so no metadata DB round-trip or Variable setup is needed to get the plugin running.
-
-GeoParquet preview (`component-data`, `parquet-stats`) needs `pyarrow` and `shapely`: `pip install "airflow-provider-overture[bundle-inspector]"`. Without them those two endpoints return a 500 with the import error; the rest of the UI (tree browsing, PMTiles, CSV, Athena queries) works without either.
-
-The UI loads its JS libraries from `cdn.jsdelivr.net` and its map basemap from [OpenFreeMap](https://openfreemap.org) (`tiles.openfreemap.org`, Positron style, no API key), so users' browsers need access to both hosts. If the basemap can't be reached, maps fall back to a blank background and still draw their data.
+Installing the package also registers an Airflow UI plugin for browsing Overture bundles in S3. See [`docs/bundle-inspector.md`](docs/bundle-inspector.md).
 
 ## Reference
 
-### Supported versions
-
-#### Provider requirements
-
-|                | Minimum | Also tested |
-| -------------- | ------- | ----------- |
-| Python         | 3.11    | 3.12, 3.13  |
-| Apache Airflow | 3.3     |             |
-
-#### Spark platform matrix
-
-Pass one of these names as `spark_impl_name`:
-
-| `spark_impl_name`  | Platform                    | Spark | Scala | Python runtime |
-| ------------------ | --------------------------- | ----- | ----- | -------------- |
-| `GLUE_v4`          | AWS Glue 4.0                | 3.3.0 | 2.12  | 3.10           |
-| `GLUE_v5`          | AWS Glue 5.0                | 3.5.2 | 2.12  | 3.11           |
-| `DATABRICKS_v14`   | Databricks Runtime 14.3 LTS | 3.5.0 | 2.12  | 3.10.12        |
-| `DATABRICKS_v15`   | Databricks Runtime 15.4 LTS | 3.5.0 | 2.12  | 3.11.0         |
-| `WHEROBOTS_v1_5_0` | Wherobots Cloud 1.5.0       | 3.5.0 | 2.12  | 3.11           |
-
-> `SYNAPSE_v3_3_1` and `SYNAPSE_v3_4_1` are defined but not yet active (Azure Synapse support reserved).
-
-#### Apache Sedona
-
-Sedona JARs are resolved from Maven Central at runtime. Tested pairings and the minimum Spark version required:
-
-| Sedona | geotools-wrapper | Min Spark               |
-| ------ | ---------------- | ----------------------- |
-| 1.5.3  | 28.2             | 3.3                     |
-| 1.6.1  | 28.2             | 3.3                     |
-| 1.7.0  | 28.5             | 3.3                     |
-| 1.7.1  | 28.5             | 3.3                     |
-| 1.7.2  | 28.5             | 3.3                     |
-| 1.8.1  | 33.1             | 3.4 (Spark 3.3 dropped) |
-| 1.9.0  | 33.5             | 3.4 (Spark 3.3 dropped) |
+Supported versions, the Spark platform matrix (`GLUE_v4`/`GLUE_v5`, `DATABRICKS_v14`/`DATABRICKS_v15`, `WHEROBOTS_v1_5_0`) and tested Apache Sedona pairings are in [`docs/reference.md`](docs/reference.md).
 
 ## Development
 

@@ -97,12 +97,13 @@ def rehydrate(serialized: dict) -> dict:
     Re-derives the non-serializable fields (``spark_impl``, ``spark_family``,
     ``py_pi_client``) from the serialized values.
     """
-    from overture_core.cloud.aws.codeartifact import CodeArtifactPyPiClient
+    from overture_airflow_provider._overture_core import import_overture_core
 
+    codeartifact = import_overture_core("overture_core.cloud.aws.codeartifact")
     full = dict(serialized)
     full["spark_impl"] = SparkImpl.from_str(serialized["spark_impl_name"])
     full["spark_family"] = SparkFamily[serialized["spark_family_name"]]
-    full["py_pi_client"] = CodeArtifactPyPiClient(
+    full["py_pi_client"] = codeartifact.CodeArtifactPyPiClient(
         domain_owner=serialized["codeartifact_domain_owner"],
         domain=serialized["codeartifact_domain"],
         repository=serialized["codeartifact_repository"],

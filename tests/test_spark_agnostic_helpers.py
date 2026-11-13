@@ -137,9 +137,7 @@ class TestDownloadAndCachePythonPackages:
             pass
 
         with (
-            patch(
-                "overture_airflow_provider.spark_agnostic_helpers.PyPiDownloader"
-            ) as MockDownloader,
+            patch("overture_core.pypi.PyPiDownloader") as MockDownloader,
             patch(
                 "overture_airflow_provider.spark_agnostic_helpers.tempfile.mkdtemp",
                 return_value=tmp_dir,
@@ -271,7 +269,7 @@ class TestDownloadAndCacheJars:
         s3_mock = _make_s3_mock(existing_s3_keys)
         helper = _make_helper(s3_mock)
 
-        with patch("overture_airflow_provider.spark_agnostic_helpers.HttpDownloader") as MockHttp:
+        with patch("overture_core.pypi.HttpDownloader") as MockHttp:
             tmp_dir = tempfile.mkdtemp()
             MockHttp.return_value = MagicMock()
 

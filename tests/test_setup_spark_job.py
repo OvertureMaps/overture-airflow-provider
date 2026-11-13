@@ -24,7 +24,7 @@ def _run(
     wherobots_config=None,
 ):
     with patch(
-        "overture_airflow_provider._setup.CodeArtifactPyPiClient",
+        "overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient",
         return_value=MagicMock(),
     ):
         return setup_spark_job(
@@ -162,7 +162,7 @@ class TestMavenRegistryXComRoundTrip:
             maven_domain_owner="222222222222",
         )
         with patch(
-            "overture_airflow_provider._setup.CodeArtifactPyPiClient",
+            "overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient",
             return_value=MagicMock(),
         ):
             info = setup_spark_job(

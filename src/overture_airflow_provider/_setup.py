@@ -8,8 +8,7 @@ tasks consume via XCom.
 import datetime
 import json
 
-from overture_core.cloud.aws.codeartifact import CodeArtifactPyPiClient
-
+from overture_airflow_provider._overture_core import import_overture_core
 from overture_airflow_provider.config import (
     ArtifactStoreConfig,
     DatabricksConfig,
@@ -68,7 +67,8 @@ def setup_spark_job(
     run_identifier = f"{full_job_name}_{timestamp}"
     print(f"run_identifier: {run_identifier}")
 
-    py_pi_client = CodeArtifactPyPiClient(
+    codeartifact = import_overture_core("overture_core.cloud.aws.codeartifact")
+    py_pi_client = codeartifact.CodeArtifactPyPiClient(
         domain_owner=package_registry.domain_owner,
         domain=package_registry.domain,
         repository=package_registry.repository,

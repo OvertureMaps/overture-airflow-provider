@@ -12,8 +12,8 @@ import zipfile
 from urllib.parse import urlparse
 
 import boto3
-from overture_core.cloud.aws.object import upload_directory
-from overture_core.pypi import HttpDownloader, PyPiDownloader
+
+from overture_airflow_provider._overture_core import import_overture_core
 
 
 class SparkAgnosticHelper:
@@ -145,7 +145,8 @@ class SparkAgnosticHelper:
 
         # Download all packages into a temp folder.
         tmp_folder_pypi = tempfile.mkdtemp()
-        py_pi_downloader = PyPiDownloader(py_pi_client, tmp_folder_pypi)
+        pypi = import_overture_core("overture_core.pypi")
+        py_pi_downloader = pypi.PyPiDownloader(py_pi_client, tmp_folder_pypi)
         py_pi_downloader.download_packages(packages, python_version=python_version)
 
         # Shared S3 cache location for Python wheels from the private registry.
@@ -257,7 +258,10 @@ class SparkAgnosticHelper:
         print(f"Extracted job runner files: {extracted_files}")
 
         if extracted_files:
-            uploaded_scripts = upload_directory(script_dir, self.s3_bucket, prefix=self.s3_prefix)
+            s3_object = import_overture_core("overture_core.cloud.aws.object")
+            uploaded_scripts = s3_object.upload_directory(
+                script_dir, self.s3_bucket, prefix=self.s3_prefix
+            )
             for uploaded_path in uploaded_scripts:
                 for script_name in script_names:
                     if uploaded_path.endswith(script_name):
@@ -319,7 +323,8 @@ class SparkAgnosticHelper:
 
         try:
             if jars_to_download:
-                http_downloader = HttpDownloader(tmp_folder_jar)
+                pypi = import_overture_core("overture_core.pypi")
+                http_downloader = pypi.HttpDownloader(tmp_folder_jar)
                 http_downloader.download_urls(jars_to_download)
 
             for local_jar in os.listdir(tmp_folder_jar):

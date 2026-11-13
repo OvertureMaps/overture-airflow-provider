@@ -37,6 +37,14 @@ The provider is intentionally unopinionated: every environment-specific value (S
 pip install airflow-provider-overture
 ```
 
+Running Spark jobs needs the `overture` extra, which installs
+[`overture-core`](https://github.com/OvertureMaps/overture-core) for package
+registry, wheel and JAR downloads and S3 caching:
+
+```bash
+pip install "airflow-provider-overture[overture]"
+```
+
 Optional extras for platforms that need additional SDKs:
 
 ```bash

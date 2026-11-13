@@ -9,7 +9,9 @@ from typing import Any, Protocol
 
 from overture_airflow_provider._airflow_compat import (
     AirflowFailException,
+    EmptyOperator,
     TaskGroup,
+    TriggerRule,
     XComArg,
     task,
 )
@@ -54,8 +56,9 @@ class SinkTaskFactory(Protocol):
 class MatchingTasks:
     """Public graph handles; chain finalization after ``complete``.
 
-    ``complete`` is the output of the last configured step: the sink, else the
-    provenance task, else the validated result paths.
+    ``complete`` succeeds only after every step has, and returns the output of
+    the last configured step: the sink, else the provenance task, else the result
+    paths.
     """
 
     group: TaskGroup
@@ -100,19 +103,29 @@ def _permanent(function):
     return wrapper
 
 
-@task(task_id="paths", multiple_outputs=False)
+# The default rule is set explicitly on the group's tasks, so that a ``trigger_rule`` in
+# the DAG's ``default_args`` cannot let them run after a skipped or failed step.
+@task(task_id="paths", trigger_rule=TriggerRule.ALL_SUCCESS, multiple_outputs=False)
 @_permanent
 def _paths(value, tables, label):
     return path_map(value, tables, label)
 
 
-@task(task_id="result_paths", multiple_outputs=False)
+@task(task_id="result_paths", trigger_rule=TriggerRule.ALL_SUCCESS, multiple_outputs=False)
 @_permanent
 def _result_paths(value, tables):
     paths = path_map(value, tables, "matching results")
     for table, path in paths.items():
         log.info("Matching output for %s: %s", table, path)
     return paths
+
+
+@task(task_id="complete", trigger_rule=TriggerRule.ALL_SUCCESS, multiple_outputs=False)
+def _complete(value):
+    # A mapped step's output arrives as a lazily read sequence, which cannot be pushed.
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, list, tuple)):
+        return list(value)
+    return value
 
 
 def _task_output(value, factory_name):
@@ -122,7 +135,7 @@ def _task_output(value, factory_name):
 
 
 def _require_built(operators, group, factory_name):
-    """Reject a step whose tasks were built elsewhere and would not wait for earlier steps."""
+    """Reject tasks built elsewhere: they would not wait for earlier steps or the group's gate."""
     built = {id(operator) for operator in group.iter_tasks()}
     if not built or any(id(operator) not in built for operator in operators):
         raise ValueError(f"{factory_name} must build its tasks when it is called")
@@ -135,9 +148,12 @@ def _step_output(value, group, factory_name):
 
 
 def _resolve_paths(value, tables, label):
-    if callable(value):
-        value = _task_output(value(), f"The {label} factory")
-    return _paths(value, tables, f"{label} paths")
+    """Build the ``label`` subgroup and return it with the output of its ``paths`` task."""
+    with TaskGroup(group_id=label) as group:
+        if callable(value):
+            value = _step_output(value(), group, f"The {label} factory")
+        paths = _paths(value, tables, f"{label} paths")
+    return group, paths
 
 
 def matching_task_group(
@@ -157,8 +173,11 @@ def matching_task_group(
     pre-match check, the matcher, an optional provenance task, and an optional
     sink. Each factory is called once, at DAG construction, inside its own
     subgroup, and must build its tasks in that call. A step waits for every task
-    of the steps before it, whether or not its own tasks consume their outputs,
-    and a failed or skipped step stops the ones after it.
+    of the step before it, whether or not its own tasks consume their outputs,
+    and a failed or skipped step stops the ones after it. ``complete`` waits for
+    the last and returned tasks of every step and succeeds only if all of them
+    did. Teardown tasks are the exception: Airflow leaves them out of a group's
+    dependencies.
 
     ``input`` and ``baseline`` are a ``{table: path}`` map (a mapping, its JSON
     string or a task output) or a factory that builds the tasks producing one.
@@ -170,47 +189,48 @@ def matching_task_group(
     """
     names = table_names(tables)
     with TaskGroup(group_id=group_id, add_suffix_on_collision=True) as group:
-        with TaskGroup(group_id="input"):
-            inputs = _resolve_paths(input, names, "input")
-        with TaskGroup(group_id="baseline"):
-            baselines = _resolve_paths(baseline, names, "baseline")
+        # The group's only root, so a gate on the group is a gate on this task and, through
+        # it, on `complete`, even when a factory's tasks may run after a skipped upstream.
+        start = EmptyOperator(task_id="start", trigger_rule=TriggerRule.ALL_SUCCESS)
+        input_group, inputs = _resolve_paths(input, names, "input")
+        baseline_group, baselines = _resolve_paths(baseline, names, "baseline")
+        start >> [input_group, baseline_group]
         paths = {"input_paths": inputs, "baseline_paths": baselines}
-        pre_match = None
+        # `ready` is what the next step waits for: every leaf of the step before it, and
+        # its output. `steps` collects the same for every step, for `complete` to wait for.
+        ready = [input_group, baseline_group]
+        steps = [start, *ready]
         if pre_match_task_factory is not None:
             with TaskGroup(group_id="pre_match") as pre_match:
                 pre_match_task_factory(**paths)
                 _require_built([], pre_match, "pre_match_task_factory")
-            [inputs, baselines] >> pre_match
+            ready >> pre_match
+            ready = [pre_match]
+            steps += ready
         with TaskGroup(group_id="matcher") as matcher:
             raw_paths = _step_output(matcher_task_factory(**paths), matcher, "matcher_task_factory")
-        [inputs, baselines] >> matcher
-        if pre_match is not None:
-            pre_match >> matcher
+        ready >> matcher
         results = _result_paths(raw_paths, names)
         matcher >> results
-        complete, last_step = results, results
+        output, ready = results, [results]
+        steps += [matcher, results]
         if provenance_task_factory is not None:
             with TaskGroup(group_id="provenance") as provenance:
-                complete = _step_output(
+                output = _step_output(
                     provenance_task_factory(**paths, result_paths=results),
                     provenance,
                     "provenance_task_factory",
                 )
-            results >> provenance
-            last_step = provenance
+            ready >> provenance
+            ready = [output, provenance]
+            steps += ready
         if sink_task_factory is not None:
             with TaskGroup(group_id="sink") as sink:
-                complete = _step_output(
+                output = _step_output(
                     sink_task_factory(result_paths=results), sink, "sink_task_factory"
                 )
-            last_step >> sink
-            last_step = sink
-        if isinstance(last_step, TaskGroup):
-
-            @task(task_id="complete", multiple_outputs=False)
-            def completion(value):
-                return value
-
-            complete = completion(complete)
-            last_step >> complete
+            ready >> sink
+            steps += [output, sink]
+        complete = _complete(output)
+        steps >> complete
     return MatchingTasks(group, matcher, results, complete)

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,7 +47,25 @@ class ChildDagRunOperator(TriggerDagRunOperator):
         return super().execute(context)
 
 
-# Also runs when the request list is empty and the mapped trigger was therefore skipped.
+# The default rule is set explicitly on the group's tasks, so that a ``trigger_rule`` in
+# the DAG's ``default_args`` cannot let them run after a skipped gate.
+@task(task_id="requests", trigger_rule=TriggerRule.ALL_SUCCESS, multiple_outputs=False)
+def _requests(requests):
+    """Stage the requests inside the group, as a plain list.
+
+    As the group's only root, it lets a gate on the group skip every task in it. As
+    a successful upstream of ``run_ids``, it lets that task run, and fail, when the
+    triggers were skipped.
+    """
+    # A mapped task's output arrives as a lazily read sequence, not a list.
+    if isinstance(requests, Sequence) and not isinstance(requests, (str, bytes)):
+        confs = list(requests)
+        if all(isinstance(conf, dict) for conf in confs):
+            return confs
+    raise AirflowFailException("requests must be a list of conf mappings")
+
+
+# Also runs when there are no requests and the mapped trigger was therefore skipped.
 @task(
     task_id="run_ids",
     trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
@@ -74,9 +93,12 @@ def child_dag_run_task_group(
     """Trigger one child DAG run per request, wait for each, and return their run IDs.
 
     ``requests`` is a list of ``conf`` mappings, or a task output resolving to
-    one. An empty list from a task triggers nothing and yields an empty list.
-    ``run_ids`` holds one ID per request and fails unless every trigger
-    completed; a failed child run fails its trigger.
+    one, a mapped task's output included. An empty list from a task triggers
+    nothing and yields an empty list; anything other than a list of mappings
+    fails the group without retries. ``run_ids`` holds one ID per request and
+    fails unless every trigger completed; a failed child run fails its trigger.
+    A gate placed before ``group`` skips every task in it, wherever the requests
+    were built.
 
     Each child run ID is derived from the parent DAG run, the trigger task, the
     request's position and its ``conf``. Clearing a trigger, or retrying it when
@@ -87,17 +109,22 @@ def child_dag_run_task_group(
     the trigger operator. A deferred trigger releases its pool slot unless the
     pool counts deferred tasks.
     """
-    if not isinstance(requests, XComArg) and not requests:
-        raise ValueError("requests must not be empty; pass a task output to decide at run time")
+    if not isinstance(requests, XComArg):
+        if not isinstance(requests, (list, tuple)):
+            raise TypeError("requests must be a list of conf mappings or a task output")
+        if not requests:
+            raise ValueError("requests must not be empty; pass a task output to decide at run time")
     with TaskGroup(group_id=group_id, add_suffix_on_collision=True) as group:
+        staged = _requests(requests)
         trigger = ChildDagRunOperator.partial(
             task_id="trigger",
             trigger_dag_id=trigger_dag_id,
+            trigger_rule=TriggerRule.ALL_SUCCESS,
             wait_for_completion=True,
             reset_dag_run=True,
             retries=retries,
             max_active_tis_per_dagrun=max_active_tis_per_dagrun,
             **trigger_kwargs,
-        ).expand(conf=requests)
-        run_ids = _run_ids(trigger_dag_id, requests, XComArg(trigger, key="trigger_run_id"))
+        ).expand(conf=staged)
+        run_ids = _run_ids(trigger_dag_id, staged, XComArg(trigger, key="trigger_run_id"))
     return ChildDagRuns(group, run_ids)

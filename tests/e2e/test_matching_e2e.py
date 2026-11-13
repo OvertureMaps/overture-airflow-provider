@@ -26,6 +26,20 @@ def changed(selected):
 
 
 @task
+def export(provider):
+    return {table: f"s3://feeds/{provider}/type={table}" for table in TABLES}
+
+
+@task(task_id="side")
+def side(step, failure):
+    """A task its factory neither chains nor returns; later steps must still wait for it."""
+    if failure == f"{step}_side":
+        raise ValueError(f"simulated {step} side-task failure")
+    if failure == f"{step}_side_skip":
+        raise AirflowSkipException(f"simulated {step} side-task skip")
+
+
+@task
 def check_inputs(input_paths, baseline_paths, failure):
     if failure == "pre_match":
         raise ValueError("simulated pre-match failure")
@@ -70,15 +84,18 @@ def finalized(completion):
         ("", False, True),
         ("", "osm", True),
         ("", True, False),
+        ("input_side", True, True),
         ("pre_match", True, True),
         ("matcher", True, True),
         ("matcher_skip", True, True),
         ("provenance", True, True),
         ("load", True, True),
         ("load_skip", True, True),
+        ("sink_side", True, True),
+        ("sink_side_skip", True, True),
     ],
 )
-def test_matching_execution_states(monkeypatch, failure, selected, load):
+def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load):
     loads = []
     versions = set()
 
@@ -94,8 +111,16 @@ def test_matching_execution_states(monkeypatch, failure, selected, load):
 
     monkeypatch.setattr(TriggerDagRunOperator, "execute", execute_trigger)
 
+    def input_factory(provider):
+        def build():
+            side("input", failure)
+            return export(provider)
+
+        return build
+
     def sink_factory(provider):
         def build(*, result_paths):
+            side("sink", failure)
             return child_dag_run_task_group(
                 "load",
                 trigger_dag_id="simulated_load",
@@ -119,7 +144,7 @@ def test_matching_execution_states(monkeypatch, failure, selected, load):
                     result = matching_task_group(
                         group_id="arbitrary",
                         tables=TABLES,
-                        input={table: f"s3://feeds/{provider}/type={table}" for table in TABLES},
+                        input=input_factory(provider),
                         baseline={table: f"s3://baseline/type={table}" for table in TABLES},
                         pre_match_task_factory=lambda **paths: check_inputs(
                             **paths, failure=failure
@@ -135,23 +160,15 @@ def test_matching_execution_states(monkeypatch, failure, selected, load):
         ingest_done = EmptyOperator(task_id="ingest_done", trigger_rule=TriggerRule.NONE_FAILED)
         completions >> ingest_done
 
-    from airflow.dag_processing.bundles.manager import DagBundlesManager
-    from airflow.dag_processing.dagbag import DagBag, sync_bag_to_db
-
-    DagBundlesManager().sync_bundles_to_db()
-    bag = DagBag(collect_dags=False)
-    bag.bag_dag(dag)
-    sync_bag_to_db(bag, "dags-folder", None)
-    run = dag.test()
+    run = run_dag(dag)
     states = {(ti.task_id, ti.map_index): ti.state for ti in run.get_task_instances()}
 
     # A skip stops the steps after it without failing the run; it is never a completion.
-    assert run.state == (
-        "failed" if selected and failure and failure != "matcher_skip" else "success"
-    )
+    skips = ("matcher_skip", "sink_side_skip")
+    assert run.state == ("failed" if selected and failure and failure not in skips else "success")
     for provider in PROVIDERS:
         prefix = f"providers.{provider}.arbitrary."
-        complete = states[(prefix + "sink.load.run_ids", -1)]
+        complete = states[(prefix + "complete", -1)]
         final = states[(f"providers.{provider}.finalized", -1)]
         if not (selected is True or selected == provider):
             assert all(
@@ -164,13 +181,17 @@ def test_matching_execution_states(monkeypatch, failure, selected, load):
             assert complete != "success" and final != "success"
         else:
             assert complete == "success" and final == "success"
-    if failure in ("pre_match", "matcher", "matcher_skip"):
+        if failure.startswith("sink_side"):
+            # Every load finished, and the sink's other task still holds completion back.
+            assert states[(prefix + "sink.load.run_ids", -1)] == "success"
+    if failure in ("input_side", "pre_match", "matcher", "matcher_skip"):
         assert all(
             states[(f"providers.{provider}.arbitrary.result_paths", -1)] != "success"
             for provider in PROVIDERS
         )
 
-    loaded = selected and load and failure in ("", "load", "load_skip")
+    reaches_the_loads = ("", "load", "load_skip", "sink_side", "sink_side_skip")
+    loaded = selected and load and failure in reaches_the_loads
     expected = {
         (provider, table)
         for provider in PROVIDERS
@@ -185,3 +206,80 @@ def test_matching_execution_states(monkeypatch, failure, selected, load):
     run_ids = [run_id for *_, run_id in loads]
     assert len(set(run_ids)) == len(run_ids)
     assert all(run_id.startswith("child__") for run_id in run_ids)
+
+
+@task
+def store(table):
+    return f"stored {table}"
+
+
+@task
+def result_tables(result_paths):
+    return sorted(result_paths)
+
+
+def stored(table):
+    return f"stored {table}"
+
+
+@task
+def expect(value, expected):
+    assert value == expected, value
+
+
+@task
+def skips_itself():
+    raise AirflowSkipException("simulated gate that skips itself")
+
+
+def test_completion_with_mapped_outputs_and_permissive_default_args(run_dag):
+    # Both sinks return an output that is read lazily: a mapped task's, and a ``.map()`` result.
+    sinks = {
+        "mapped": lambda *, result_paths: store.expand(table=list(TABLES)),
+        "map": lambda *, result_paths: result_tables(result_paths).map(stored),
+    }
+
+    def group(name, sink, exported=False):
+        return matching_task_group(
+            name,
+            tables=TABLES,
+            # Built by a factory, an export comes before its path check and follows the
+            # DAG's rule, so no path check is a root of the group.
+            input=(lambda: export(name))
+            if exported
+            else {table: f"s3://feeds/{name}/type={table}" for table in TABLES},
+            baseline=(lambda: export("baseline"))
+            if exported
+            else {table: f"s3://baseline/type={table}" for table in TABLES},
+            matcher_task_factory=lambda **paths: fake_match(**paths, provider=name, failure=""),
+            sink_task_factory=sink,
+        )
+
+    with DAG(
+        "matching_completion",
+        schedule=None,
+        start_date=datetime(2026, 1, 1, tzinfo=UTC),
+        default_args={"retries": 0},
+    ) as dag:
+        for name, sink in sinks.items():
+            complete = group(name, sink).complete
+            expect.override(task_id=f"{name}_finalized")(
+                complete, [f"stored {table}" for table in TABLES]
+            )
+        # ``default_args`` that make tasks run after a skip must not reach the group's own.
+        with TaskGroup("permissive", default_args={"trigger_rule": TriggerRule.NONE_FAILED}):
+            gated = group("gated", sinks["mapped"], exported=True)
+            skips_itself() >> gated.group
+        finalized.override(task_id="gated_finalized")(gated.complete)
+
+    run = run_dag(dag)
+    states = {ti.task_id: ti.state for ti in run.get_task_instances() if ti.map_index == -1}
+    for name in sinks:
+        assert states[f"{name}.complete"] == states[f"{name}_finalized"] == "success"
+    # The factories' tasks follow the permissive rule and run behind the skipped gate, and
+    # the checks they feed pass. `start` does not run, so completion is not reported.
+    ran = ("input.export", "baseline.export", "input.paths", "baseline.paths")
+    ran += ("matcher.fake_match", "result_paths")
+    assert {states[f"permissive.gated.{task_id}"] for task_id in ran} == {"success"}
+    assert states["permissive.gated.start"] == states["permissive.gated.complete"] == "skipped"
+    assert states["gated_finalized"] == "skipped"

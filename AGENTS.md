@@ -155,26 +155,45 @@ is more portable across platforms.
   are optional. There is no `runtime=`, `scenario=` or config class.
 - It returns `MatchingTasks(group, matcher, result_paths, complete)`, not a
   TaskGroup. Wire `upstream >> result.group` and finalize after
-  `result.complete`.
+  `result.complete`. `complete` is the group's own task: it waits for `start`
+  and for every step, and forwards the last configured step's output.
 - Factories are called once, with keyword arguments, at DAG construction, inside
   their own subgroup, and must build their tasks in that call (`_require_built`
-  rejects a task built elsewhere, which would not wait for earlier steps). The
-  matcher, provenance and sink factories return a task output; the pre-match
-  factory's return value is ignored. `input` and `baseline` may be a
-  zero-argument factory.
-- Keep the explicit `>>` between step subgroups: a factory may ignore the
-  outputs it is given or leave its own tasks unchained, and the next step must
-  still wait for all of them.
-- Keep default trigger rules in `matching_taskgroup.py`, so a failed or skipped
-  step stops the later ones and `complete` cannot succeed around it. The one
-  custom rule is on `run_ids` in `child_dag_runs.py`: it must run when an empty
-  request list skipped the mapped trigger, and it then requires one run ID per
-  request.
-- Map the trigger with `.expand(conf=requests)`, not `expand_kwargs`. Airflow
+  rejects a task built elsewhere, which would wait for neither the earlier steps
+  nor a gate on the group). The matcher, provenance and sink factories return a
+  task output; the pre-match factory's return value is ignored. `input` and
+  `baseline` may be a zero-argument factory, held to the same rule; a task
+  output built elsewhere is passed directly.
+- Keep the explicit `>>` between step subgroups (`ready`): a factory may ignore
+  the outputs it is given or leave its own tasks unchained, and the next step
+  must still wait for all of them. A step waits for the previous step's leaves
+  and for its returned output; keep both, because the returned task need not be
+  a leaf.
+- Keep `trigger_rule=TriggerRule.ALL_SUCCESS` explicit on the provider's own
+  tasks (`start`, `paths`, `result_paths`, `complete`, `requests` and the
+  trigger). It is Airflow's default, but only an explicit value stops a
+  `trigger_rule` in a DAG's `default_args` from reaching them and letting a
+  gated-off group run. With it a failed or skipped step stops the later ones and
+  `complete` cannot succeed around it. The one other rule is on `run_ids` in
+  `child_dag_runs.py`: it must run when an empty request list skipped the mapped
+  trigger, and it then requires one run ID per request.
+- Keep `start` as the matching group's only root, and keep `steps >> complete`.
+  A factory's task may carry a permissive rule and run behind a skipped gate or
+  a skipped step. `complete` waits directly for `start` and for every step's
+  leaves and returned output, so it still cannot succeed.
+- Keep the `requests` staging task in `child_dag_runs.py`, and map the trigger
+  over it rather than over the caller's requests. It is the group's only root,
+  so a gate reaches every task even when the requests were built outside the
+  group, and it gives `run_ids` a successful upstream, so skipped triggers fail
+  that task instead of skipping it.
+- Map the trigger with `.expand(conf=...)`, not `expand_kwargs`. Airflow
   does not render values resolved from a task output under `.expand`, so `"123"`
   stays a string under native rendering; `expand_kwargs` renders them again.
-- Airflow cannot map over a custom XCom key, so a request builder must return
-  the list as its return value. An empty list triggers nothing.
+- A mapped task's output and a `.map()` result reach a task as a lazily read
+  sequence, not a list, and cannot be pushed as an XCom as they are. `_requests`
+  and `_complete` turn them into lists; keep that, and do not test for `list`.
+  Because the trigger maps over the staging task, the caller's requests may also
+  come from a custom XCom key. An empty list triggers nothing.
 - `child_dag_run_task_group` returns `ChildDagRuns(group, run_ids)`. The run ID
   is set in `ChildDagRunOperator.execute` and paired with `reset_dag_run=True`;
   keep both, or clearing a trigger fails on the existing run ID.

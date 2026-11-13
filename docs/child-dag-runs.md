@@ -24,7 +24,7 @@ finalize = finalize_source(loads.run_ids)
 | Argument | Role |
 |---|---|
 | `trigger_dag_id` | The DAG to run. |
-| `requests` | The `conf` mapping of each child run: a list, or a task output resolving to one. A task may return an empty list, which triggers nothing. An empty literal list is rejected when the DAG is built. |
+| `requests` | The `conf` mapping of each child run: a list, or a task output resolving to one, a mapped task's output included. A task may return an empty list, which triggers nothing. A literal that is empty or not a list is rejected when the DAG is built, and a task output that is not a list of mappings fails the group without retries. |
 | `retries` | Retries of each trigger, `0` by default. A retry reruns the same child run. |
 | `max_active_tis_per_dagrun` | How many triggers may run at once. `1` runs the requests one at a time. |
 | other keywords | Passed to the trigger operator, for example `pool`, `deferrable` or `poke_interval`. |
@@ -32,8 +32,10 @@ finalize = finalize_source(loads.run_ids)
 It returns `ChildDagRuns(group, run_ids)`. `run_ids` holds one run ID per
 request, and an empty list when there were no requests. A failed child run fails
 its trigger, and a request left without a run ID, for example because its
-trigger was skipped, fails `run_ids`. When an upstream gate skips the whole
-group, `run_ids` is skipped too.
+trigger was skipped, fails `run_ids`. When a gate placed before `group` is
+skipped, every task in the group is skipped, `run_ids` included, wherever the
+requests were built. A `trigger_rule` in the DAG's `default_args` does not
+change that: the group's tasks set their own.
 
 ## Run IDs and retries
 

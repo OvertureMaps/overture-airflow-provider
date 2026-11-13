@@ -140,6 +140,7 @@ def test_matching_example_registered_without_optional_sdk_imports():
     for provider in ("osm", "linz"):
         assert f"providers.{provider}.match.matcher.spark.execute_spark_job" in listed
         assert f"providers.{provider}.match.sink.load.run_ids" in listed
+        assert f"providers.{provider}.match.complete" in listed
         assert f"providers.{provider}.finalize_source" in listed
 
 

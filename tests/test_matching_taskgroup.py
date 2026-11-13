@@ -1,11 +1,23 @@
 import json
+from collections import UserList
 from datetime import datetime
 
 import pytest
 
 from overture_airflow_provider import child_dag_run_task_group, matching_task_group
-from overture_airflow_provider._airflow_compat import DAG, AirflowFailException, TaskGroup, task
-from overture_airflow_provider.matching_taskgroup import _paths, _result_paths, table_names
+from overture_airflow_provider._airflow_compat import (
+    DAG,
+    AirflowFailException,
+    TaskGroup,
+    TriggerRule,
+    task,
+)
+from overture_airflow_provider.matching_taskgroup import (
+    _complete,
+    _paths,
+    _result_paths,
+    table_names,
+)
 
 TABLES = ["division", "division_area"]
 INPUTS = {table: f"s3://feeds/provider=linz/data/type={table}" for table in TABLES}
@@ -88,7 +100,7 @@ def test_nested_and_repeated_instances_are_isolated():
             assert all(task_id.startswith(prefix) for task_id in operator.upstream_task_ids)
         assert group.matcher.group_id == prefix + "matcher"
         assert group.result_paths.operator.task_id == prefix + "result_paths"
-        assert group.complete.operator.task_id == prefix + "sink.load.run_ids"
+        assert group.complete.operator.task_id == prefix + "complete"
 
 
 def test_a_paths_factory_builds_its_tasks_inside_the_group():
@@ -98,10 +110,10 @@ def test_a_paths_factory_builds_its_tasks_inside_the_group():
     assert paths.upstream_task_ids == {"matching.baseline.resolve_baseline"}
 
 
-def test_each_step_waits_for_the_steps_before_it_even_when_it_ignores_them():
+def test_each_step_waits_for_every_task_of_the_step_before_it():
     @task
-    def standalone(name):
-        return name
+    def standalone(value):
+        return value
 
     def step(task_id, value):
         # A second task the factory neither chains nor returns must still be waited for.
@@ -113,11 +125,14 @@ def test_each_step_waits_for_the_steps_before_it_even_when_it_ignores_them():
 
     with new_dag("matching_order") as dag:
         make_group(
+            input=step("export", INPUTS),
+            baseline=step("export", BASELINE),
             pre_match_task_factory=step("check", "c"),
             matcher_task_factory=step("match", RESULTS),
             provenance_task_factory=step("publish", "p"),
             sink_task_factory=step("store", "s"),
         )
+        make_group("no_check", input=step("export", INPUTS))
 
     def upstream(task_id):
         return dag.get_task(task_id).upstream_task_ids
@@ -125,26 +140,110 @@ def test_each_step_waits_for_the_steps_before_it_even_when_it_ignores_them():
     def both(task_id):
         return {task_id, f"{task_id}_side"}
 
-    inputs = {"matching.input.paths", "matching.baseline.paths"}
+    sources = {
+        f"matching.{name}.{task_id}"
+        for name in ("input", "baseline")
+        for task_id in ("paths", "export_side")
+    }
     for name, before in (
-        ("pre_match.check", inputs),
-        ("matcher.match", inputs | both("matching.pre_match.check")),
+        ("pre_match.check", sources),
+        ("matcher.match", both("matching.pre_match.check")),
         ("provenance.publish", {"matching.result_paths"}),
         ("sink.store", both("matching.provenance.publish")),
     ):
         assert upstream(f"matching.{name}") == upstream(f"matching.{name}_side") == before
     assert upstream("matching.result_paths") == both("matching.matcher.match")
-    assert dag.get_task("matching.sink.store").downstream_task_ids == set()
+    # `start` is the only root, so a gate on the group reaches it whatever the factories built.
+    group_tasks = {task_id for task_id in dag.task_ids if task_id.startswith("matching.")}
+    assert {task_id for task_id in group_tasks if not upstream(task_id)} == {"matching.start"}
+    assert dag.get_task("matching.start").downstream_task_ids == {"matching.complete"} | {
+        f"matching.{name}.{task_id}"
+        for name in ("input", "baseline")
+        for task_id in ("export", "export_side")
+    }
+    # `complete` waits directly for `start` and for every leaf and returned output of
+    # every step: all of the group but the two exports, which only feed a `paths` check.
+    assert upstream("matching.complete") == group_tasks - {
+        "matching.complete",
+        "matching.input.export",
+        "matching.baseline.export",
+    }
+    assert dag.get_task("matching.complete").downstream_task_ids == set()
+    assert upstream("no_check.matcher.match") == {
+        "no_check.input.paths",
+        "no_check.input.export_side",
+        "no_check.baseline.paths",
+    }
 
 
-def test_complete_is_the_last_configured_step():
-    with new_dag("matching_complete"):
-        match_only = make_group("match_only")
-        published = make_group("published", provenance_task_factory=publish)
-        stored = make_group("stored", provenance_task_factory=publish, sink_task_factory=store)
-    assert match_only.complete is match_only.result_paths
-    assert published.complete.operator.task_id == "published.provenance.publish"
-    assert stored.complete.operator.task_id == "stored.sink.store"
+def test_complete_forwards_the_last_configured_step():
+    @task
+    def tidy():
+        return None
+
+    def publish_then_tidy(**paths):
+        published = publish(**paths)
+        published >> tidy()
+        return published
+
+    with new_dag("matching_complete") as dag:
+        results = {
+            "result_paths": make_group("match_only"),
+            "provenance.publish": make_group("published", provenance_task_factory=publish),
+            "sink.store": make_group(
+                "stored", provenance_task_factory=publish, sink_task_factory=store
+            ),
+        }
+        make_group("tidied", provenance_task_factory=publish_then_tidy, sink_task_factory=store)
+    for last_task, result in results.items():
+        prefix = result.group.group_id
+        complete = result.complete.operator
+        assert complete.task_id == f"{prefix}.complete"
+        # The forwarded value is the last step's output, read from that task's XCom.
+        assert [operator.task_id for operator, _ in complete.op_args[0].iter_references()] == [
+            f"{prefix}.{last_task}"
+        ]
+        assert {f"{prefix}.start", f"{prefix}.{last_task}"} <= complete.upstream_task_ids
+    # The provenance output is not a leaf here, and the sink must still wait for it.
+    assert dag.get_task("tidied.sink.store").upstream_task_ids == {
+        "tidied.result_paths",
+        "tidied.provenance.publish",
+        "tidied.provenance.tidy",
+    }
+
+
+def test_complete_forwards_a_lazily_read_output_as_a_list():
+    # A mapped step's output is a sequence that is not a list and cannot be pushed as it is.
+    forwarded = _complete.function(UserList(["stored division", "stored division_area"]))
+    assert type(forwarded) is list
+    assert forwarded == ["stored division", "stored division_area"]
+    for plain in ("stored", RESULTS, ["stored"], None):
+        assert _complete.function(plain) is plain
+
+
+def test_own_tasks_keep_the_default_trigger_rule_under_permissive_default_args():
+    with DAG(
+        "permissive_defaults",
+        schedule=None,
+        start_date=datetime(2026, 1, 1),
+        default_args={"trigger_rule": TriggerRule.NONE_FAILED},
+    ) as dag:
+        make_group(sink_task_factory=load_tables)
+    rules = {operator.task_id: operator.trigger_rule for operator in dag.tasks}
+    # A factory's task follows the DAG. The group's own tasks must not: with
+    # ``none_failed`` they would run, and trigger child runs, behind a skipped gate.
+    assert rules["matching.matcher.match"] == TriggerRule.NONE_FAILED
+    for own in (
+        "start",
+        "input.paths",
+        "baseline.paths",
+        "result_paths",
+        "complete",
+        "sink.load.requests",
+        "sink.load.trigger",
+    ):
+        assert rules[f"matching.{own}"] == TriggerRule.ALL_SUCCESS
+    assert rules["matching.sink.load.run_ids"] == TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
 
 
 def test_factories_and_tables_are_validated_at_dag_construction():
@@ -158,15 +257,19 @@ def test_factories_and_tables_are_validated_at_dag_construction():
         ):
             with pytest.raises(TypeError, match="must return a task output"):
                 make_group(**{factory: lambda **paths: RESULTS})
-        # A task built outside the call would not wait for the steps before it.
-        for factory in (
-            "matcher_task_factory",
-            "provenance_task_factory",
-            "sink_task_factory",
-            "pre_match_task_factory",
+        # A task built outside the call would not wait for earlier steps or the group's gate.
+        for argument, name in (
+            ("matcher_task_factory", "matcher_task_factory"),
+            ("provenance_task_factory", "provenance_task_factory"),
+            ("sink_task_factory", "sink_task_factory"),
+            ("pre_match_task_factory", "pre_match_task_factory"),
+            ("input", "The input factory"),
+            ("baseline", "The baseline factory"),
         ):
-            with pytest.raises(ValueError, match=f"{factory} must build its tasks"):
-                make_group(**{factory: lambda **paths: prebuilt})
+            with pytest.raises(ValueError, match=f"{name} must build its tasks"):
+                make_group(**{argument: lambda **paths: prebuilt})
+        # Passed directly, a task output built elsewhere is an input like any other.
+        make_group("direct", input=prebuilt, baseline=prebuilt)
         for tables in ("", [], ["division", "division"], [" "]):
             with pytest.raises(ValueError, match="tables"):
                 make_group(tables=tables)

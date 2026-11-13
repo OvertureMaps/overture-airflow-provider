@@ -204,4 +204,13 @@ def matching_task_group(
                     sink_task_factory(result_paths=results), sink, "sink_task_factory"
                 )
             last_step >> sink
+            last_step = sink
+        if isinstance(last_step, TaskGroup):
+
+            @task(task_id="complete", multiple_outputs=False)
+            def completion(value):
+                return value
+
+            complete = completion(complete)
+            last_step >> complete
     return MatchingTasks(group, matcher, results, complete)

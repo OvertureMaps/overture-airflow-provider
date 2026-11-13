@@ -14,6 +14,11 @@ on one of:
 …with the same caller-facing API. The DAG code does not change when the engine
 changes; only `spark_impl_name` and the platform-specific config dataclass do.
 
+Two additive task groups sit beside it. `matching_task_group` wires a matching
+workflow out of caller-supplied task factories, and `child_dag_run_task_group`
+triggers child DAG runs with stable run IDs (see
+[Matching workflow](#matching-workflow)).
+
 ## Non-goals
 
 - A general Spark abstraction. We only abstract the **submission** of a job, not
@@ -23,13 +28,21 @@ changes; only `spark_impl_name` and the platform-specific config dataclass do.
 
 ## Public surface
 
-Two entry points, both Airflow `@task_group`-decorated factories:
+Spark entry points, both Airflow `@task_group`-decorated factories:
 
 - `spark_agnostic_task_group(...)` — a single concrete task group invocation.
 - `spark_agnostic_mapped_task_group(...)` — dynamic task mapping over a list
   of per-invocation configs.
 
-Seven typed config dataclasses:
+`matching_task_group(...)` is an additive workflow factory returning
+`MatchingTasks(group, matcher, result_paths, complete)`. Every step except path
+checking is a factory supplied by the caller, so it adds no configuration
+classes and no platform dispatch.
+
+`child_dag_run_task_group(...)` returns `ChildDagRuns(group, run_ids)`: one
+child DAG run per request, each with a stable run ID.
+
+Spark configuration dataclasses:
 
 | Dataclass | Required for |
 |---|---|
@@ -73,6 +86,9 @@ python_package_utils         ← CodeArtifact pip/maven HTTP clients (overture_c
 
 links.py                     ← SparkJobLink + ReportIssueLink (extra-links)
 _report_issue.py             ← pluggable issue tracker (IssueTracker ABC, GitHub built in)
+
+matching_taskgroup.py        ← public matching_task_group (wiring around caller-supplied task factories)
+child_dag_runs.py            ← public child_dag_run_task_group (mapped child DAG runs, stable run IDs)
 ```
 
 ## Task graph
@@ -114,6 +130,100 @@ written to XCom. Adding a new `setup_spark_job` field requires updating both
 Non-serializable values (the `py_pi_client` HTTP session, enum objects) are
 passed in-process only and rehydrated via `setup_info.rehydrate` on the other
 side.
+
+## Matching workflow
+
+```
+start ─┬─► input paths ────┐
+       │                   ├─► optional pre-match check ─► matcher ─► checked result paths
+       └─► baseline paths ─┘                                                  │
+                                                                  optional provenance task
+                                                                              │
+                                                                        optional sink
+                                                                              │
+                                              start and every step ──────► complete
+```
+
+`matching_taskgroup.py` only wires. `input` and `baseline` are `{table: path}`
+maps, given directly, as a task output, or built by a zero-argument factory; a
+`paths` task checks each against `tables`. The matcher, the pre-match check, the
+provenance task and the sink are caller-supplied factories. Each is called once
+at DAG construction, inside its own subgroup, and must build its tasks there;
+the matcher, provenance and sink factories return a task output.
+`result_paths` checks that the matcher's results cover exactly the requested
+tables. The module has no platform dispatch and no domain vocabulary: the
+matcher's arguments and output layout, the metadata that is published and what
+the sink does all belong to the factories.
+
+Dependencies are set between the step subgroups as well as through XComArgs. A
+step waits for every leaf of the step before it and for that step's returned
+output, so it waits for every task of that step, even when its factory ignores
+their outputs or leaves its own tasks unchained. Teardown tasks are the
+exception, because Airflow leaves them out of a group's leaves. The first steps
+wait for the whole `input` and `baseline` subgroups in the same way. A factory
+whose output comes from a task built outside its subgroup is rejected at DAG
+construction, since that task would wait for neither the earlier steps nor a
+gate on the group. That covers `input` and `baseline` factories too; a task
+output passed directly may be built anywhere.
+
+The group's own tasks (`start`, `paths`, `result_paths`, `complete`) use
+Airflow's default rule, `all_success`, and set it explicitly so that a
+`trigger_rule` in the DAG's `default_args` does not reach them. `start` is an
+`EmptyOperator` and the group's only root, so a gate before the group is a gate
+on `start` whatever the factories build. A failed or skipped step stops the
+later ones as long as the factories' tasks use the default rule. `complete` does
+not rely on that: it waits directly for `start` and for every leaf and returned
+output of every step, so it succeeds only if the gate let the group start and
+none of those tasks failed or was skipped. It forwards the last configured
+step's output, as a list when that output is a mapped task's and therefore read
+lazily. A skip is never a completion and does not fail the DAG run; a gated-off
+instance stays skipped throughout. Deterministic contract violations (a map that
+does not cover `tables`) raise `AirflowFailException` so DAG-level retries do
+not repeat them.
+
+Instances are independent. Nothing is addressed by a task ID string, so ancestor
+groups and collision suffixes need no handling.
+
+### Child DAG runs
+
+`child_dag_runs.py` stages the requests in a `requests` task, maps
+`ChildDagRunOperator`, a `TriggerDagRunOperator` subclass, over them with
+`.expand(conf=...)`, waits for each run, and collects the run IDs in `run_ids`.
+
+- `requests` is the group's only root, so a gate before the group skips every
+  task in it even when the requests were built outside it. It is also a
+  successful upstream of `run_ids` whatever happens to the triggers, including
+  for a literal request list. It rejects anything that is not a list of
+  mappings, so a builder that returned nothing is not taken for one with nothing
+  to do, and it stages a lazily read sequence (a mapped task's output, a
+  `.map()` result) as a plain list. The trigger maps over this task's return
+  value, so the caller's requests may also come from a custom XCom key, which
+  Airflow cannot map over directly.
+- `requests` and the trigger set `all_success` explicitly, so a `trigger_rule`
+  in the DAG's `default_args` cannot make a gated-off group trigger child runs.
+- The run ID hashes the parent DAG ID, run ID, trigger task ID, map index and
+  `conf`. It is set in `execute`, and triggers set `reset_dag_run`, so clearing
+  or retrying a trigger reruns the same child run instead of failing on the
+  existing ID or starting a second run. Triggers do not retry unless the caller
+  raises `retries`.
+- `run_ids` takes the triggers' `trigger_run_id` XComs as a declared input and
+  fails unless there is one per request. It carries the only rule that is not
+  `all_success` (`NONE_FAILED_MIN_ONE_SUCCESS`): an empty request list skips the
+  mapped trigger, and `run_ids` must still run to return an empty list. A
+  trigger skipped for any other reason leaves fewer run IDs than requests and
+  fails it. A gated-off group has no successful upstream, so it stays skipped.
+- Airflow does not render values resolved from a task output, neither as a
+  task's arguments nor under `.expand`, so `conf` stays a template field and
+  request values keep their types under native rendering. `expand_kwargs` over a
+  task output renders them again and would turn `"123"` into an int.
+- A trigger that waits for its child run cannot return that run's output, so the
+  helper returns run IDs and leaves reading a child's XCom to the caller.
+
+Provider gates, normalization, completion markers, ordering/concurrency and
+assemble belong to the consumer, and so do the input sources, the matcher job,
+metadata publication and the result sink.
+See [matching usage](docs/matching.md) and
+[child DAG runs](docs/child-dag-runs.md).
 
 ## Iceberg
 

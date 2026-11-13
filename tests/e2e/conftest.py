@@ -24,3 +24,20 @@ def _reserialized() -> None:
     """
     if shutil.which("airflow"):
         subprocess.run(["airflow", "dags", "reserialize"], capture_output=True, text=True)
+
+
+@pytest.fixture
+def run_dag():
+    """Return a function that registers a DAG built in a test and runs it with ``dag.test()``."""
+
+    def run(dag):
+        from airflow.dag_processing.bundles.manager import DagBundlesManager
+        from airflow.dag_processing.dagbag import DagBag, sync_bag_to_db
+
+        DagBundlesManager().sync_bundles_to_db()
+        bag = DagBag(collect_dags=False)
+        bag.bag_dag(dag)
+        sync_bag_to_db(bag, "dags-folder", None)
+        return dag.test()
+
+    return run

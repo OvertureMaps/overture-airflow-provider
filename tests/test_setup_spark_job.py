@@ -24,7 +24,7 @@ def _run(
     wherobots_config=None,
 ):
     with patch(
-        "overture_airflow_provider._setup.CodeArtifactPyPiClient",
+        "overture_airflow_provider._setup.import_overture_core",
         return_value=MagicMock(),
     ):
         return setup_spark_job(
@@ -162,7 +162,7 @@ class TestMavenRegistryXComRoundTrip:
             maven_domain_owner="222222222222",
         )
         with patch(
-            "overture_airflow_provider._setup.CodeArtifactPyPiClient",
+            "overture_airflow_provider._setup.import_overture_core",
             return_value=MagicMock(),
         ):
             info = setup_spark_job(
@@ -179,7 +179,7 @@ class TestMavenRegistryXComRoundTrip:
         assert info["codeartifact_maven_domain_owner"] == "222222222222"
 
         serialized = to_xcom(info)
-        with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient"):
+        with patch("overture_airflow_provider._overture_core.import_overture_core"):
             restored = rehydrate(serialized)
 
         for data in (serialized, restored):

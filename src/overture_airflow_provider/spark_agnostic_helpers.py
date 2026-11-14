@@ -12,8 +12,8 @@ import zipfile
 from urllib.parse import urlparse
 
 import boto3
-from overture_core.cloud.aws.object import upload_directory
-from overture_core.pypi import HttpDownloader, PyPiDownloader
+
+from overture_airflow_provider._overture_core import import_overture_core
 
 
 class SparkAgnosticHelper:
@@ -122,6 +122,8 @@ class SparkAgnosticHelper:
                 native packages, plus any pure-Python package matching
                 ``force_pip_packages``, e.g. ``['numba==0.59.0']``).
         """
+        pypi = import_overture_core("overture_core.pypi")
+
         # Force-install via pip for caller-configured complex packages.
         excluded_native_packages = [pkg for pkg in packages if self._force_pip_install(pkg)]
         for pkg in excluded_native_packages:
@@ -145,7 +147,7 @@ class SparkAgnosticHelper:
 
         # Download all packages into a temp folder.
         tmp_folder_pypi = tempfile.mkdtemp()
-        py_pi_downloader = PyPiDownloader(py_pi_client, tmp_folder_pypi)
+        py_pi_downloader = pypi.PyPiDownloader(py_pi_client, tmp_folder_pypi)
         py_pi_downloader.download_packages(packages, python_version=python_version)
 
         # Shared S3 cache location for Python wheels from the private registry.
@@ -243,28 +245,29 @@ class SparkAgnosticHelper:
             print("No job runner wheel found for script extraction")
             return {}
 
-        script_dir = tempfile.mkdtemp()
         script_locations: dict[str, str] = {}
 
-        extracted_files: list[str] = []
-        with zipfile.ZipFile(job_runner_whl, "r") as wheel:
-            for file_info in wheel.filelist:
-                for script_name in script_names:
-                    if file_info.filename.endswith(script_name):
-                        wheel.extract(file_info, script_dir)
-                        extracted_files.append(file_info.filename)
+        with tempfile.TemporaryDirectory() as script_dir:
+            extracted_files: list[str] = []
+            with zipfile.ZipFile(job_runner_whl, "r") as wheel:
+                for file_info in wheel.filelist:
+                    for script_name in script_names:
+                        if file_info.filename.endswith(script_name):
+                            wheel.extract(file_info, script_dir)
+                            extracted_files.append(file_info.filename)
 
-        print(f"Extracted job runner files: {extracted_files}")
+            print(f"Extracted job runner files: {extracted_files}")
 
-        if extracted_files:
-            uploaded_scripts = upload_directory(script_dir, self.s3_bucket, prefix=self.s3_prefix)
-            for uploaded_path in uploaded_scripts:
-                for script_name in script_names:
-                    if uploaded_path.endswith(script_name):
-                        script_locations[script_name] = uploaded_path
-                        print(f"Job runner uploaded to: {uploaded_path}")
-
-        shutil.rmtree(script_dir)
+            if extracted_files:
+                s3_object = import_overture_core("overture_core.cloud.aws.object")
+                uploaded_scripts = s3_object.upload_directory(
+                    script_dir, self.s3_bucket, prefix=self.s3_prefix
+                )
+                for uploaded_path in uploaded_scripts:
+                    for script_name in script_names:
+                        if uploaded_path.endswith(script_name):
+                            script_locations[script_name] = uploaded_path
+                            print(f"Job runner uploaded to: {uploaded_path}")
 
         return script_locations
 
@@ -319,7 +322,8 @@ class SparkAgnosticHelper:
 
         try:
             if jars_to_download:
-                http_downloader = HttpDownloader(tmp_folder_jar)
+                pypi = import_overture_core("overture_core.pypi")
+                http_downloader = pypi.HttpDownloader(tmp_folder_jar)
                 http_downloader.download_urls(jars_to_download)
 
             for local_jar in os.listdir(tmp_folder_jar):

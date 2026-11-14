@@ -64,7 +64,7 @@ def test_rehydrate_reconstructs_enums():
         "codeartifact_repository": "repo",
         "codeartifact_region": "us-east-1",
     }
-    with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient"):
+    with patch("overture_airflow_provider._overture_core.import_overture_core"):
         result = rehydrate(serialized)
     assert result["spark_impl"] == SparkImpl.GLUE_v5
     assert result["spark_family"] == SparkFamily.GLUE
@@ -79,8 +79,9 @@ def test_rehydrate_constructs_pypi_client():
         "codeartifact_repository": "repo",
         "codeartifact_region": "us-east-1",
     }
-    with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient") as MockClient:
+    with patch("overture_airflow_provider._overture_core.import_overture_core") as mock_import:
         result = rehydrate(serialized)
+    MockClient = mock_import.return_value.CodeArtifactPyPiClient
     assert result["py_pi_client"] is MockClient.return_value
     MockClient.assert_called_once_with(
         domain_owner="123", domain="dom", repository="repo", region_name="us-east-1"
@@ -97,13 +98,13 @@ def test_rehydrate_preserves_extra_keys():
         "codeartifact_region": "x",
         "custom_field": "preserved",
     }
-    with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient"):
+    with patch("overture_airflow_provider._overture_core.import_overture_core"):
         result = rehydrate(serialized)
     assert result["custom_field"] == "preserved"
 
 
 def test_roundtrip_restores_key_values():
-    with patch("overture_core.cloud.aws.codeartifact.CodeArtifactPyPiClient"):
+    with patch("overture_airflow_provider._overture_core.import_overture_core"):
         restored = rehydrate(to_xcom(_FULL))
     assert restored["spark_family"] == SparkFamily.GLUE
     assert restored["spark_impl"] == SparkImpl.GLUE_v5

@@ -50,17 +50,18 @@ dependencies = [
     "apache-airflow>=3.3.0",
     "apache-airflow-providers-amazon",
     "boto3",
-    "overture-core>=0.6.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
 databricks = ["apache-airflow-providers-databricks", "databricks-sdk"]
 wherobots = ["airflow-providers-wherobots>=1.4.3"]
+overture = ["overture-core>=0.6.0,<2.0.0"]
 bundle-inspector = ["pyarrow", "shapely"]
 all = [
     "apache-airflow-providers-databricks",
     "databricks-sdk",
     "airflow-providers-wherobots>=1.4.3",
+    "overture-core>=0.6.0,<2.0.0",
     "pyarrow",
     "shapely",
 ]

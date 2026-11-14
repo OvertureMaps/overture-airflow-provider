@@ -39,11 +39,20 @@ Write a DAG once and target any supported engine by switching one argument. Clus
 pip install airflow-provider-overture
 ```
 
-Optional extras for platforms that need additional SDKs:
+Running Spark jobs needs the `overture` extra, which installs
+[`overture-core`](https://github.com/OvertureMaps/overture-core) for package
+registry, wheel and JAR downloads and S3 caching:
 
 ```bash
-pip install "airflow-provider-overture[databricks]"
-pip install "airflow-provider-overture[wherobots]"
+pip install "airflow-provider-overture[overture]"
+```
+
+For Databricks or Wherobots Spark jobs, combine `overture` with the platform
+extra. The `all` extra includes both `overture` and all platform SDKs:
+
+```bash
+pip install "airflow-provider-overture[overture,databricks]"
+pip install "airflow-provider-overture[overture,wherobots]"
 pip install "airflow-provider-overture[all]"
 ```
 

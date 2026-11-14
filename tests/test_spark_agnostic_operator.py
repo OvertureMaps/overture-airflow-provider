@@ -264,6 +264,55 @@ def test_execute_complete_calls_handler_and_finalizes():
     assert result["spark_impl"] == "GLUE_SEDONA"
 
 
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("family", [SparkFamily.GLUE, SparkFamily.DATABRICKS])
+@pytest.mark.parametrize("failure_kind", ["terminal", "non_retryable", "capacity"])
+def test_deferred_completion_preserves_retry_policy(resume, family, failure_kind):
+    from overture_airflow_provider._airflow_compat import (
+        AirflowException,
+        AirflowFailException,
+    )
+    from overture_airflow_provider._exceptions import RetryableJobFailure
+
+    failure_types = {
+        "terminal": AirflowException,
+        "non_retryable": AirflowFailException,
+        "capacity": RetryableJobFailure,
+    }
+    failure = failure_types[failure_kind]("classified platform failure")
+    expected_type = RetryableJobFailure if failure_kind == "capacity" else AirflowFailException
+    op = _make_operator(retries=1)
+    op._finalize = MagicMock()
+    handler = MagicMock()
+    handler.complete_job.side_effect = failure
+    context = {"ti": MagicMock()}
+    event = {"run_id": "run-1"}
+
+    with (
+        patch(
+            "overture_airflow_provider._operator.rehydrate",
+            return_value={**_FULL, "spark_family": family},
+        ),
+        patch(
+            "overture_airflow_provider._operator.get_platform_handler",
+            return_value=handler,
+        ),
+    ):
+        with pytest.raises(expected_type) as exc:
+            if resume:
+                op.resume_execution("execute_complete", {"event": event}, context)
+            else:
+                op.execute_complete(context, event)
+
+    assert type(exc.value) is expected_type
+    assert str(exc.value) == str(failure)
+    if failure_kind != "terminal":
+        assert exc.value is failure
+    handler.complete_job.assert_called_once_with(event, context, cluster_info=op.cluster_info)
+    handler.describe_failure.assert_not_called()
+    op._finalize.assert_not_called()
+
+
 def test_resume_execution_resolves_terminal_glue_failure():
     """A trigger that raised on a terminal FAILED state resolves as a real job
     failure: the run id is recovered, complete_job surfaces the platform

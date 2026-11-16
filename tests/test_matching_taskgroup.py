@@ -156,7 +156,10 @@ def test_each_step_waits_for_every_task_of_the_step_before_it():
     # `start` is the only root, so a gate on the group reaches it whatever the factories built.
     group_tasks = {task_id for task_id in dag.task_ids if task_id.startswith("matching.")}
     assert {task_id for task_id in group_tasks if not upstream(task_id)} == {"matching.start"}
-    assert dag.get_task("matching.start").downstream_task_ids == {"matching.complete"} | {
+    assert dag.get_task("matching.start").downstream_task_ids == {
+        "matching.complete",
+        "matching.work_succeeded",
+    } | {
         f"matching.{name}.{task_id}"
         for name in ("input", "baseline")
         for task_id in ("export", "export_side")
@@ -167,6 +170,10 @@ def test_each_step_waits_for_every_task_of_the_step_before_it():
         "matching.complete",
         "matching.input.export",
         "matching.baseline.export",
+    }
+    assert upstream("matching.work_succeeded") == group_tasks - {
+        "matching.complete",
+        "matching.work_succeeded",
     }
     assert dag.get_task("matching.complete").downstream_task_ids == set()
     assert upstream("no_check.matcher.match") == {
@@ -221,29 +228,35 @@ def test_complete_forwards_a_lazily_read_output_as_a_list():
         assert _complete.function(plain) is plain
 
 
-def test_own_tasks_keep_the_default_trigger_rule_under_permissive_default_args():
+@pytest.mark.parametrize("rule", [TriggerRule.NONE_FAILED, TriggerRule.ALL_DONE])
+@pytest.mark.parametrize("scope", ["dag", "parent_group"])
+def test_factory_tasks_ignore_permissive_inherited_trigger_rules(rule, scope):
+    defaults = {"trigger_rule": rule, "retries": 2}
     with DAG(
         "permissive_defaults",
         schedule=None,
         start_date=datetime(2026, 1, 1),
-        default_args={"trigger_rule": TriggerRule.NONE_FAILED},
+        default_args=defaults if scope == "dag" else {},
     ) as dag:
-        make_group(sink_task_factory=load_tables)
+        with TaskGroup("parent", default_args=defaults if scope == "parent_group" else {}):
+            outside = resolve_baseline()
+            result = make_group(
+                input=lambda: resolve_baseline(),
+                baseline=resolve_baseline,
+                pre_match_task_factory=check,
+                provenance_task_factory=publish,
+                sink_task_factory=load_tables,
+            )
     rules = {operator.task_id: operator.trigger_rule for operator in dag.tasks}
-    # A factory's task follows the DAG. The group's own tasks must not: with
-    # ``none_failed`` they would run, and trigger child runs, behind a skipped gate.
-    assert rules["matching.matcher.match"] == TriggerRule.NONE_FAILED
-    for own in (
-        "start",
-        "input.paths",
-        "baseline.paths",
-        "result_paths",
-        "complete",
-        "sink.load.requests",
-        "sink.load.trigger",
-    ):
-        assert rules[f"matching.{own}"] == TriggerRule.ALL_SUCCESS
-    assert rules["matching.sink.load.run_ids"] == TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
+    assert outside.operator.trigger_rule == rule
+    for operator in result.group.iter_tasks():
+        expected = (
+            TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
+            if operator.task_id.endswith((".run_ids", ".work_succeeded"))
+            else TriggerRule.ALL_SUCCESS
+        )
+        assert rules[operator.task_id] == expected
+        assert operator.retries == (0 if operator.task_id.endswith(".trigger") else 2)
 
 
 def test_factories_and_tables_are_validated_at_dag_construction():

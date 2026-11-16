@@ -142,6 +142,7 @@ start ─┬─► input paths ────┐
                                                                         optional sink
                                                                               │
                                               start and every step ──────► complete
+                                              all non-teardown work ─► work_succeeded ─┘
 ```
 
 `matching_taskgroup.py` only wires. `input` and `baseline` are `{table: path}`
@@ -166,15 +167,23 @@ construction, since that task would wait for neither the earlier steps nor a
 gate on the group. That covers `input` and `baseline` factories too; a task
 output passed directly may be built anywhere.
 
-The group's own tasks (`start`, `paths`, `result_paths`, `complete`) use
-Airflow's default rule, `all_success`, and set it explicitly so that a
-`trigger_rule` in the DAG's `default_args` does not reach them. `start` is an
-`EmptyOperator` and the group's only root, so a gate before the group is a gate
-on `start` whatever the factories build. A failed or skipped step stops the
-later ones as long as the factories' tasks use the default rule. `complete` does
-not rely on that: it waits directly for `start` and for every leaf and returned
-output of every step, so it succeeds only if the gate let the group start and
-none of those tasks failed or was skipped. It forwards the last configured
+The group sets `all_success` in its `default_args`, so factory tasks do not
+inherit a permissive trigger rule from the DAG or a parent group. Other defaults,
+such as retries, are preserved. Explicit rules on factory tasks or nested groups
+still take precedence; consumers must not give gated work permissive rules.
+The group's own tasks (`start`, `paths`, `result_paths`, `complete`) also set
+`all_success` explicitly. `start` is an `EmptyOperator` and the group's only
+root, so a gate before the group is a gate on `start` whatever the factories
+build. A failed or skipped step stops the
+later ones as long as the factories' tasks keep the group's default rule.
+`complete` does not rely on that: it waits directly for `start` and for every
+leaf and returned output of every step. It also waits for `work_succeeded`,
+an `EmptyOperator` depending on every non-teardown task with
+`NONE_FAILED_MIN_ONE_SUCCESS`. This catches a failed non-leaf load even if its
+`ALL_DONE` cleanup succeeds, while accepting intentional skipped branches and
+empty mapped child-run requests. Completion requires the gate to let the group
+start, each step's leaves and returned output to succeed, and no non-teardown
+task to fail. It forwards the last configured
 step's output, as a list when that output is a mapped task's and therefore read
 lazily. A skip is never a completion and does not fail the DAG run; a gated-off
 instance stays skipped throughout. Deterministic contract violations (a map that

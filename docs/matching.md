@@ -81,7 +81,7 @@ check, and the sink waits for the provenance task.
 | `group` | The whole workflow. Gate it with `upstream >> matching.group`; the gate lands on the group's first task, `start`. |
 | `matcher` | The `matcher` subgroup, holding whatever the matcher factory built. |
 | `result_paths` | The checked `{table: path}` results. |
-| `complete` | A task that waits for `start` and for the last and returned tasks of every step, and succeeds only if all of them did. It returns the last configured step's output: the sink's, else the provenance task's, else `result_paths`. A mapped task's output is returned as a list. Finalize after this. |
+| `complete` | A task that requires `start` and every step's leaves and returned output to succeed, and no non-teardown task to fail. It returns the last configured step's output: the sink's, else the provenance task's, else `result_paths`. A mapped task's output is returned as a list. Finalize after this. |
 
 `result_paths` alone is **not** evidence that a provenance task or sink
 finished.
@@ -105,26 +105,34 @@ entry should stop the sink.
 
 ## Failure handling
 
-The group adds no trigger rules of its own: its tasks use Airflow's default,
-`all_success`. A step that fails stops every later step, so `complete` does not
-succeed and finalization chained after it does not run. A step that is skipped
+The group sets `all_success` as the default trigger rule for its factory tasks,
+overriding a `trigger_rule` inherited from the DAG or a parent group's
+`default_args`. Other defaults, such as retries, are preserved. A step that
+fails stops every later step, so `complete` does not succeed and finalization
+chained after it does not run. A step that is skipped
 also stops the later steps, without failing the DAG run: an intentionally
 unchanged provider stays skipped throughout its group, and so does everything
 after a check, matcher or publisher that skips itself. In both cases a provider
 is finished only when `complete` succeeded.
 
-This holds for every task a factory builds, including one it neither chains nor
-returns: a failed or skipped task in the sink keeps `complete` from succeeding
-even when the task the sink factory returned succeeded. Teardown tasks are the
-exception. Airflow leaves them out of a group's dependencies, so a failed
-teardown does not hold `complete` back.
+Completion also checks every non-teardown task for failure, including non-leaf
+work. For example, a failed load followed by successful `all_done` cleanup
+cannot produce a successful completion. The internal `work_succeeded` barrier
+uses `none_failed_min_one_success` so intentional skipped branches, including
+an empty mapped child-run request list, do not count as failures. The separate
+`all_success` dependencies still require `start` and every step's leaves and
+returned output to succeed. Teardown tasks are excluded from the failure
+barrier, so a failed teardown does not hold `complete` back.
 
-Stopping the later steps relies on the factories' tasks using the default
-trigger rule. A task with another rule, set on the task or through the DAG's
-`default_args`, decides for itself how it reacts to the tasks before it, and may
-run after a skipped step or a skipped gate. `complete` does not depend on that.
-The group's own tasks keep `all_success` whatever `default_args` say, a gate on
-the group always reaches `start`, and `complete` waits directly for `start` and,
+Stopping the later steps relies on the factories' tasks keeping that default
+trigger rule. A factory that explicitly sets another rule on a task or nested
+group decides for itself how that task reacts to earlier tasks, and may allow
+work after a skipped step or gate. Do not set permissive rules on exports,
+matcher jobs or sinks that must stay behind the source gate.
+`complete` does not depend on those factory rules.
+The group's `start`, path checks and `complete` keep `all_success` whatever
+`default_args` say. A gate on the group always reaches `start`, and
+`complete` waits directly for `start` and,
 in every step, for the task the factory returned and for the tasks that nothing
 else in the step follows. So `complete` does not succeed when the gate was
 skipped, or when any of those tasks failed or was skipped.

@@ -208,6 +208,54 @@ def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load
     assert all(run_id.startswith("child__") for run_id in run_ids)
 
 
+@pytest.mark.parametrize(
+    "failed_step", ["input", "baseline", "pre_match", "matcher", "provenance", "sink"]
+)
+def test_completion_rejects_failed_non_leaf_work(run_dag, failed_step):
+    @task
+    def work(fail):
+        if fail:
+            raise ValueError("simulated non-leaf failure")
+
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def cleanup(value):
+        return value
+
+    def factory(step, value):
+        def build(**paths):
+            output = cleanup(value)
+            work(step == failed_step) >> output
+            return output
+
+        return build
+
+    paths = {table: f"s3://example/type={table}" for table in TABLES}
+    with DAG(
+        f"matching_non_leaf_failure_{failed_step}",
+        schedule=None,
+        start_date=datetime(2026, 1, 1, tzinfo=UTC),
+        default_args={"retries": 0},
+    ) as dag:
+        result = matching_task_group(
+            "matching",
+            tables=TABLES,
+            input=factory("input", paths),
+            baseline=factory("baseline", paths),
+            pre_match_task_factory=factory("pre_match", None),
+            matcher_task_factory=factory("matcher", paths),
+            provenance_task_factory=factory("provenance", "published"),
+            sink_task_factory=factory("sink", "stored"),
+        )
+        finalized(result.complete)
+
+    run = run_dag(dag)
+    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+    assert states[f"matching.{failed_step}.work"] == "failed"
+    assert states[f"matching.{failed_step}.cleanup"] == "success"
+    assert states["matching.complete"] == states["finalized"] == "upstream_failed"
+    assert run.state == "failed"
+
+
 @task
 def store(table):
     return f"stored {table}"
@@ -228,11 +276,15 @@ def expect(value, expected):
 
 
 @task
-def skips_itself():
-    raise AirflowSkipException("simulated gate that skips itself")
+def source_gate(state):
+    if state == "unchanged":
+        raise AirflowSkipException("simulated unchanged source")
+    if state == "failed":
+        raise ValueError("simulated source check failure")
 
 
-def test_completion_with_mapped_outputs_and_permissive_default_args(run_dag):
+@pytest.mark.parametrize("source_state", ["changed", "unchanged", "failed"])
+def test_completion_with_mapped_outputs_and_permissive_default_args(run_dag, source_state):
     # Both sinks return an output that is read lazily: a mapped task's, and a ``.map()`` result.
     sinks = {
         "mapped": lambda *, result_paths: store.expand(table=list(TABLES)),
@@ -243,43 +295,47 @@ def test_completion_with_mapped_outputs_and_permissive_default_args(run_dag):
         return matching_task_group(
             name,
             tables=TABLES,
-            # Built by a factory, an export comes before its path check and follows the
-            # DAG's rule, so no path check is a root of the group.
             input=(lambda: export(name))
             if exported
             else {table: f"s3://feeds/{name}/type={table}" for table in TABLES},
             baseline=(lambda: export("baseline"))
             if exported
             else {table: f"s3://baseline/type={table}" for table in TABLES},
+            pre_match_task_factory=lambda **paths: check_inputs(**paths, failure=""),
             matcher_task_factory=lambda **paths: fake_match(**paths, provider=name, failure=""),
+            provenance_task_factory=lambda **paths: publish(**paths, failure=""),
             sink_task_factory=sink,
         )
 
     with DAG(
-        "matching_completion",
+        f"matching_completion_{source_state}",
         schedule=None,
         start_date=datetime(2026, 1, 1, tzinfo=UTC),
-        default_args={"retries": 0},
+        default_args={"retries": 0, "trigger_rule": TriggerRule.NONE_FAILED},
     ) as dag:
         for name, sink in sinks.items():
             complete = group(name, sink).complete
             expect.override(task_id=f"{name}_finalized")(
                 complete, [f"stored {table}" for table in TABLES]
             )
-        # ``default_args`` that make tasks run after a skip must not reach the group's own.
-        with TaskGroup("permissive", default_args={"trigger_rule": TriggerRule.NONE_FAILED}):
+        with TaskGroup("permissive", default_args={"trigger_rule": TriggerRule.ALL_DONE}):
             gated = group("gated", sinks["mapped"], exported=True)
-            skips_itself() >> gated.group
-        finalized.override(task_id="gated_finalized")(gated.complete)
+            source_gate(source_state) >> gated.group
+        finalized.override(task_id="gated_finalized", trigger_rule=TriggerRule.ALL_SUCCESS)(
+            gated.complete
+        )
 
     run = run_dag(dag)
+    assert run.state == ("failed" if source_state == "failed" else "success")
     states = {ti.task_id: ti.state for ti in run.get_task_instances() if ti.map_index == -1}
     for name in sinks:
         assert states[f"{name}.complete"] == states[f"{name}_finalized"] == "success"
-    # The factories' tasks follow the permissive rule and run behind the skipped gate, and
-    # the checks they feed pass. `start` does not run, so completion is not reported.
-    ran = ("input.export", "baseline.export", "input.paths", "baseline.paths")
-    ran += ("matcher.fake_match", "result_paths")
-    assert {states[f"permissive.gated.{task_id}"] for task_id in ran} == {"success"}
-    assert states["permissive.gated.start"] == states["permissive.gated.complete"] == "skipped"
-    assert states["gated_finalized"] == "skipped"
+    expected = {
+        "changed": "success",
+        "unchanged": "skipped",
+        "failed": "upstream_failed",
+    }[source_state]
+    assert {
+        ti.state for ti in run.get_task_instances() if ti.task_id.startswith("permissive.gated.")
+    } == {expected}
+    assert states["gated_finalized"] == expected

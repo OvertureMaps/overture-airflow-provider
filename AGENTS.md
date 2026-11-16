@@ -174,13 +174,19 @@ is more portable across platforms.
   trigger). It is Airflow's default, but only an explicit value stops a
   `trigger_rule` in a DAG's `default_args` from reaching them and letting a
   gated-off group run. With it a failed or skipped step stops the later ones and
-  `complete` cannot succeed around it. The one other rule is on `run_ids` in
-  `child_dag_runs.py`: it must run when an empty request list skipped the mapped
-  trigger, and it then requires one run ID per request.
+  `complete` cannot succeed around it. `run_ids` in `child_dag_runs.py` and
+  `work_succeeded` in `matching_taskgroup.py` use
+  `NONE_FAILED_MIN_ONE_SUCCESS` to allow intentionally empty mapped requests.
+  `run_ids` still requires one run ID per request.
 - Keep `start` as the matching group's only root, and keep `steps >> complete`.
-  A factory's task may carry a permissive rule and run behind a skipped gate or
-  a skipped step. `complete` waits directly for `start` and for every step's
-  leaves and returned output, so it still cannot succeed.
+  Keep `all_success` in the matching group's `default_args` too, so factory
+  tasks cannot inherit permissive trigger rules from a DAG or parent group.
+  Explicit factory-task or nested-group rules still take precedence and must
+  not allow gated work to run. `complete` waits directly for `start` and for
+  every step's leaves and returned output. It also waits for `work_succeeded`,
+  which checks every non-teardown task so successful `ALL_DONE` cleanup cannot
+  mask a failed non-leaf load. Do not replace this barrier with dependencies on
+  leaves alone or require success from intentionally empty mapped tasks.
 - Keep the `requests` staging task in `child_dag_runs.py`, and map the trigger
   over it rather than over the caller's requests. It is the group's only root,
   so a gate reaches every task even when the requests were built outside the

@@ -7,7 +7,8 @@ cleanly through the actual scheduler, the provider and its operator extra-links
 register, and the spark-agnostic task group expands to the expected task graph.
 
 Nothing here talks to Glue / Databricks / Wherobots — no cloud credentials are
-needed. Live-platform tests remain a separate follow-up.
+needed. The child-run integration test starts an isolated local Airflow stack;
+live-platform tests remain a separate follow-up.
 
 ## Running
 
@@ -33,8 +34,9 @@ AIRFLOW_VERSION=3.3.1 PYTHON_VERSION=3.12 docker compose run --rm --build e2e
 | `docker-compose.yaml` | `e2e` one-shot service and an opt-in `standalone` service (Airflow UI) under the `manual` profile. |
 | `run-e2e.sh` | In-container entrypoint: `airflow db migrate` -> `airflow dags reserialize` (real parse) -> `pytest`. |
 | `test_dag_e2e.py` | The assertions: no import errors, DAG + provider + extra-links registered, task-group expansion + dependency edges, lazy-import purity, setup-task execution, and the setup_info XCom round-trip. |
-| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances whose sink is a `child_dag_run_task_group`, with simulated child runs: changed/unchanged providers, an empty request list, a string request value in a natively rendered DAG, pre-match/matcher/provenance/child-run failures, a matcher that skips, a trigger skipped before it has a run ID, and a failing or skipped task that an input or sink factory left unchained. A second test covers a sink that returns a mapped task's output or a `.map()` result, and a skipped gate under `default_args` that set a permissive trigger rule. |
+| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances whose sink is a `child_dag_run_task_group`, with simulated child runs: changed/unchanged providers, an empty request list, a string request value in a natively rendered DAG, pre-match/matcher/provenance/child-run failures, a matcher that skips, a trigger skipped before it has a run ID, and a failing or skipped task that an input or sink factory left unchained. A second test covers a sink that returns a mapped task's output or a `.map()` result, and changed, unchanged and failed source gates under permissive DAG and parent-group defaults; an unchanged source skips every task in its matching group. |
 | `test_child_dag_runs_e2e.py` | Real `dag.test()` execution of `child_dag_run_task_group` on its own, for literal requests and for requests built outside the group by a task, a mapped task or `.map()`: a gated-off group (also under permissive `default_args`), an empty list, triggers that skip, and a request value that is not a list. |
+| `test_child_dag_runs_integration.py` / `dags/child_run_dags.py` | An isolated `airflow standalone` stack executes actual parent and child DAGs without mocking the trigger operator. It checks that the parent waits, propagates child failures, and reruns the same child IDs after clearing either a successful or failed trigger. |
 | `run.sh` / `run.ps1` | Host sugar over `docker compose` (`e2e` \| `all` \| `standalone`). |
 
 Platform SDKs (`databricks-sdk`, `wherobots`) are deliberately **not** installed,
@@ -45,6 +47,9 @@ without credentials or optional SDKs.
 Its source gate, metadata writer and finalization placeholders are not executed;
 the scheduler-state tests inject their own factories, simulate the child-run
 triggers and require no cloud access.
+Matching execution tests also cover failed non-leaf work followed by successful
+`ALL_DONE` cleanup in every factory step; completion and source finalization
+must remain blocked.
 
 ## Run the full unit suite under real Airflow
 

@@ -56,9 +56,9 @@ class SinkTaskFactory(Protocol):
 class MatchingTasks:
     """Public graph handles; chain finalization after ``complete``.
 
-    ``complete`` succeeds only after every step has, and returns the output of
-    the last configured step: the sink, else the provenance task, else the result
-    paths.
+    ``complete`` requires every step's leaves and returned output to succeed,
+    and no non-teardown task to fail. It returns the last configured step's
+    output: the sink, else the provenance task, else the result paths.
     """
 
     group: TaskGroup
@@ -175,9 +175,11 @@ def matching_task_group(
     subgroup, and must build its tasks in that call. A step waits for every task
     of the step before it, whether or not its own tasks consume their outputs,
     and a failed or skipped step stops the ones after it. ``complete`` waits for
-    the last and returned tasks of every step and succeeds only if all of them
-    did. Teardown tasks are the exception: Airflow leaves them out of a group's
-    dependencies.
+    the last and returned tasks of every step, and also checks all non-leaf work
+    for failures. Teardown tasks are the exception: Airflow leaves them out of a
+    group's dependencies. Factory tasks default to ``all_success`` inside this group,
+    overriding trigger rules inherited from a DAG or parent group. An explicit
+    rule on a factory task or nested group still takes precedence.
 
     ``input`` and ``baseline`` are a ``{table: path}`` map (a mapping, its JSON
     string or a task output) or a factory that builds the tasks producing one.
@@ -188,7 +190,11 @@ def matching_task_group(
     ``upstream >> result.group`` and ``result.complete >> finalize``.
     """
     names = table_names(tables)
-    with TaskGroup(group_id=group_id, add_suffix_on_collision=True) as group:
+    with TaskGroup(
+        group_id=group_id,
+        add_suffix_on_collision=True,
+        default_args={"trigger_rule": TriggerRule.ALL_SUCCESS},
+    ) as group:
         # The group's only root, so a gate on the group is a gate on this task and, through
         # it, on `complete`, even when a factory's tasks may run after a skipped upstream.
         start = EmptyOperator(task_id="start", trigger_rule=TriggerRule.ALL_SUCCESS)
@@ -231,6 +237,14 @@ def matching_task_group(
                 )
             ready >> sink
             steps += [output, sink]
+        work = [operator for operator in group.iter_tasks() if not operator.is_teardown]
+        # Check non-leaf failures too, but allow intentionally skipped branches and empty maps.
+        work_succeeded = EmptyOperator(
+            task_id="work_succeeded",
+            trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+        )
+        work >> work_succeeded
         complete = _complete(output)
+        work_succeeded >> complete
         steps >> complete
     return MatchingTasks(group, matcher, results, complete)

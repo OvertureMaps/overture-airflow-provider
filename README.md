@@ -24,6 +24,8 @@ Write a DAG once and target any supported engine by switching one argument. Clus
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Reusable matching workflows](#reusable-matching-workflows)
+- [Child DAG runs](#child-dag-runs)
 - [Operator links](#operator-links)
 - [Failure messages](#failure-messages)
 - [Wherobots runtime selection](#wherobots-runtime-selection)
@@ -100,6 +102,56 @@ Switching to Databricks or Wherobots requires only a different `spark_impl_name`
 See [`examples/example_dag.py`](examples/example_dag.py) for a runnable DAG targeting all three platforms.
 
 See [`SPEC.md`](SPEC.md) for the full architecture.
+
+## Reusable matching workflows
+
+`matching_task_group` wires one matching workflow out of task factories the
+caller supplies: input and baseline paths, an optional pre-match check, the
+matcher, a check that the results cover the requested tables, an optional
+provenance task and an optional sink. It does not know which matcher runs, where
+the inputs come from or where the results go. Several instances can run in one
+DAG, nested or not, without sharing task IDs or XComs.
+
+```python
+from overture_airflow_provider import matching_task_group
+
+matching = matching_task_group(
+    group_id="match_linz",
+    tables=("division", "division_area"),
+    input=input_paths,
+    baseline=export_baseline,
+    matcher_task_factory=run_matcher,
+    provenance_task_factory=publish_matching_metadata,
+    sink_task_factory=load_tables,
+)
+
+normalize >> matching.group
+finalize = finalize_source(matching.complete)
+```
+
+See [docs/matching.md](docs/matching.md) for the arguments, the factory
+contracts and failure handling, and
+[`examples/example_matching_dag.py`](examples/example_matching_dag.py) for a
+multi-provider scaffold.
+
+## Child DAG runs
+
+`child_dag_run_task_group` triggers one run of another DAG per request, waits
+for each run, and returns the run IDs once every run has succeeded. Child run
+IDs are stable, so clearing a trigger reruns the same child run.
+
+```python
+from overture_airflow_provider import child_dag_run_task_group
+
+loads = child_dag_run_task_group(
+    "load",
+    trigger_dag_id="example_load_table",
+    requests=load_requests(result_paths),
+)
+```
+
+See [docs/child-dag-runs.md](docs/child-dag-runs.md) for the arguments, run IDs,
+retries and pools.
 
 ## Operator links
 

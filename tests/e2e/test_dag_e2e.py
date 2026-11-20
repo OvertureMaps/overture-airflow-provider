@@ -132,6 +132,18 @@ def test_import_does_not_pull_in_airflow():
     assert proc.returncode == 0, f"eager imports leaked:\n{proc.stdout}{proc.stderr}"
 
 
+def test_matching_example_registered_without_optional_sdk_imports():
+    dag_id = "example_per_provider_matching"
+    dag_ids = {row["dag_id"] for row in airflow_json("dags", "list")}
+    assert dag_id in dag_ids
+    listed = airflow("tasks", "list", dag_id)
+    for provider in ("osm", "linz"):
+        assert f"providers.{provider}.match.matcher.spark.execute_spark_job" in listed
+        assert f"providers.{provider}.match.sink.load.run_ids" in listed
+        assert f"providers.{provider}.match.complete" in listed
+        assert f"providers.{provider}.finalize_source" in listed
+
+
 def test_setup_info_xcom_roundtrip():
     """setup_spark_job → to_xcom produces a JSON-safe payload over a real Airflow install.
 

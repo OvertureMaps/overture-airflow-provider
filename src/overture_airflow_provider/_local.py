@@ -58,18 +58,29 @@ print(json.dumps(versions))
 # members, so the group is identified without inspecting other processes. Job
 # output is relayed so a lingering descendant cannot hold the task's stdout open.
 # The job's group id is written to the given file so the task (or a later cancel)
-# can still stop the job if the supervisor itself is killed with SIGKILL.
+# can still stop the job if the supervisor itself is killed with SIGKILL. The job
+# waits on a pipe until that file is written; if the supervisor dies first the pipe
+# closes and the job exits without running.
 _SUPERVISOR_SCRIPT = """
 import os, signal, subprocess, sys, threading, time
 grace = float(sys.argv[1])
+GATE = (
+    "import os, sys; fd = int(sys.argv[1]); ok = os.read(fd, 1); os.close(fd); "
+    "ok == b'1' or os._exit(1); os.execvp(sys.argv[2], sys.argv[2:])"
+)
+gate_r, gate_w = os.pipe()
 child = subprocess.Popen(
-    sys.argv[3:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    [sys.executable, "-c", GATE, str(gate_r), *sys.argv[3:]], pass_fds=(gate_r,),
+    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT, start_new_session=True,
 )
+os.close(gate_r)
 group = child.pid
 if sys.argv[2]:
     with open(sys.argv[2], "w") as f:
         f.write(str(group))
+os.write(gate_w, b"1")
+os.close(gate_w)
 
 def relay():
     while True:

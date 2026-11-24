@@ -565,6 +565,28 @@ class TestSupervisor:
         finally:
             proc.stdin.close()
 
+    def test_job_never_runs_if_supervisor_dies_before_recording_group(self, tmp_path):
+        sentinel = tmp_path / "ran"
+        job = f"open({str(sentinel)!r}, 'w').close()"
+        # A directory cannot be opened for writing, so the supervisor dies at the
+        # point where it would record the group id.
+        unwritable = tmp_path / "pgid-dir"
+        unwritable.mkdir()
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", job], str(unwritable)),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            assert proc.wait(timeout=10) != 0
+        finally:
+            proc.stdin.close()
+            proc.stdout.close()
+        time.sleep(0.5)
+        assert not sentinel.exists()
+
     def test_returns_job_exit_code(self):
         proc = subprocess.Popen(
             _local.supervised_argv([sys.executable, "-c", "import sys; sys.exit(3)"]),

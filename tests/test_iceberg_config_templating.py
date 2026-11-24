@@ -92,7 +92,7 @@ def test_all_iceberg_fields_are_op_kwargs():
 def test_no_iceberg_config_defaults_to_empty():
     dag, op = _build_setup_cluster_op(None)
 
-    assert op.op_kwargs["iceberg_primary_config"] == "{}"
+    assert op.op_kwargs["iceberg_primary_config"] in ("{}", {})
     assert op.op_kwargs["iceberg_wherobots_config"] == "{}"
     assert op.op_kwargs["iceberg_s3tables_config"] == "{}"
     assert op.op_kwargs["iceberg_wherobots_s3tables_config"] == "{}"
@@ -141,7 +141,7 @@ def test_native_render_turns_op_kwarg_into_dict():
     assert result["spark.sql.catalog.s3tables_catalog.http-client.apache.max-connections"] == 3000
 
 
-def _deferred_probe(render_native: bool):
+def _deferred_probe(render_native: bool, spark_config=None, impl="{{ params.impl }}"):
     from overture_airflow_provider.config import LocalSparkConfig
 
     with DAG(
@@ -152,10 +152,10 @@ def _deferred_probe(render_native: bool):
     ) as dag:
         spark_agnostic_task_group(
             group_id="grp",
-            spark_impl_name="{{ params.impl }}",
+            spark_impl_name=impl,
             sedona_version="1.7.0",
             iceberg_config=IcebergConfig(
-                spark_config='{"w": "{{ var.value.managed_bucket_iceberg }}"}'
+                spark_config=spark_config or '{"w": "{{ var.value.managed_bucket_iceberg }}"}'
             ),
             local_spark_config=LocalSparkConfig(iceberg_spark_config='{"local": "1"}'),
         )
@@ -199,10 +199,40 @@ def test_templated_impl_defers_shared_iceberg_templating(render_native):
     # Task templating must not touch the shared config (the variable may not exist).
     context = {"ti": mock.MagicMock(), "task_instance": mock.MagicMock()}
     op.render_template_fields(context, jinja_env=dag.get_template_env())
-    assert "{{ var.value.managed_bucket_iceberg }}" in str(op.op_kwargs["iceberg_primary_config"])
+    assert op.op_kwargs["iceberg_primary_config"] in ("{}", {})
 
     assert _run_setup_cluster(dag, op, "LOCAL", None) == {"local": "1"}
     assert _run_setup_cluster(dag, op, "GLUE", "B") == {"w": "B"}
+
+
+@pytest.mark.parametrize("render_native", [False, True])
+def test_deferred_render_matches_eager_render(render_native):
+    """Deferred rendering must give exactly what eager templating gives, including
+    JSON-valued strings under native rendering and catalog names containing ``endraw``."""
+    shared = json.dumps(
+        {
+            "spark.sql.catalog.endraw.warehouse": "{{ var.value.managed_bucket_iceberg }}",
+            "spark.header": '{"role":"read-only"}',
+        }
+    )
+    eager_dag, eager_op = _deferred_probe(render_native, shared, impl="GLUE_v5")
+    context = {
+        "ti": mock.MagicMock(),
+        "task_instance": mock.MagicMock(),
+        "var": SimpleNamespace(value=SimpleNamespace(managed_bucket_iceberg="B")),
+    }
+    eager_op.render_template_fields(context, jinja_env=eager_dag.get_template_env())
+    eager = resolve_iceberg_spark_config(
+        IcebergConfig(spark_config=eager_op.op_kwargs["iceberg_primary_config"]), "GLUE"
+    )
+
+    dag, op = _deferred_probe(render_native, shared)
+    assert op.op_kwargs["iceberg_templating_deferred"] is True
+    assert _run_setup_cluster(dag, op, "LOCAL", None) == {"local": "1"}
+    deferred = _run_setup_cluster(dag, op, "GLUE", "B")
+    assert deferred == eager
+    assert deferred["spark.header"] == '{"role":"read-only"}'
+    assert deferred["spark.sql.catalog.endraw.warehouse"] == "B"
 
 
 def test_literal_impl_does_not_defer_templating():

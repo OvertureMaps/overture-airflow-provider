@@ -51,18 +51,20 @@ for name in sys.argv[1:]:
 print(json.dumps(versions))
 """
 
-# Runs the job in the supervisor's process group and stays alive until every
-# other process in that group has exited, stopping the group when the task process goes away
-# (its stdin pipe closes) or on SIGTERM, so a killed Airflow task cannot leave
-# the job writing alongside a retry. Job output is relayed so a lingering
-# descendant cannot hold the task's stdout pipe open.
+# Runs the job in its own process group and, once the job exits, stops whatever is
+# left in that group. It also stops the group when the task process goes away
+# (its stdin pipe closes) or on SIGTERM, so a killed Airflow task cannot leave the
+# job writing alongside a retry. A group id cannot be reused while the group has
+# members, so the group is identified without inspecting other processes. Job
+# output is relayed so a lingering descendant cannot hold the task's stdout open.
 _SUPERVISOR_SCRIPT = """
 import os, signal, subprocess, sys, threading, time
 grace = float(sys.argv[1])
-me, group = os.getpid(), os.getpgid(0)
 child = subprocess.Popen(
-    sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT, start_new_session=True,
 )
+group = child.pid
 
 def relay():
     while True:
@@ -71,40 +73,34 @@ def relay():
             return
         os.write(1, chunk)
 
-def others():
+def alive():
     child.poll()
-    ps = subprocess.Popen(["ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
-                          stdout=subprocess.PIPE, text=True)
-    out = ps.communicate()[0]
-    pids = []
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 3 or parts[2].startswith("Z"):
-            continue
-        pid, pgid = int(parts[0]), int(parts[1])
-        if pgid == group and pid not in (me, ps.pid):
-            pids.append(pid)
-    return pids
+    try:
+        os.killpg(group, 0)
+    except OSError:
+        # ESRCH: empty. macOS reports EPERM when only zombies remain.
+        return False
+    return True
+
+def signal_group(sig):
+    try:
+        os.killpg(group, sig)
+    except OSError:
+        pass
 
 def stop_group():
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    pids = others()
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+    if not alive():
+        return
+    signal_group(signal.SIGTERM)
     deadline = time.monotonic() + grace
-    while pids and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
         time.sleep(0.1)
-        pids = others()
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+        if not alive():
+            return
+    signal_group(signal.SIGKILL)
 
 def on_term(*_):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     stop_group()
     relayer.join(1)
     os._exit(143)
@@ -112,13 +108,14 @@ def on_term(*_):
 def watch_parent():
     while os.read(0, 4096):
         pass
-    os.kill(me, signal.SIGTERM)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 relayer = threading.Thread(target=relay, daemon=True)
 relayer.start()
 signal.signal(signal.SIGTERM, on_term)
 threading.Thread(target=watch_parent, daemon=True).start()
 rc = child.wait()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
 stop_group()
 relayer.join(5)
 os._exit(rc if rc >= 0 else 128 - rc)
@@ -500,28 +497,6 @@ def _kill_process_group(pid: int, sig=signal.SIGTERM) -> None:
         pass
 
 
-def _process_group_alive(pgid: int) -> bool:
-    """Whether ``pgid`` has members we can signal (macOS reports EPERM for zombies only)."""
-    try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    return True
-
-
-def _stop_group_members(pgid: int) -> None:
-    """Stop processes left in the job's group after its leader has exited."""
-    if not _process_group_alive(pgid):
-        return
-    _kill_process_group(pgid)
-    deadline = time.monotonic() + _KILL_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        if not _process_group_alive(pgid):
-            return
-        time.sleep(0.1)
-    _kill_process_group(pgid, signal.SIGKILL)
-
-
 def _terminate(proc: subprocess.Popen) -> None:
     if proc.poll() is None:
         _kill_process_group(proc.pid)
@@ -531,7 +506,6 @@ def _terminate(proc: subprocess.Popen) -> None:
         except subprocess.TimeoutExpired:
             _kill_process_group(proc.pid, signal.SIGKILL)
             proc.wait()
-    _stop_group_members(proc.pid)
 
 
 def _agnostic_xcom_payload(setup_info: dict, job_url: str) -> str:
@@ -681,16 +655,6 @@ def _is_local_run_process(pid: int, marker: str) -> bool:
     return proc.returncode == 0 and marker in proc.stdout
 
 
-def _pid_exists(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
     """Stop a local run left over from a killed try, only on the host that started it."""
     extra = extra or {}
@@ -706,17 +670,14 @@ def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
     pid = int(pid)
     marker = extra.get("marker") or _RUNNER_MARKER
     if not _is_local_run_process(pid, marker):
-        if not _pid_exists(pid):
-            # A process group id is not reused while it has members, so any left
-            # under the dead supervisor's id are the job's.
-            _stop_group_members(pid)
+        # The supervisor stops the job's group before it exits, so nothing
+        # verifiable is left to signal.
         log.info("Local run %s (pid %s) is no longer running", run_id, pid)
         return
+    # The verified supervisor stops the job's group, escalating after the grace period.
     _kill_process_group(pid)
     deadline = time.monotonic() + _KILL_GRACE_SECONDS + 5
     while time.monotonic() < deadline and _is_local_run_process(pid, marker):
         time.sleep(0.1)
     if _is_local_run_process(pid, marker):
         _kill_process_group(pid, signal.SIGKILL)
-    # The verified leader held this group id, so remaining members are the job's.
-    _stop_group_members(pid)

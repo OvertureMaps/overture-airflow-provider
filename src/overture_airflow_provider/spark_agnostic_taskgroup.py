@@ -280,18 +280,6 @@ def _local_iceberg_override_active(
     return SparkImpl[spark_impl_name].get_family() == SparkFamily.LOCAL
 
 
-_RAW_START, _RAW_END = "{% raw %}", "{% endraw %}"
-
-
-def _defer_templating(value):
-    """Shield ``value`` from task templating so it is rendered only if used."""
-    return f"{_RAW_START}{value}{_RAW_END}" if isinstance(value, str) else value
-
-
-def _render_deferred(value, context):
-    return context["task"].render_template(value, context)
-
-
 @task_group
 def _spark_agnostic_task_group(
     *,
@@ -405,9 +393,12 @@ def _spark_agnostic_task_group(
             if full["spark_family"] == SparkFamily.LOCAL and local_override:
                 iceberg_fields = {}
             else:
+                # Render the original text exactly once, as eager templating would.
                 context = get_current_context()
+                task = context["task"]
                 iceberg_fields = {
-                    k: _render_deferred(v, context) for k, v in iceberg_fields.items()
+                    field.name: task.render_template(getattr(deferred_iceberg, field.name), context)
+                    for field in dataclasses.fields(IcebergConfig)
                 }
         iceberg_config = IcebergConfig(**iceberg_fields)
         return get_platform_handler(full["spark_family"], full).setup_cluster(
@@ -440,23 +431,11 @@ def _spark_agnostic_task_group(
     jar_result = download_jars_task(setup_info=setup_result)
     iceberg_config = iceberg_config or IcebergConfig()
     local_override_active = _local_iceberg_override_active(spark_impl_name, local_spark_config)
-    if local_override_active is None and any(
-        "endraw" in (value or "") for value in dataclasses.astuple(iceberg_config)
-    ):
-        # Cannot be shielded safely; template eagerly as before.
-        local_override_active = False
-    if local_override_active:
-        # The shared config is unused, so do not template or parse it.
+    # Kept out of op_kwargs when the platform is only known at runtime, so task
+    # templating never touches a config that may go unused.
+    deferred_iceberg = iceberg_config
+    if local_override_active is not False:
         iceberg_config = IcebergConfig()
-    elif local_override_active is None:
-        iceberg_config = IcebergConfig(
-            spark_config=_defer_templating(iceberg_config.spark_config),
-            wherobots_spark_config=_defer_templating(iceberg_config.wherobots_spark_config),
-            s3tables_spark_config=_defer_templating(iceberg_config.s3tables_spark_config),
-            wherobots_s3tables_spark_config=_defer_templating(
-                iceberg_config.wherobots_s3tables_spark_config
-            ),
-        )
     cluster_result = setup_cluster_task(
         setup_info=setup_result,
         extra_spark_conf=extra_spark_conf,

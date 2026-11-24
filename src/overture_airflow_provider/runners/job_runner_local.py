@@ -48,20 +48,10 @@ class_name = args["class_name"]
 params = args.get("params", "{}")
 extra_spark_conf_raw = args.get("extra_spark_conf") or "{}"
 
-module = import_module(module_name)
-job_cls = getattr(module, class_name)
-instance = job_cls()
-
-run_kwargs: dict = {"params": params}
-sig = inspect.signature(instance.run)
 spark_connect = bool(os.environ.get("SPARK_REMOTE"))
-wants_spark = "spark" in sig.parameters
-if spark_connect and not wants_spark and hasattr(instance, "init_spark_for_platform"):
-    raise RuntimeError(
-        f"{class_name} needs init_spark_for_platform(), which requires a SparkContext; "
-        "Spark Connect (sc://) has none. Use a local[*] or spark:// master, or accept a "
-        "`spark` argument in run()."
-    )
+
+# Installed before the job module is imported so a session created at import
+# or construction time still gets the submitted master and executor env.
 if not spark_connect:
     from pyspark import SparkContext
     from pyspark.sql import SparkSession
@@ -81,6 +71,19 @@ if not spark_connect:
             if name in os.environ and system.getProperty(key) is None:
                 system.setProperty(key, os.environ[name])
 
+module = import_module(module_name)
+job_cls = getattr(module, class_name)
+instance = job_cls()
+
+run_kwargs: dict = {"params": params}
+sig = inspect.signature(instance.run)
+wants_spark = "spark" in sig.parameters
+if spark_connect and not wants_spark and hasattr(instance, "init_spark_for_platform"):
+    raise RuntimeError(
+        f"{class_name} needs init_spark_for_platform(), which requires a SparkContext; "
+        "Spark Connect (sc://) has none. Use a local[*] or spark:// master, or accept a "
+        "`spark` argument in run()."
+    )
 if wants_spark:
     from pyspark.sql import SparkSession
 

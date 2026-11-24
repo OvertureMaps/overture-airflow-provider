@@ -7,7 +7,6 @@ import runpy
 import socket
 import subprocess
 import sys
-import time
 import types
 from unittest.mock import MagicMock, patch
 
@@ -521,6 +520,18 @@ class TestSupervisor:
             proc.stdin.close()
             proc.stdout.close()
 
+    def test_needs_no_external_commands(self):
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", "pass"]),
+            stdin=subprocess.PIPE,
+            env={"PATH": "/nonexistent"},
+            start_new_session=True,
+        )
+        try:
+            assert proc.wait(timeout=10) == 0
+        finally:
+            proc.stdin.close()
+
     def test_returns_job_exit_code(self):
         proc = subprocess.Popen(
             _local.supervised_argv([sys.executable, "-c", "import sys; sys.exit(3)"]),
@@ -554,7 +565,9 @@ class TestCancel:
             if proc.poll() is None:
                 proc.kill()
 
-    def test_stops_group_left_by_dead_supervisor(self):
+    def test_leaves_unverified_group_of_dead_supervisor_alone(self):
+        # Once the recorded pid is gone its group id may belong to anything,
+        # so nothing in it is signalled.
         leader = subprocess.Popen(
             [
                 sys.executable,
@@ -567,27 +580,50 @@ class TestCancel:
             text=True,
             start_new_session=True,
         )
-        orphan = int(leader.stdout.readline())
+        survivor = int(leader.stdout.readline())
         leader.wait()
         leader.stdout.close()
         try:
             cancel_local_run(
                 "r", {"pid": leader.pid, "hostname": socket.gethostname(), "marker": "m"}
             )
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(orphan, 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.1)
-            else:
-                pytest.fail("orphaned job process survived cancel")
+            os.kill(survivor, 0)
         finally:
             try:
-                os.kill(orphan, 9)
+                os.kill(survivor, 9)
             except ProcessLookupError:
                 pass
+
+    def test_live_supervisor_stops_job_group_on_cancel(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
+        marker = "local-cancel-supervised-marker"
+        pid_file = tmp_path / "pid"
+        job = (
+            "import os, time; "
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+            "print('ready', flush=True); time.sleep(60)"
+        )
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", job, marker]),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            assert proc.stdout.readline().strip() == "ready"
+            cancel_local_run(
+                "r", {"pid": proc.pid, "hostname": socket.gethostname(), "marker": marker}
+            )
+            proc.wait(timeout=10)
+            with pytest.raises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, 9)
+                proc.wait()
+            proc.stdin.close()
+            proc.stdout.close()
 
     def test_skips_process_without_marker(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -797,6 +833,40 @@ def test_local_runner_sets_executor_env_as_jvm_properties(monkeypatch):
         extra_argv=["--executor_env_names", '["SECRET_VAR", "KEEP", "UNSET_VAR"]'],
     )
     assert props == {"spark.executorEnv.KEEP": "user", "spark.executorEnv.SECRET_VAR": "s3cr3t"}
+
+
+def test_local_runner_safeguards_apply_before_job_construction(monkeypatch):
+    props: dict = {}
+    system = MagicMock()
+    system.getProperty.side_effect = props.get
+    system.setProperty.side_effect = props.__setitem__
+    pyspark = types.ModuleType("pyspark")
+    pyspark.SparkContext = MagicMock()
+    pyspark.SparkContext._jvm.java.lang.System = system
+    monkeypatch.setitem(sys.modules, "pyspark", pyspark)
+    monkeypatch.setenv("SECRET_VAR", "s3cr3t")
+    seen = {}
+
+    class ConstructorJob:
+        def __init__(self):
+            builder = object()
+            master = sys.modules["pyspark.sql"].SparkSession.Builder.master
+            seen["master_kept"] = master(builder, "local[*]") is builder
+            seen["props"] = dict(props)
+
+        def run(self, params):
+            return None
+
+    _run_runner(
+        monkeypatch,
+        ConstructorJob,
+        connect=False,
+        extra_argv=["--executor_env_names", '["SECRET_VAR"]'],
+    )
+    assert seen == {
+        "master_kept": True,
+        "props": {"spark.executorEnv.SECRET_VAR": "s3cr3t"},
+    }
 
 
 def test_local_runner_rejects_platform_jobs_over_spark_connect(monkeypatch):

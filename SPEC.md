@@ -214,7 +214,7 @@ checks it.
 - Cluster sizing is ignored. `LocalSparkConfig.iceberg_spark_config`, when
   set, replaces the `IcebergConfig` values for LOCAL runs; the shared config
   is then not templated or parsed. With a templated `spark_impl_name`, the
-  shared config is shielded from task templating and rendered in
+  shared config is kept out of task templating and rendered once in
   `setup_cluster` only when the resolved platform uses it.
 
 ## Failure enrichment

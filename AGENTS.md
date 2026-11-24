@@ -138,8 +138,8 @@ free of Airflow and cloud SDK imports.
 `master` must start with `local`, `spark://` or `sc://`. Python packages must be
 pre-installed in `python_executable`; JARs come from `--packages`, so Iceberg
 runtime JARs go in `extra_packages`. `iceberg_spark_config`, when set, replaces
-the `IcebergConfig` values (with a templated impl, the shared config is shielded
-with `{% raw %}` and rendered in `setup_cluster` only if used). Sizing kwargs are
+the `IcebergConfig` values (with a templated impl, the shared config is kept out
+of op_kwargs and rendered once in `setup_cluster` only if used). Sizing kwargs are
 ignored. Never put `extra_spark_env_vars` values in process arguments. New `local_*` setup
 fields go through `_local.local_setup_info_fields` (shared by `_setup` and
 `render`) and `SERIALIZABLE_KEYS`.

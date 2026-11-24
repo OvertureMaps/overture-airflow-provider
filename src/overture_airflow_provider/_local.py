@@ -714,12 +714,23 @@ def _stop_orphaned_job(job_pgid_file: str | None, marker: str) -> None:
     if not _is_job_group_leader(pgid, marker):
         return
     log.warning("Stopping local Spark job group %s left running by its supervisor", pgid)
+    # Identity is checked once above; a group id is not reused while it has members,
+    # so descendants that outlive the leader are still this run's.
     _kill_process_group(pgid)
     deadline = time.monotonic() + _KILL_GRACE_SECONDS
-    while time.monotonic() < deadline and _is_job_group_leader(pgid, marker):
+    while time.monotonic() < deadline and _group_has_members(pgid):
         time.sleep(0.1)
-    if _is_job_group_leader(pgid, marker):
+    if _group_has_members(pgid):
         _kill_process_group(pgid, signal.SIGKILL)
+
+
+def _group_has_members(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        # ESRCH: empty. macOS reports EPERM when only zombies remain.
+        return False
+    return True
 
 
 def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
@@ -747,4 +758,7 @@ def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
     else:
         log.info("Local run %s supervisor (pid %s) is no longer running", run_id, pid)
     # Covers a supervisor killed with SIGKILL, here or earlier, before it stopped the job.
-    _stop_orphaned_job(extra.get("job_pgid_file"), marker)
+    job_pgid_file = extra.get("job_pgid_file")
+    _stop_orphaned_job(job_pgid_file, marker)
+    if job_pgid_file:
+        pathlib.Path(job_pgid_file).unlink(missing_ok=True)

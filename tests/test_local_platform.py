@@ -729,6 +729,52 @@ class TestCancel:
             proc.stdin.close()
             proc.stdout.close()
 
+    def test_stops_term_ignoring_descendant_after_leader_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
+        marker = "local-orphan-descendant-marker"
+        pgid_file = tmp_path / "job.pgid"
+        child_pid_file = tmp_path / "child.pid"
+        descendant = (
+            "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+        )
+        leader = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os, subprocess, sys, time; "
+                f"subprocess.Popen([sys.executable, '-c', {descendant!r}]); "
+                f"[time.sleep(0.05) for _ in range(100) if not os.path.exists({str(child_pid_file)!r})]; "
+                "print('ready', flush=True); time.sleep(60)",
+                marker,
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            assert leader.stdout.readline().strip() == "ready"
+            pgid_file.write_text(str(leader.pid))
+            cancel_local_run(
+                "r",
+                {
+                    "pid": 999999,
+                    "hostname": socket.gethostname(),
+                    "marker": marker,
+                    "job_pgid_file": str(pgid_file),
+                },
+            )
+            leader.wait(timeout=10)
+            child_pid = int(child_pid_file.read_text())
+            assert _gone(lambda: os.kill(child_pid, 0))
+            assert not pgid_file.exists()
+        finally:
+            try:
+                os.killpg(leader.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            leader.stdout.close()
+
     def test_leaves_job_group_without_marker_alone(self, tmp_path):
         pgid_file = tmp_path / "job.pgid"
         proc = subprocess.Popen(

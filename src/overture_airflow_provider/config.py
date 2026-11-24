@@ -396,8 +396,10 @@ class DatabricksConfig:
             (the provider's behavior before 0.15.0).
         data_security_mode: Written to ``new_cluster.data_security_mode``.
             Defaults to ``"NONE"`` (no-isolation shared, the provider's
-            historical behavior). Workspaces created on/after 2026-10-08 have
-            no-isolation clusters disabled; set e.g. ``"SINGLE_USER"``
+            historical behavior). Databricks provisions workspaces created on
+            or after 2026-10-08 without no-isolation clusters (see
+            https://docs.databricks.com/aws/en/admin/account-settings/legacy-features);
+            set e.g. ``"SINGLE_USER"``
             (dedicated access mode) there. The ``"NONE"`` default is legacy
             and is expected to change in a future major version (see
             OvertureMaps/overture-airflow-provider#87); set it explicitly to

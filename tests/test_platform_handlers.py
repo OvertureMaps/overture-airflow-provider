@@ -1338,20 +1338,17 @@ class TestDatabricksSetupCluster:
             "dbfs:/x/d.jar",
         ]
 
+    def test_init_script_cache_dir_overridable_and_dbfs_default(self):
+        from overture_airflow_provider.runner_assets import get_databricks_init_script_path
 
-def test_init_script_cache_dir_overridable_and_dbfs_default():
-    from overture_airflow_provider.runner_assets import get_databricks_init_script_path
-
-    script = get_databricks_init_script_path().read_text()
-    assert (
-        'CACHE_DIR="${SEDONA_CACHE_DIR:-/dbfs/databricks/shared/sedona/${SEDONA_VERSION}}"'
-        in script
-    )
-    # /dbfs is only reachable through the overridable default.
-    code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
-    assert [ln for ln in code if "/dbfs/" in ln] == [
-        code[code.index(ln)] for ln in code if "SEDONA_CACHE_DIR" in ln
-    ]
+        script = get_databricks_init_script_path().read_text()
+        default_line = (
+            'CACHE_DIR="${SEDONA_CACHE_DIR:-/dbfs/databricks/shared/sedona/${SEDONA_VERSION}}"'
+        )
+        assert default_line in script
+        # /dbfs is only reachable through the overridable default.
+        code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
+        assert [ln for ln in code if "/dbfs/" in ln] == [default_line]
 
     def test_databricks_spark_env_vars_merged_into_new_cluster(self):
         ev = self._run(databricks_spark_env_vars={"PLATFORM_TOKEN": "dbx-only"})

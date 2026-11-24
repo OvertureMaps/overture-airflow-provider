@@ -1298,6 +1298,61 @@ class TestDatabricksSetupCluster:
         )
         assert conf["new_cluster"]["spark_conf"]["spark.custom.platform"] == "from-extra"
 
+    def _cluster(self, jars="", **overrides):
+        handler = DatabricksPlatformHandler({**_databricks_setup_info(), **overrides})
+        handler.setup_info["py_pi_client"].get_url.return_value = "https://fake-pypi/simple/"
+        return handler.setup_cluster(
+            python_packages="",
+            spark_jar_paths=jars,
+            extra_spark_conf={},
+            extra_spark_env_vars="{}",
+            spark_cluster_desired_worker_cores="40",
+            spark_cluster_desired_workers="",
+            iceberg_spark_config=_mock_iceberg_rest(),
+        )
+
+    def test_default_cluster_security_unchanged(self):
+        nc = self._cluster()["new_cluster"]
+        assert nc["data_security_mode"] == "NONE"
+        assert "single_user_name" not in nc
+        assert "policy_id" not in nc
+
+    def test_security_overrides_land_on_new_cluster(self):
+        nc = self._cluster(
+            databricks_data_security_mode="SINGLE_USER",
+            databricks_single_user_name="app-id-123",
+            databricks_policy_id="POL1",
+        )["new_cluster"]
+        assert nc["data_security_mode"] == "SINGLE_USER"
+        assert nc["single_user_name"] == "app-id-123"
+        assert nc["policy_id"] == "POL1"
+
+    def test_jar_prefix_default_and_override(self):
+        jars = "a.jar,s3://b/c.jar,dbfs:/x/d.jar"
+        default = [x["jar"] for x in self._cluster(jars)["libraries"] if "jar" in x]
+        assert default == ["dbfs:/FileStore/deploy/a.jar", "s3://b/c.jar", "dbfs:/x/d.jar"]
+        custom = self._cluster(jars, databricks_jar_path_prefix="/Volumes/c/s/v/")["libraries"]
+        assert [x["jar"] for x in custom if "jar" in x] == [
+            "/Volumes/c/s/v/a.jar",
+            "s3://b/c.jar",
+            "dbfs:/x/d.jar",
+        ]
+
+
+def test_init_script_cache_dir_overridable_and_dbfs_default():
+    from overture_airflow_provider.runner_assets import get_databricks_init_script_path
+
+    script = get_databricks_init_script_path().read_text()
+    assert (
+        'CACHE_DIR="${SEDONA_CACHE_DIR:-/dbfs/databricks/shared/sedona/${SEDONA_VERSION}}"'
+        in script
+    )
+    # /dbfs is only reachable through the overridable default.
+    code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
+    assert [ln for ln in code if "/dbfs/" in ln] == [
+        code[code.index(ln)] for ln in code if "SEDONA_CACHE_DIR" in ln
+    ]
+
     def test_databricks_spark_env_vars_merged_into_new_cluster(self):
         ev = self._run(databricks_spark_env_vars={"PLATFORM_TOKEN": "dbx-only"})
         assert ev["new_cluster"]["spark_env_vars"]["PLATFORM_TOKEN"] == "dbx-only"

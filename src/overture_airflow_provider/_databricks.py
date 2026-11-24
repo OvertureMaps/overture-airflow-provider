@@ -325,13 +325,16 @@ def _build_agnostic_xcom_payload(setup_info: dict, *, job_url: str) -> str:
     )
 
 
-def _databricks_jar_libraries(spark_jar_paths: str) -> list:
+def _databricks_jar_libraries(
+    spark_jar_paths: str, jar_path_prefix: str = _DEFAULT_DBFS_JAR_PREFIX
+) -> list:
     """Parse caller-supplied JAR paths into Databricks library entries.
 
     ``spark_jar_paths`` is comma-separated. Entries already carrying a URI
     scheme (``dbfs:``, ``s3://``, ``s3a://``, ``http(s)://``, ``abfss://``,
     ``gs://``) are passed through verbatim; bare filenames are prefixed with
-    the default DBFS deploy path for backwards compatibility.
+    ``jar_path_prefix`` (default: the DBFS deploy path, for backwards
+    compatibility).
     """
     if not spark_jar_paths:
         return []
@@ -343,7 +346,7 @@ def _databricks_jar_libraries(spark_jar_paths: str) -> list:
         if "://" in jar or jar.startswith("dbfs:"):
             libraries.append({"jar": jar})
         else:
-            libraries.append({"jar": _DEFAULT_DBFS_JAR_PREFIX + jar})
+            libraries.append({"jar": jar_path_prefix + jar})
     return libraries
 
 
@@ -393,7 +396,10 @@ def setup_databricks_cluster(
             {"maven": {"coordinates": f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version}"}},
         ]
         + list(extra_libraries)
-        + _databricks_jar_libraries(spark_jar_paths)
+        + _databricks_jar_libraries(
+            spark_jar_paths,
+            setup_info.get("databricks_jar_path_prefix") or _DEFAULT_DBFS_JAR_PREFIX,
+        )
     )
 
     databricks_conf = setup_info["databricks_conf"]
@@ -462,7 +468,17 @@ def setup_databricks_cluster(
             **extra_spark_env_vars,
         },
         "runtime_engine": "STANDARD",
-        "data_security_mode": "NONE",
+        "data_security_mode": setup_info.get("databricks_data_security_mode") or "NONE",
+        **(
+            {"single_user_name": setup_info["databricks_single_user_name"]}
+            if setup_info.get("databricks_single_user_name")
+            else {}
+        ),
+        **(
+            {"policy_id": setup_info["databricks_policy_id"]}
+            if setup_info.get("databricks_policy_id")
+            else {}
+        ),
         "init_scripts": [{"workspace": {"destination": workspace_assets["init_script_path"]}}],
         "cluster_log_conf": cluster_log_conf,
         "custom_tags": custom_tags,

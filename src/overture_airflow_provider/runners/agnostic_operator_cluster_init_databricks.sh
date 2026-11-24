@@ -8,7 +8,9 @@
 # GEOTOOLS_VERSION, SPARK_VERSION, and SCALA_VERSION as cluster env vars).
 
 # Directories
-CACHE_DIR="/dbfs/databricks/shared/sedona/${SEDONA_VERSION}" # check if needed jars are available in this shared location from a previous job
+# Shared jar cache from previous jobs; override with SEDONA_CACHE_DIR (e.g. a
+# non-DBFS path) via DatabricksConfig.spark_env_vars.
+CACHE_DIR="${SEDONA_CACHE_DIR:-/dbfs/databricks/shared/sedona/${SEDONA_VERSION}}"
 LOCAL_TMP_DIR="/tmp/sedona_cache/${SEDONA_VERSION}"          # if cache doesn't have the jar, first download to /tmp because large downloads to /dbfs sometimes fail
 DEST_DIR="/databricks/jars"                                  # copy cached jars here for new clusters here, each cluster has their own /databricks/jars
 

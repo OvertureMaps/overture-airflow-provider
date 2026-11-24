@@ -413,13 +413,13 @@ class DatabricksConfig:
             that already carry a URI scheme are passed through verbatim. Point
             at a Unity Catalog volume or object-store path to avoid DBFS root.
             The DBFS default (like ``dbfs_root_template``) is legacy and is
-            expected to be replaced in a future major version (see OvertureMaps/overture-airflow-provider#87); set it explicitly
-            to stay stable across that change.
-            The bundled init script's shared Sedona jar cache defaults to
+            expected to be replaced in a future major version (see
+            OvertureMaps/overture-airflow-provider#87); set it explicitly to
+            stay stable across that change. The bundled init script's shared
+            Sedona jar cache defaults to
             ``/dbfs/databricks/shared/sedona/${SEDONA_VERSION}`` (same
-            transitional status); set the
-            ``SEDONA_CACHE_DIR`` env var via ``spark_env_vars`` to relocate it
-            off DBFS.
+            status); set the ``SEDONA_CACHE_DIR`` env var via
+            ``spark_env_vars`` to relocate it off DBFS.
         cluster_init_script_name: Filename of the cluster init script. Left at
             its default, the provider's bundled, Overture-free init script is
             used (auto-staged when ``stage_workspace_assets`` is on). Set a

@@ -217,7 +217,13 @@ class SparkAgnosticExecuteOperator(BaseOperator):
     def execute_complete(self, context, event=None):
         full = rehydrate(self.setup_info)
         handler = get_platform_handler(full["spark_family"], full)
-        result = handler.complete_job(event, context, cluster_info=self.cluster_info)
+        try:
+            result = handler.complete_job(event, context, cluster_info=self.cluster_info)
+        except (RetryableJobFailure, AirflowFailException):
+            raise
+        except AirflowException as exc:
+            # Match __fail__ resumption: a completed job failure is not safe to retry.
+            raise AirflowFailException(str(exc)) from None
         return self._finalize(context, result)
 
     def resume_execution(self, next_method, next_kwargs, context):

@@ -147,64 +147,50 @@ is more portable across platforms.
 
 ### matching_task_group and child_dag_run_task_group
 
-- `matching_task_group` is wiring only. Matcher arguments, data sources, sinks,
-  path layouts and domain vocabulary belong in the caller's factories, never in
-  `matching_taskgroup.py`.
-- `tables`, `input`, `baseline` and `matcher_task_factory` are required;
-  `pre_match_task_factory`, `provenance_task_factory` and `sink_task_factory`
-  are optional. There is no `runtime=`, `scenario=` or config class.
-- It returns `MatchingTasks(group, matcher, result_paths, complete)`, not a
-  TaskGroup. Wire `upstream >> result.group` and finalize after
-  `result.complete`. `complete` is the group's own task: it waits for `start`
-  and for every step, and forwards the last configured step's output.
-- Factories are called once, with keyword arguments, at DAG construction, inside
-  their own subgroup, and must build their tasks in that call (`_require_built`
-  rejects a task built elsewhere, which would wait for neither the earlier steps
-  nor a gate on the group). The matcher, provenance and sink factories return a
-  task output; the pre-match factory's return value is ignored. `input` and
-  `baseline` may be a zero-argument factory, held to the same rule; a task
-  output built elsewhere is passed directly.
-- Keep the explicit `>>` between step subgroups (`ready`): a factory may ignore
-  the outputs it is given or leave its own tasks unchained, and the next step
-  must still wait for all of them. A step waits for the previous step's leaves
-  and for its returned output; keep both, because the returned task need not be
-  a leaf.
-- Keep `trigger_rule=TriggerRule.ALL_SUCCESS` explicit on the provider's own
-  tasks (`start`, `paths`, `result_paths`, `complete`, `requests` and the
-  trigger). It is Airflow's default, but only an explicit value stops a
-  `trigger_rule` in a DAG's `default_args` from reaching them and letting a
-  gated-off group run. With it a failed or skipped step stops the later ones and
-  `complete` cannot succeed around it. `run_ids` in `child_dag_runs.py` and
-  `work_succeeded` in `matching_taskgroup.py` use
-  `NONE_FAILED_MIN_ONE_SUCCESS` to allow intentionally empty mapped requests.
-  `run_ids` still requires one run ID per request.
-- Keep `start` as the matching group's only root, and keep `steps >> complete`.
-  Keep `all_success` in the matching group's `default_args` too, so factory
-  tasks cannot inherit permissive trigger rules from a DAG or parent group.
-  Explicit factory-task or nested-group rules still take precedence and must
-  not allow gated work to run. `complete` waits directly for `start` and for
-  every step's leaves and returned output. It also waits for `work_succeeded`,
-  which checks every non-teardown task so successful `ALL_DONE` cleanup cannot
-  mask a failed non-leaf load. Do not replace this barrier with dependencies on
-  leaves alone or require success from intentionally empty mapped tasks.
-- Keep the `requests` staging task in `child_dag_runs.py`, and map the trigger
-  over it rather than over the caller's requests. It is the group's only root,
-  so a gate reaches every task even when the requests were built outside the
-  group, and it gives `run_ids` a successful upstream, so skipped triggers fail
-  that task instead of skipping it.
-- Map the trigger with `.expand(conf=...)`, not `expand_kwargs`. Airflow
-  does not render values resolved from a task output under `.expand`, so `"123"`
-  stays a string under native rendering; `expand_kwargs` renders them again.
-- A mapped task's output and a `.map()` result reach a task as a lazily read
-  sequence, not a list, and cannot be pushed as an XCom as they are. `_requests`
-  and `_complete` turn them into lists; keep that, and do not test for `list`.
-  Because the trigger maps over the staging task, the caller's requests may also
-  come from a custom XCom key. An empty list triggers nothing.
-- `child_dag_run_task_group` returns `ChildDagRuns(group, run_ids)`. The run ID
-  is set in `ChildDagRunOperator.execute` and paired with `reset_dag_run=True`;
-  keep both, or clearing a trigger fails on the existing run ID.
-- Wrap in-task contract checks with `_permanent` so a violation raises
-  `AirflowFailException` and is not retried.
+`matching_task_group` is wiring only. Matcher arguments, data sources, sinks,
+path layouts and domain vocabulary belong in the caller's factories, never in
+`matching_taskgroup.py`. It returns `MatchingTasks(group, result_paths)`, and
+callers write `upstream >> result.group >> finalize`. `child_dag_run_task_group`
+returns `ChildDagRuns(group, run_ids)`. The design is in
+[`SPEC.md`](SPEC.md#matching-workflow); these are the invariants to keep:
+
+- **One root, one leaf.** `start` is the matching group's only root and
+  `complete` its only leaf (teardowns aside); `requests` is the child-run
+  group's only root. That is what makes a gate on the group reach every task
+  and lets `group >> finalize` wait for completion. Do not add a second root,
+  and do not hand out `start` or `complete` as handles.
+- **Explicit `all_success`.** Keep `all_success` in the matching group's
+  `default_args` and explicitly on the provider's own tasks. It is Airflow's
+  default, but only an explicit value stops a `trigger_rule` in a DAG's
+  `default_args` from reaching them. The joins `run_ids` and `work_succeeded`
+  use `NONE_FAILED_MIN_ONE_SUCCESS` on purpose, to allow an empty request list
+  and branches that were not taken.
+- **`_require_gated`.** It rejects, at DAG construction, a factory task that a
+  skipped gate would not skip. Do not loosen it to accept other trigger rules;
+  cleanup belongs in a teardown.
+- **Explicit `>>` between steps.** A factory may ignore the outputs it is given
+  or leave its own tasks unchained, and the next step must still wait for all
+  of them. `_require_built` rejects a factory task built outside its call for
+  the same reason.
+- **The failure barrier.** `complete` waits for the leaves of every step and
+  for `work_succeeded`, which follows every non-teardown task. Do not replace
+  the barrier with dependencies on leaves alone: `_failure_barrier` explains how
+  a task can fail without any leaf failing, and
+  `test_a_failed_task_blocks_completion_even_when_the_last_tasks_succeed` shows
+  it. A setup task is followed through an `all_success` relay because Airflow
+  allows nothing else after a setup.
+- **The staged `requests` task.** Map the trigger over it, not over the
+  caller's requests, and with `.expand(conf=...)`, not `expand_kwargs`. Airflow
+  does not render values resolved from a task output under `.expand`, so
+  `"123"` stays a string under native rendering. A mapped task's output reaches
+  `_requests` as a lazily read sequence, which it turns into a list; do not
+  test for `list`.
+- **Stable child run IDs.** The run ID is set in `ChildDagRunOperator.execute`
+  and paired with `reset_dag_run=True`; keep both, or clearing a trigger fails
+  on the existing run ID. Keep `conf` in the digest: a reset run keeps its old
+  `conf`, so a changed request needs a new ID.
+- **Permanent contract errors.** Wrap in-task contract checks with `_permanent`
+  so a violation raises `AirflowFailException` and is not retried.
 
 ### Airflow compat shim
 

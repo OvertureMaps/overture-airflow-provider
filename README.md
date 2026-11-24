@@ -125,20 +125,22 @@ matching = matching_task_group(
     sink_task_factory=load_tables,
 )
 
-normalize >> matching.group
-finalize = finalize_source(matching.complete)
+source_changed >> matching.group >> finalize_source
 ```
 
-See [docs/matching.md](docs/matching.md) for the arguments, the factory
-contracts and failure handling, and
+A gate before the group skips all of it, and finalization after the group runs
+only when every step succeeded. See [docs/matching.md](docs/matching.md) for the
+arguments, the factory contracts, failure handling and the migration from the
+tf-data-platform matching group, and
 [`examples/example_matching_dag.py`](examples/example_matching_dag.py) for a
-multi-provider scaffold.
+four-provider scaffold.
 
 ## Child DAG runs
 
 `child_dag_run_task_group` triggers one run of another DAG per request, waits
 for each run, and returns the run IDs once every run has succeeded. Child run
-IDs are stable, so clearing a trigger reruns the same child run.
+IDs are stable and name the parent DAG and task, so clearing a trigger reruns
+the same child run.
 
 ```python
 from overture_airflow_provider import child_dag_run_task_group

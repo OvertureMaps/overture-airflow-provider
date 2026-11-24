@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -27,9 +28,18 @@ class ChildDagRuns:
     run_ids: XComArg
 
 
+# Airflow's default ``allowed_run_id_pattern`` and the length of its run ID column.
+_NOT_ALLOWED_IN_A_RUN_ID = re.compile(r"[^A-Za-z0-9_.~:+-]")
+_RUN_ID_LENGTH = 250
+_DIGEST_LENGTH = 12
+
+
 def child_run_id(dag_id: str, run_id: str, task_id: str, map_index: int, conf: Any) -> str:
+    """Name the parent trigger readably; the digest of its run and ``conf`` keeps the ID unique."""
     identity = json.dumps([dag_id, run_id, task_id, map_index, conf], sort_keys=True, default=str)
-    return "child__" + hashlib.sha256(identity.encode()).hexdigest()[:40]
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:_DIGEST_LENGTH]
+    origin = _NOT_ALLOWED_IN_A_RUN_ID.sub("_", f"child__{dag_id}__{task_id}__{map_index}")
+    return f"{origin[: _RUN_ID_LENGTH - _DIGEST_LENGTH - 2]}__{digest}"
 
 
 class ChildDagRunOperator(TriggerDagRunOperator):
@@ -87,7 +97,6 @@ def child_dag_run_task_group(
     trigger_dag_id: str,
     requests: Any,
     retries: int = 0,
-    max_active_tis_per_dagrun: int | None = None,
     **trigger_kwargs: Any,
 ) -> ChildDagRuns:
     """Trigger one child DAG run per request, wait for each, and return their run IDs.
@@ -100,14 +109,14 @@ def child_dag_run_task_group(
     A gate placed before ``group`` skips every task in it, wherever the requests
     were built.
 
-    Each child run ID is derived from the parent DAG run, the trigger task, the
-    request's position and its ``conf``. Clearing a trigger, or retrying it when
-    ``retries`` is raised, clears and reruns that same child run.
+    Each child run ID names the parent DAG, the trigger task and the request's
+    position, and ends in a digest of those, the parent run and the ``conf``.
+    Clearing a trigger, or retrying it when ``retries`` is raised, clears and
+    reruns that same child run.
 
-    ``max_active_tis_per_dagrun=1`` runs the requests one at a time. Other
-    keyword arguments (``pool``, ``deferrable``, ``poke_interval``, ...) go to
-    the trigger operator. A deferred trigger releases its pool slot unless the
-    pool counts deferred tasks.
+    Other keyword arguments (``pool``, ``deferrable``, ``poke_interval``,
+    ``max_active_tis_per_dagrun``, ...) go to the trigger operator. A deferred
+    trigger releases its pool slot unless the pool counts deferred tasks.
     """
     if not isinstance(requests, XComArg):
         if not isinstance(requests, (list, tuple)):
@@ -123,7 +132,6 @@ def child_dag_run_task_group(
             wait_for_completion=True,
             reset_dag_run=True,
             retries=retries,
-            max_active_tis_per_dagrun=max_active_tis_per_dagrun,
             **trigger_kwargs,
         ).expand(conf=staged)
         run_ids = _run_ids(trigger_dag_id, staged, XComArg(trigger, key="trigger_run_id"))

@@ -1,3 +1,4 @@
+import re
 from collections import UserList
 from datetime import datetime
 from types import SimpleNamespace
@@ -37,11 +38,11 @@ def test_triggers_wait_and_rerun_the_same_child_run():
     # Clearing a trigger must rerun its own child run, not fail on the existing run ID.
     assert trigger.partial_kwargs["reset_dag_run"] is True
     assert trigger.partial_kwargs["retries"] == 0
-    assert trigger.partial_kwargs["max_active_tis_per_dagrun"] is None
     assert defaults.group.group_id == "load"
     run_ids = defaults.run_ids.operator
     assert run_ids.task_id == "load.run_ids"
 
+    # Other keyword arguments reach the trigger operator as they are.
     tuned_kwargs = dag.get_task("export.trigger").partial_kwargs
     assert (tuned_kwargs["retries"], tuned_kwargs["max_active_tis_per_dagrun"]) == (2, 1)
     assert tuned_kwargs["pool"] == "serial"
@@ -81,7 +82,10 @@ def test_child_run_id_is_fixed_by_the_task_instance_and_its_conf(mocker):
         return operator.trigger_run_id
 
     first = run_id()
-    assert first.startswith("child__") and first == run_id()
+    # A retry is the same task instance, so it gets the same child run.
+    assert first == run_id() == run_id(try_number=2)
+    # The parent DAG, trigger task and map index are readable; the run and conf are in the digest.
+    assert re.fullmatch(r"child__parent__load\.trigger__0__[0-9a-f]{12}", first)
     others = [
         run_id(conf={"table": "division_area"}),
         run_id(map_index=1),
@@ -90,6 +94,11 @@ def test_child_run_id_is_fixed_by_the_task_instance_and_its_conf(mocker):
         run_id(dag_id="other_parent"),
     ]
     assert len({first, *others}) == 6
+    # Airflow limits a run ID's characters and length; the digest survives both.
+    long = [run_id(dag_id="párent" + "x" * length) for length in (300, 301)]
+    assert long[0] != long[1]
+    assert all(re.fullmatch(r"child__p_rentx+__[0-9a-f]{12}", value) for value in long)
+    assert {len(value) for value in long} == {250}
 
 
 def test_requests_must_be_a_list_of_conf_mappings():

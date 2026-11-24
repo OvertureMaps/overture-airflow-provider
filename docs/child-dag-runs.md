@@ -12,7 +12,6 @@ loads = child_dag_run_task_group(
     "load",
     trigger_dag_id="example_load_table",
     requests=load_requests(result_paths),
-    max_active_tis_per_dagrun=1,
 )
 
 upstream >> loads.group
@@ -26,8 +25,7 @@ finalize = finalize_source(loads.run_ids)
 | `trigger_dag_id` | The DAG to run. |
 | `requests` | The `conf` mapping of each child run: a list, or a task output resolving to one, a mapped task's output included. A task may return an empty list, which triggers nothing. A literal that is empty or not a list is rejected when the DAG is built, and a task output that is not a list of mappings fails the group without retries. |
 | `retries` | Retries of each trigger, `0` by default. A retry reruns the same child run. |
-| `max_active_tis_per_dagrun` | How many triggers may run at once. `1` runs the requests one at a time. |
-| other keywords | Passed to the trigger operator, for example `pool`, `deferrable` or `poke_interval`. |
+| other keywords | Passed to the trigger operator, for example `pool`, `deferrable`, `poke_interval`, or `max_active_tis_per_dagrun=1` to run the requests one at a time. |
 
 It returns `ChildDagRuns(group, run_ids)`. `run_ids` holds one run ID per
 request, and an empty list when there were no requests. A failed child run fails
@@ -39,12 +37,20 @@ change that: the group's tasks set their own.
 
 ## Run IDs and retries
 
-Each child run ID is derived from the parent DAG run, the trigger task, the
-request's position and its `conf`, and triggers set `reset_dag_run`. To retry
-after a child run fails, fix the cause and clear the failed trigger: the same
-child run is cleared and rerun instead of failing on the existing ID or starting
-a second run. Clearing a trigger that already succeeded reruns its child run
-too. The child runs are independent, so one failing does not undo the others.
+A child run ID reads
+`child__<parent DAG ID>__<trigger task ID>__<request position>__<digest>`, for
+example `child__divisions_ingest__linz.match.sink.load.trigger__0__3f9a1c2b7d40`.
+It shows which DAG and task started the run. The digest covers those, the parent
+run ID and the request's `conf`, so the same request in the same parent run
+always gets the same ID and a changed request gets a new one. Characters that
+Airflow's default run ID pattern does not allow are replaced with `_`, and the
+readable part is cut so the ID fits in 250 characters.
+
+Triggers set `reset_dag_run`. To retry after a child run fails, fix the cause
+and clear the failed trigger: the same child run is cleared and rerun instead of
+failing on the existing ID or starting a second run. Clearing a trigger that
+already succeeded reruns its child run too. The child runs are independent, so
+one failing does not undo the others.
 
 ## Requests, child output and pools
 
@@ -60,5 +66,17 @@ returned run ID in a task of your own.
 Triggers block a worker while they wait unless `deferrable=True`. A deferred
 trigger releases its pool slot unless the pool counts deferred tasks, so a pool
 that serialises child runs must count them.
+
+## Relation to `spawn_dag_task_group`
+
+tf-data-platform has its own helper for this, `spawn_dag_task_group`, with a
+separate trigger and waiting sensor per child run. This group is meant to
+replace it, so that one repository triggers a child DAG one way. It does not
+yet cover two things that helper does:
+
+- Dispatching a child run without waiting for it.
+- Giving the child run the parent's run date. `run_after` reaches the trigger
+  operator like any other keyword, but the operator does not render it as a
+  template.
 
 The design is described in [`SPEC.md`](../SPEC.md#child-dag-runs).

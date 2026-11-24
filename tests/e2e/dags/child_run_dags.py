@@ -37,19 +37,23 @@ with DAG(
     load()
 
 
-with DAG(
-    "provider_child_runs_parent",
-    schedule=None,
-    start_date=datetime(2026, 1, 1, tzinfo=UTC),
-    catchup=False,
-    default_args={"retries": 0},
-    dagrun_timeout=timedelta(minutes=3),
-) as parent:
-    child_dag_run_task_group(
-        "load",
-        trigger_dag_id=child.dag_id,
-        requests=requests(),
-        deferrable=False,
-        poke_interval=1,
-        execution_timeout=timedelta(minutes=2),
-    )
+for parent_id, deferrable in (
+    ("provider_child_runs_parent", False),
+    ("provider_child_runs_parent_deferrable", True),
+):
+    with DAG(
+        parent_id,
+        schedule=None,
+        start_date=datetime(2026, 1, 1, tzinfo=UTC),
+        catchup=False,
+        default_args={"retries": 0},
+        dagrun_timeout=timedelta(minutes=3),
+    ):
+        child_dag_run_task_group(
+            "load",
+            trigger_dag_id=child.dag_id,
+            requests=requests(),
+            deferrable=deferrable,
+            poke_interval=1,
+            execution_timeout=timedelta(minutes=2),
+        )

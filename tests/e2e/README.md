@@ -34,22 +34,18 @@ AIRFLOW_VERSION=3.3.1 PYTHON_VERSION=3.12 docker compose run --rm --build e2e
 | `docker-compose.yaml` | `e2e` one-shot service and an opt-in `standalone` service (Airflow UI) under the `manual` profile. |
 | `run-e2e.sh` | In-container entrypoint: `airflow db migrate` -> `airflow dags reserialize` (real parse) -> `pytest`. |
 | `test_dag_e2e.py` | The assertions: no import errors, DAG + provider + extra-links registered, task-group expansion + dependency edges, lazy-import purity, setup-task execution, and the setup_info XCom round-trip. |
-| `test_matching_e2e.py` | Real `dag.test()` execution of nested matching instances whose sink is a `child_dag_run_task_group`, with simulated child runs: changed/unchanged providers, an empty request list, a string request value in a natively rendered DAG, pre-match/matcher/provenance/child-run failures, a matcher that skips, a trigger skipped before it has a run ID, and a failing or skipped task that an input or sink factory left unchained. A second test covers a sink that returns a mapped task's output or a `.map()` result, and changed, unchanged and failed source gates under permissive DAG and parent-group defaults; an unchanged source skips every task in its matching group. |
+| `test_matching_e2e.py` | Real `dag.test()` execution of matching groups, with simulated child runs. Nested instances whose sink is a `child_dag_run_task_group`: changed and unchanged providers, an empty request list, a string request value in a natively rendered DAG, failures in each step, a matcher that skips, a trigger skipped before it has a run ID, and a failing or skipped task that a factory left unchained. Failures that no last task of a step shows (behind a join, after a branch, in a setup, before a teardown) still block completion. A branch with a join finishes a step early; a short-circuit and an empty mapped task do not. Changed, unchanged and failed source gates under permissive DAG and parent-group defaults reach every task, a setup and its teardown included. Providers chained one after another: an unchanged one releases the next and a failed one holds the rest. |
 | `test_child_dag_runs_e2e.py` | Real `dag.test()` execution of `child_dag_run_task_group` on its own, for literal requests and for requests built outside the group by a task, a mapped task or `.map()`: a gated-off group (also under permissive `default_args`), an empty list, triggers that skip, and a request value that is not a list. |
-| `test_child_dag_runs_integration.py` / `dags/child_run_dags.py` | An isolated `airflow standalone` stack executes actual parent and child DAGs without mocking the trigger operator. It checks that the parent waits, propagates child failures, and reruns the same child IDs after clearing either a successful or failed trigger. |
+| `test_child_dag_runs_integration.py` / `dags/child_run_dags.py` | An isolated `airflow standalone` stack executes actual parent and child DAGs without mocking the trigger operator, once with blocking triggers and once with deferrable ones. It checks that the parent waits, propagates child failures, and reruns the same child IDs after clearing either a successful or failed trigger. |
 | `run.sh` / `run.ps1` | Host sugar over `docker compose` (`e2e` \| `all` \| `standalone`). |
 
 Platform SDKs (`databricks-sdk`, `wherobots`) are deliberately **not** installed,
 so the example DAG parsing with all three platforms present is a hard gate on the
 lazy-import architecture (no eager Airflow/SDK imports at DAG-parse time).
 The matching scaffold parses the same way: its Spark matcher job is built
-without credentials or optional SDKs.
-Its source gate, metadata writer and finalization placeholders are not executed;
-the scheduler-state tests inject their own factories, simulate the child-run
-triggers and require no cloud access.
-Matching execution tests also cover failed non-leaf work followed by successful
-`ALL_DONE` cleanup in every factory step; completion and source finalization
-must remain blocked.
+without credentials or optional SDKs. Its source gate, metadata writer and
+finalization placeholders are not executed; the scheduler-state tests inject
+their own factories, simulate the child-run triggers and need no cloud access.
 
 ## Run the full unit suite under real Airflow
 

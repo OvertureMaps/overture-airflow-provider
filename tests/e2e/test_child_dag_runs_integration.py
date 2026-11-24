@@ -15,12 +15,12 @@ import pytest
 from overture_airflow_provider.child_dag_runs import child_run_id
 
 pytestmark = pytest.mark.e2e
-PARENT = "provider_child_runs_parent"
 CHILD = "provider_child_runs_child"
 
 
-@pytest.fixture
-def real_airflow(tmp_path):
+@pytest.fixture(scope="module")
+def real_airflow(tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp("airflow")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -92,7 +92,14 @@ def real_airflow(tmp_path):
                 service.wait(timeout=10)
 
 
-def test_real_child_runs_and_cleared_trigger_reruns(real_airflow, tmp_path):
+@pytest.mark.parametrize(
+    "parent,waiting",
+    [
+        ("provider_child_runs_parent", "running"),
+        ("provider_child_runs_parent_deferrable", "deferred"),
+    ],
+)
+def test_real_child_runs_and_cleared_trigger_reruns(real_airflow, tmp_path, parent, waiting):
     cli, rows, wait_for = real_airflow
     release = tmp_path / "release"
     recovery = tmp_path / "recovery"
@@ -119,11 +126,12 @@ def test_real_child_runs_and_cleared_trigger_reruns(real_airflow, tmp_path):
             "release_file": str(release),
             "recovery_file": str(recovery),
         }
-        expected_id = child_run_id(PARENT, parent_run, "load.trigger", 0, conf)
+        expected_id = child_run_id(parent, parent_run, "load.trigger", 0, conf)
+        assert expected_id.startswith(f"child__{parent}__load.trigger__0__")
         cli(
             "dags",
             "trigger",
-            PARENT,
+            parent,
             "--run-id",
             parent_run,
             "--logical-date",
@@ -133,14 +141,16 @@ def test_real_child_runs_and_cleared_trigger_reruns(real_airflow, tmp_path):
         )
         if not fail:
             wait_for(lambda run_id=expected_id: task_state(CHILD, run_id, "load") == "running")
-            assert task_state(PARENT, parent_run, "load.trigger") == "running"
-            assert task_state(PARENT, parent_run, "load.run_ids") is None
+            wait_for(
+                lambda run_id=parent_run: task_state(parent, run_id, "load.trigger") == waiting
+            )
+            assert task_state(parent, parent_run, "load.run_ids") is None
             release.touch()
         expected_state = "failed" if fail else "success"
-        wait_for(lambda run_id=parent_run, state=expected_state: run_state(PARENT, run_id) == state)
+        wait_for(lambda run_id=parent_run, state=expected_state: run_state(parent, run_id) == state)
         assert run_state(CHILD, expected_id) == expected_state
-        assert task_state(PARENT, parent_run, "load.trigger") == expected_state
-        assert task_state(PARENT, parent_run, "load.run_ids") == (
+        assert task_state(parent, parent_run, "load.trigger") == expected_state
+        assert task_state(parent, parent_run, "load.run_ids") == (
             "upstream_failed" if fail else "success"
         )
         before = rows(
@@ -153,7 +163,7 @@ def test_real_child_runs_and_cleared_trigger_reruns(real_airflow, tmp_path):
         cli(
             "tasks",
             "clear",
-            PARENT,
+            parent,
             "--task-regex",
             "load.trigger",
             "--downstream",
@@ -173,16 +183,18 @@ def test_real_child_runs_and_cleared_trigger_reruns(real_airflow, tmp_path):
                 > tries
             )
         )
-        wait_for(lambda run_id=parent_run: run_state(PARENT, run_id) == "success")
+        wait_for(lambda run_id=parent_run: run_state(parent, run_id) == "success")
         assert run_state(CHILD, expected_id) == "success"
-        assert task_state(PARENT, parent_run, "load.run_ids") == "success"
+        assert task_state(parent, parent_run, "load.run_ids") == "success"
         recovery.unlink()
 
     assert {
-        row["run_id"] for row in rows("SELECT run_id FROM dag_run WHERE dag_id = ?", (CHILD,))
+        row["run_id"]
+        for row in rows("SELECT run_id FROM dag_run WHERE dag_id = ?", (CHILD,))
+        if row["run_id"].startswith(f"child__{parent}__")
     } == {
         child_run_id(
-            PARENT,
+            parent,
             parent_run,
             "load.trigger",
             0,

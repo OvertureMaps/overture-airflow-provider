@@ -35,7 +35,13 @@ def get_provider_info() -> dict:
                 "python-modules": [
                     "overture_airflow_provider.spark_agnostic_taskgroup",
                 ],
-            }
+            },
+            {
+                "integration-name": "Child DAG runs",
+                "python-modules": [
+                    "overture_airflow_provider.child_dag_runs",
+                ],
+            },
         ],
         "extra-links": [
             "overture_airflow_provider.links.SparkJobLink",

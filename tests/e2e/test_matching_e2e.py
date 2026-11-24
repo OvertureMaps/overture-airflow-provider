@@ -1,5 +1,6 @@
 """Run matching groups through real Airflow scheduling, with simulated child DAG runs."""
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -73,8 +74,8 @@ def load_requests(provider, result_paths, load):
 
 
 @task
-def finalized(completion):
-    return completion
+def finalized():
+    return "finalized"
 
 
 @pytest.mark.parametrize(
@@ -121,11 +122,11 @@ def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load
     def sink_factory(provider):
         def build(*, result_paths):
             side("sink", failure)
-            return child_dag_run_task_group(
+            child_dag_run_task_group(
                 "load",
                 trigger_dag_id="simulated_load",
                 requests=load_requests(provider, result_paths, load),
-            ).run_ids
+            )
 
         return build
 
@@ -135,6 +136,7 @@ def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load
         start_date=datetime(2026, 1, 1, tzinfo=UTC),
         default_args={"retries": 0},
         render_template_as_native_obj=True,
+        params={"baseline": json.dumps({table: f"s3://baseline/type={table}" for table in TABLES})},
     ) as dag:
         completions = []
         with TaskGroup("providers"):
@@ -145,7 +147,7 @@ def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load
                         group_id="arbitrary",
                         tables=TABLES,
                         input=input_factory(provider),
-                        baseline={table: f"s3://baseline/type={table}" for table in TABLES},
+                        baseline="{{ params.baseline }}",
                         pre_match_task_factory=lambda **paths: check_inputs(
                             **paths, failure=failure
                         ),
@@ -155,8 +157,9 @@ def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load
                         provenance_task_factory=lambda **paths: publish(**paths, failure=failure),
                         sink_task_factory=sink_factory(provider),
                     )
-                    gate >> result.group
-                    completions.append(finalized(result.complete))
+                    final = finalized()
+                    gate >> result.group >> final
+                    completions.append(final)
         ingest_done = EmptyOperator(task_id="ingest_done", trigger_rule=TriggerRule.NONE_FAILED)
         completions >> ingest_done
 
@@ -205,33 +208,33 @@ def test_matching_execution_states(monkeypatch, run_dag, failure, selected, load
     assert versions <= {"123"}
     run_ids = [run_id for *_, run_id in loads]
     assert len(set(run_ids)) == len(run_ids)
-    assert all(run_id.startswith("child__") for run_id in run_ids)
+    assert all(
+        run_id.startswith(f"child__{dag.dag_id}__{task_id}__") for task_id, *_, run_id in loads
+    )
 
 
-@pytest.mark.parametrize(
-    "failed_step", ["input", "baseline", "pre_match", "matcher", "provenance", "sink"]
-)
-def test_completion_rejects_failed_non_leaf_work(run_dag, failed_step):
-    @task
-    def work(fail):
-        if fail:
-            raise ValueError("simulated non-leaf failure")
+@task
+def work(result_paths=None):
+    return "done"
 
-    @task(trigger_rule=TriggerRule.ALL_DONE)
-    def cleanup(value):
-        return value
 
-    def factory(step, value):
-        def build(**paths):
-            output = cleanup(value)
-            work(step == failed_step) >> output
-            return output
+@task
+def fails():
+    raise ValueError("simulated failure")
 
-        return build
 
-    paths = {table: f"s3://example/type={table}" for table in TABLES}
+@task
+def skips():
+    raise AirflowSkipException("simulated skip")
+
+
+JOIN = TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
+PATHS = {table: f"s3://example/type={table}" for table in TABLES}
+
+
+def run_with_sink(run_dag, name, sink):
     with DAG(
-        f"matching_non_leaf_failure_{failed_step}",
+        f"matching_sink_{name}",
         schedule=None,
         start_date=datetime(2026, 1, 1, tzinfo=UTC),
         default_args={"retries": 0},
@@ -239,40 +242,131 @@ def test_completion_rejects_failed_non_leaf_work(run_dag, failed_step):
         result = matching_task_group(
             "matching",
             tables=TABLES,
-            input=factory("input", paths),
-            baseline=factory("baseline", paths),
-            pre_match_task_factory=factory("pre_match", None),
-            matcher_task_factory=factory("matcher", paths),
-            provenance_task_factory=factory("provenance", "published"),
-            sink_task_factory=factory("sink", "stored"),
+            input=PATHS,
+            baseline=PATHS,
+            matcher_task_factory=lambda **paths: fake_match(**paths, provider="x", failure=""),
+            sink_task_factory=sink,
         )
-        finalized(result.complete)
-
+        (
+            result.group
+            >> finalized()
+            >> EmptyOperator(task_id="ingest_done", trigger_rule=TriggerRule.NONE_FAILED)
+        )
     run = run_dag(dag)
-    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
-    assert states[f"matching.{failed_step}.work"] == "failed"
-    assert states[f"matching.{failed_step}.cleanup"] == "success"
-    assert states["matching.complete"] == states["finalized"] == "upstream_failed"
+    return run, {ti.task_id: ti.state for ti in run.get_task_instances() if ti.map_index == -1}
+
+
+def failure_behind_a_join(*, result_paths):
+    # `load` is skipped as soon as `skipped` is, before `late_failure` has failed.
+    late_failure = fails.override(task_id="late_failure")()
+    work.override(task_id="takes_a_while")() >> late_failure
+    load = work.override(task_id="load")(result_paths)
+    [skips(), late_failure] >> load
+    [load, work.override(task_id="other")()] >> EmptyOperator(task_id="end", trigger_rule=JOIN)
+
+
+def failure_after_a_branch(*, result_paths):
+    # A branch chooses not to load; the task that the load also waits for fails afterwards.
+    @task.branch
+    def decide():
+        return "matching.sink.no_op"
+
+    create_branch = fails.override(task_id="create_branch")()
+    work.override(task_id="takes_a_while")() >> create_branch
+    requests = load_requests("x", result_paths, True)
+    loads = child_dag_run_task_group("load", trigger_dag_id="simulated_load", requests=requests)
+    no_op = EmptyOperator(task_id="no_op")
+    decide() >> [requests, no_op]
+    create_branch >> loads.group
+    [loads.group, no_op] >> EmptyOperator(task_id="end", trigger_rule=JOIN)
+
+
+def failed_setup_after_a_branch(*, result_paths):
+    # The same with a setup, which Airflow only lets `all_success` tasks follow.
+    @task.branch
+    def decide():
+        return "matching.sink.no_op"
+
+    register = fails.override(task_id="register")().as_setup()
+    work.override(task_id="takes_a_while")() >> register
+    requests = work.override(task_id="requests")(result_paths)
+    load = work.override(task_id="load")()
+    no_op = EmptyOperator(task_id="no_op")
+    decide() >> [requests, no_op]
+    (
+        [requests, register]
+        >> load
+        >> work.override(task_id="deregister")().as_teardown(setups=register)
+    )
+    [load, no_op] >> EmptyOperator(task_id="end", trigger_rule=JOIN)
+
+
+def failure_before_a_teardown(*, result_paths):
+    fails.override(task_id="load")() >> work.override(task_id="end")().as_teardown()
+
+
+@pytest.mark.parametrize(
+    "sink,failed",
+    [
+        (failure_behind_a_join, "late_failure"),
+        (failure_after_a_branch, "create_branch"),
+        (failed_setup_after_a_branch, "register"),
+        (failure_before_a_teardown, "load"),
+    ],
+)
+def test_a_failed_task_blocks_completion_even_when_the_last_tasks_succeed(run_dag, sink, failed):
+    run, states = run_with_sink(run_dag, sink.__name__, sink)
+    assert states[f"matching.sink.{failed}"] == "failed"
+    # The step's last task succeeded all the same: only the failure barrier holds completion.
+    assert states["matching.sink.end"] == "success"
+    assert states["matching.work_succeeded"] == "upstream_failed"
+    for task_id in ("matching.complete", "finalized", "ingest_done"):
+        assert states[task_id] == "upstream_failed"
     assert run.state == "failed"
+
+
+def branch_to_a_no_op(*, result_paths):
+    @task.branch
+    def decide():
+        return "matching.sink.no_op"
+
+    load = work.override(task_id="load")(result_paths)
+    no_op = EmptyOperator(task_id="no_op")
+    decide() >> [load, no_op] >> EmptyOperator(task_id="end", trigger_rule=JOIN)
+
+
+def short_circuit(*, result_paths):
+    @task.short_circuit(ignore_downstream_trigger_rules=False)
+    def should_load():
+        return False
+
+    load = work.override(task_id="load")(result_paths)
+    should_load() >> load >> EmptyOperator(task_id="end", trigger_rule=JOIN)
+
+
+def map_over_nothing(*, result_paths):
+    @task
+    def nothing_to_store(result_paths):
+        return []
+
+    work.override(task_id="end").expand(result_paths=nothing_to_store(result_paths))
+
+
+@pytest.mark.parametrize(
+    "sink,completion",
+    [(branch_to_a_no_op, "success"), (short_circuit, "skipped"), (map_over_nothing, "skipped")],
+)
+def test_only_a_branch_with_a_join_finishes_a_step_early(run_dag, sink, completion):
+    run, states = run_with_sink(run_dag, sink.__name__, sink)
+    assert states["matching.sink.end"] == completion
+    assert states["matching.complete"] == states["finalized"] == completion
+    # A skip is not a completion, and it does not fail the run either.
+    assert run.state == "success"
 
 
 @task
 def store(table):
     return f"stored {table}"
-
-
-@task
-def result_tables(result_paths):
-    return sorted(result_paths)
-
-
-def stored(table):
-    return f"stored {table}"
-
-
-@task
-def expect(value, expected):
-    assert value == expected, value
 
 
 @task
@@ -283,59 +377,93 @@ def source_gate(state):
         raise ValueError("simulated source check failure")
 
 
+def store_between_setup_and_teardown(*, result_paths):
+    prepare = work.override(task_id="prepare")().as_setup()
+    tidy = work.override(task_id="tidy")().as_teardown(setups=prepare)
+    prepare >> store.expand(table=list(TABLES)) >> tidy
+
+
 @pytest.mark.parametrize("source_state", ["changed", "unchanged", "failed"])
-def test_completion_with_mapped_outputs_and_permissive_default_args(run_dag, source_state):
-    # Both sinks return an output that is read lazily: a mapped task's, and a ``.map()`` result.
-    sinks = {
-        "mapped": lambda *, result_paths: store.expand(table=list(TABLES)),
-        "map": lambda *, result_paths: result_tables(result_paths).map(stored),
-    }
-
-    def group(name, sink, exported=False):
-        return matching_task_group(
-            name,
-            tables=TABLES,
-            input=(lambda: export(name))
-            if exported
-            else {table: f"s3://feeds/{name}/type={table}" for table in TABLES},
-            baseline=(lambda: export("baseline"))
-            if exported
-            else {table: f"s3://baseline/type={table}" for table in TABLES},
-            pre_match_task_factory=lambda **paths: check_inputs(**paths, failure=""),
-            matcher_task_factory=lambda **paths: fake_match(**paths, provider=name, failure=""),
-            provenance_task_factory=lambda **paths: publish(**paths, failure=""),
-            sink_task_factory=sink,
-        )
-
+def test_source_gates_under_permissive_default_args(run_dag, source_state):
     with DAG(
-        f"matching_completion_{source_state}",
+        f"matching_gate_{source_state}",
         schedule=None,
         start_date=datetime(2026, 1, 1, tzinfo=UTC),
         default_args={"retries": 0, "trigger_rule": TriggerRule.NONE_FAILED},
     ) as dag:
-        for name, sink in sinks.items():
-            complete = group(name, sink).complete
-            expect.override(task_id=f"{name}_finalized")(
-                complete, [f"stored {table}" for table in TABLES]
-            )
         with TaskGroup("permissive", default_args={"trigger_rule": TriggerRule.ALL_DONE}):
-            gated = group("gated", sinks["mapped"], exported=True)
+            gated = matching_task_group(
+                "gated",
+                tables=TABLES,
+                input=lambda: export("gated"),
+                baseline=lambda: export("baseline"),
+                pre_match_task_factory=lambda **paths: check_inputs(**paths, failure=""),
+                matcher_task_factory=lambda **paths: fake_match(
+                    **paths, provider="gated", failure=""
+                ),
+                provenance_task_factory=lambda **paths: publish(**paths, failure=""),
+                sink_task_factory=store_between_setup_and_teardown,
+            )
             source_gate(source_state) >> gated.group
-        finalized.override(task_id="gated_finalized", trigger_rule=TriggerRule.ALL_SUCCESS)(
-            gated.complete
-        )
+        gated.group >> finalized.override(trigger_rule=TriggerRule.ALL_SUCCESS)()
 
     run = run_dag(dag)
     assert run.state == ("failed" if source_state == "failed" else "success")
-    states = {ti.task_id: ti.state for ti in run.get_task_instances() if ti.map_index == -1}
-    for name in sinks:
-        assert states[f"{name}.complete"] == states[f"{name}_finalized"] == "success"
     expected = {
         "changed": "success",
         "unchanged": "skipped",
         "failed": "upstream_failed",
     }[source_state]
+    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
     assert {
-        ti.state for ti in run.get_task_instances() if ti.task_id.startswith("permissive.gated.")
+        state for task_id, state in states.items() if task_id.startswith("permissive.gated.")
     } == {expected}
-    assert states["gated_finalized"] == expected
+    assert states["finalized"] == expected
+
+
+def test_providers_take_turns_and_a_failed_one_holds_the_rest(run_dag):
+    # The scaffold's chain: each provider waits for the one before it to finish or be skipped.
+    outcomes = {"unchanged": "", "matched": "", "broken": "matcher", "held": ""}
+    with DAG(
+        "matching_turns",
+        schedule=None,
+        start_date=datetime(2026, 1, 1, tzinfo=UTC),
+        default_args={"retries": 0},
+    ) as dag:
+        sources = []
+        previous_done = None
+        for provider, failure in outcomes.items():
+            with TaskGroup(provider) as source:
+                result = matching_task_group(
+                    "match",
+                    tables=TABLES,
+                    input=PATHS,
+                    baseline=PATHS,
+                    matcher_task_factory=lambda provider=provider, failure=failure, **paths: (
+                        fake_match(**paths, provider=provider, failure=failure)
+                    ),
+                )
+                changed(provider != "unchanged") >> result.group >> finalized()
+            if previous_done is not None:
+                previous_done >> result.group
+            previous_done = EmptyOperator(
+                task_id=f"{provider}_done", trigger_rule=TriggerRule.NONE_FAILED
+            )
+            source >> previous_done
+            sources.append(source)
+        sources >> EmptyOperator(task_id="ingest_done", trigger_rule=TriggerRule.NONE_FAILED)
+
+    run = run_dag(dag)
+    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+    assert {
+        provider: (states[f"{provider}.match.start"], states[f"{provider}.finalized"])
+        for provider in outcomes
+    } == {
+        "unchanged": ("skipped", "skipped"),
+        "matched": ("success", "success"),
+        "broken": ("success", "upstream_failed"),
+        "held": ("upstream_failed", "upstream_failed"),
+    }
+    assert states["unchanged_done"] == states["matched_done"] == "success"
+    assert states["broken_done"] == states["ingest_done"] == "upstream_failed"
+    assert run.state == "failed"

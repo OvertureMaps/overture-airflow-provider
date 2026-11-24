@@ -2,9 +2,10 @@
 
 Each provider gets its own matching group: a Spark job matches the provider's
 data against a baseline, the matching metadata is published, and every result
-table is loaded by a child DAG run. Replace the source gate, the metadata
-publisher and the source finalizer with pipeline tasks before running, and point
-the Spark job and the load DAG at real ones.
+table is loaded by a child DAG run. The providers match against and load the
+same tables, so they take turns. Replace the source gate, the metadata publisher
+and the source finalizer with pipeline tasks before running, and point the Spark
+job and the load DAG at real ones.
 """
 
 import json
@@ -26,6 +27,7 @@ from overture_airflow_provider._airflow_compat import (
     task,
 )
 
+PROVIDERS = ("osm", "linz", "dados_abertos", "geoboundaries")
 TABLES = ("division", "division_area")
 
 _MATCHER_JOB = dict(
@@ -94,18 +96,17 @@ def load_tables(provider):
     """Return a sink factory that loads every result table with a child DAG run."""
 
     def build(*, result_paths):
-        loads = child_dag_run_task_group(
+        child_dag_run_task_group(
             "load",
             trigger_dag_id="example_load_table",
             requests=load_requests(provider, result_paths),
         )
-        return loads.run_ids
 
     return build
 
 
 @task
-def finalize_source(load_run_ids):
+def finalize_source(provider):
     raise NotImplementedError("Replace with the pipeline's source completion marker")
 
 
@@ -116,28 +117,31 @@ with DAG(
     catchup=False,
     tags=["example", "matching"],
 ) as dag:
-    completed = []
-    with TaskGroup("providers"):
-        for provider in ("osm", "linz"):
-            with TaskGroup(provider):
-                changed = source_changed(provider)
-                matching = matching_task_group(
-                    group_id="match",
-                    tables=TABLES,
-                    input={
-                        table: f"s3://example-bucket/{provider}/data/type={table}"
-                        for table in TABLES
-                    },
-                    baseline={
-                        table: f"s3://example-bucket/baseline/type={table}" for table in TABLES
-                    },
-                    matcher_task_factory=matcher_job(
-                        f"s3://example-bucket/matching/{provider}/{{{{ run_id }}}}"
-                    ),
-                    provenance_task_factory=publish_matching_metadata,
-                    sink_task_factory=load_tables(provider),
-                )
-                changed >> matching.group
-                completed.append(finalize_source(matching.complete))
-    ingest_done = EmptyOperator(task_id="ingest_done", trigger_rule=TriggerRule.NONE_FAILED)
-    completed >> ingest_done
+    sources = []
+    previous_done = None
+    for provider in PROVIDERS:
+        with TaskGroup(provider) as source:
+            matching = matching_task_group(
+                group_id="match",
+                tables=TABLES,
+                input={
+                    table: f"s3://example-bucket/{provider}/data/type={table}" for table in TABLES
+                },
+                baseline={table: f"s3://example-bucket/baseline/type={table}" for table in TABLES},
+                matcher_task_factory=matcher_job(
+                    f"s3://example-bucket/matching/{provider}/{{{{ run_id }}}}"
+                ),
+                provenance_task_factory=publish_matching_metadata,
+                sink_task_factory=load_tables(provider),
+            )
+            source_changed(provider) >> matching.group >> finalize_source(provider)
+        if previous_done is not None:
+            previous_done >> matching.group
+        # NONE_FAILED lets an unchanged provider release the next one; a failed one holds it.
+        previous_done = EmptyOperator(
+            task_id=f"{provider}_done", trigger_rule=TriggerRule.NONE_FAILED
+        )
+        source >> previous_done
+        sources.append(source)
+    # Succeeds when every provider is finalized or unchanged; assemble after this.
+    sources >> EmptyOperator(task_id="ingest_done", trigger_rule=TriggerRule.NONE_FAILED)

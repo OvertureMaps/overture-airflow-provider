@@ -35,9 +35,9 @@ Spark entry points, both Airflow `@task_group`-decorated factories:
   of per-invocation configs.
 
 `matching_task_group(...)` is an additive workflow factory returning
-`MatchingTasks(group, matcher, result_paths, complete)`. Every step except path
-checking is a factory supplied by the caller, so it adds no configuration
-classes and no platform dispatch.
+`MatchingTasks(group, result_paths)`. Every step except path checking is a
+factory supplied by the caller, so it adds no configuration classes and no
+platform dispatch.
 
 `child_dag_run_task_group(...)` returns `ChildDagRuns(group, run_ids)`: one
 child DAG run per request, each with a stable run ID.
@@ -134,70 +134,77 @@ side.
 ## Matching workflow
 
 ```
-start ─┬─► input paths ────┐
-       │                   ├─► optional pre-match check ─► matcher ─► checked result paths
-       └─► baseline paths ─┘                                                  │
-                                                                  optional provenance task
-                                                                              │
-                                                                        optional sink
-                                                                              │
-                                              start and every step ──────► complete
-                                              all non-teardown work ─► work_succeeded ─┘
+gate ─► start ─┬─► input paths ────┐
+               │                   ├─► [pre-match] ─► matcher ─► result_paths ─► [provenance] ─► [sink]
+               └─► baseline paths ─┘
+
+the last tasks of every step ───────────► complete ─► finalize
+every non-teardown task ─► work_succeeded ───┘
 ```
 
 `matching_taskgroup.py` only wires. `input` and `baseline` are `{table: path}`
 maps, given directly, as a task output, or built by a zero-argument factory; a
-`paths` task checks each against `tables`. The matcher, the pre-match check, the
-provenance task and the sink are caller-supplied factories. Each is called once
-at DAG construction, inside its own subgroup, and must build its tasks there;
-the matcher, provenance and sink factories return a task output.
-`result_paths` checks that the matcher's results cover exactly the requested
-tables. The module has no platform dispatch and no domain vocabulary: the
-matcher's arguments and output layout, the metadata that is published and what
-the sink does all belong to the factories.
+`paths` task checks each against `tables`. The pre-match check, the matcher, the
+provenance step and the sink are caller-supplied factories. Each is called once
+at DAG construction, inside its own subgroup, and must build its tasks there.
+The matcher factory returns the task output holding its results, and
+`result_paths` checks that they cover exactly the requested tables. The module
+has no platform dispatch and no domain vocabulary: the matcher's arguments and
+output layout, the metadata that is published and what the sink does all belong
+to the factories. Nothing is addressed by a task ID string, so instances are
+independent and ancestor groups and collision suffixes need no handling.
 
-Dependencies are set between the step subgroups as well as through XComArgs. A
-step waits for every leaf of the step before it and for that step's returned
-output, so it waits for every task of that step, even when its factory ignores
-their outputs or leaves its own tasks unchained. Teardown tasks are the
-exception, because Airflow leaves them out of a group's leaves. The first steps
-wait for the whole `input` and `baseline` subgroups in the same way. A factory
-whose output comes from a task built outside its subgroup is rejected at DAG
-construction, since that task would wait for neither the earlier steps nor a
-gate on the group. That covers `input` and `baseline` factories too; a task
-output passed directly may be built anywhere.
+The group keeps four invariants.
 
-The group sets `all_success` in its `default_args`, so factory tasks do not
-inherit a permissive trigger rule from the DAG or a parent group. Other defaults,
-such as retries, are preserved. Explicit rules on factory tasks or nested groups
-still take precedence; consumers must not give gated work permissive rules.
-The group's own tasks (`start`, `paths`, `result_paths`, `complete`) also set
-`all_success` explicitly. `start` is an `EmptyOperator` and the group's only
-root, so a gate before the group is a gate on `start` whatever the factories
-build. A failed or skipped step stops the
-later ones as long as the factories' tasks keep the group's default rule.
-`complete` does not rely on that: it waits directly for `start` and for every
-leaf and returned output of every step. It also waits for `work_succeeded`,
-an `EmptyOperator` depending on every non-teardown task with
-`NONE_FAILED_MIN_ONE_SUCCESS`. This catches a failed non-leaf load even if its
-`ALL_DONE` cleanup succeeds, while accepting intentional skipped branches and
-empty mapped child-run requests. Completion requires the gate to let the group
-start, each step's leaves and returned output to succeed, and no non-teardown
-task to fail. It forwards the last configured
-step's output, as a list when that output is a mapped task's and therefore read
-lazily. A skip is never a completion and does not fail the DAG run; a gated-off
-instance stays skipped throughout. Deterministic contract violations (a map that
-does not cover `tables`) raise `AirflowFailException` so DAG-level retries do
-not repeat them.
+- **One way in, one way out.** `start` is the group's only root and `complete`
+  its only leaf, teardowns aside. So `gate >> group >> finalize` gates on
+  `start` and finalizes after `complete`, and the result needs no handle for
+  either task.
+- **A gate reaches every task.** The group sets `all_success` in its
+  `default_args`, so factory tasks do not inherit a rule from the DAG or a
+  parent group, and its own tasks set the rule explicitly. `_require_gated`
+  then rejects, at DAG construction, any non-teardown task that a skipped
+  `start` would not skip. A task must use `all_success` and wait for at least
+  one non-teardown task of the group, or use `none_failed_min_one_success`, the
+  rule of a join after a branch, and wait for such tasks only.
+- **Steps run in order.** Dependencies are set between the step subgroups as
+  well as through task outputs. A step's roots wait for every leaf of the step
+  before it, so a step waits for all of the one before it even when its factory
+  ignores the outputs it is given or leaves its own tasks unchained. A factory
+  whose returned output comes from a task built outside its subgroup is
+  rejected, since that task would wait for neither the earlier steps nor the
+  gate. A task output passed directly as `input` or `baseline` may be built
+  anywhere.
+- **Completion needs every step and no failure.** `complete` is an
+  `all_success` task after the leaves of every step and after
+  `work_succeeded`. The leaves alone are not enough, for the reason given in
+  `_failure_barrier`: a task can fail without any leaf failing. `work_succeeded`
+  follows every non-teardown task with `none_failed_min_one_success`, so a
+  failure anywhere blocks completion and a branch that was not taken does not.
+  Airflow only lets `all_success` tasks follow a setup task, so the barrier
+  follows a setup through an `all_success` relay.
 
-Instances are independent. Nothing is addressed by a task ID string, so ancestor
-groups and collision suffixes need no handling.
+A skip is never a completion and does not fail the DAG run; a gated-off instance
+stays skipped throughout. Deterministic contract violations found at run time (a
+task-produced map that does not cover `tables`) raise `AirflowFailException`, so
+DAG-level retries do not repeat them.
+
+Provider gates, normalization, completion markers, the order providers run in
+and assemble belong to the consumer, and so do the input sources, the matcher
+job, metadata publication and the result sink. Those factories are reusable
+orchestration and are expected to move into this provider once the contracts
+they wrap are stable; see
+[the migration notes](docs/matching.md#migrating-from-the-tf-data-platform-matching-group).
 
 ### Child DAG runs
 
 `child_dag_runs.py` stages the requests in a `requests` task, maps
 `ChildDagRunOperator`, a `TriggerDagRunOperator` subclass, over them with
 `.expand(conf=...)`, waits for each run, and collects the run IDs in `run_ids`.
+It is the provider's one way to trigger a child DAG and wait for it, and is
+meant to replace tf-data-platform's `spawn_dag_task_group`;
+[the usage notes](docs/child-dag-runs.md#relation-to-spawn_dag_task_group) list
+what it does not cover yet.
 
 - `requests` is the group's only root, so a gate before the group skips every
   task in it even when the requests were built outside it. It is also a
@@ -210,11 +217,13 @@ groups and collision suffixes need no handling.
   Airflow cannot map over directly.
 - `requests` and the trigger set `all_success` explicitly, so a `trigger_rule`
   in the DAG's `default_args` cannot make a gated-off group trigger child runs.
-- The run ID hashes the parent DAG ID, run ID, trigger task ID, map index and
-  `conf`. It is set in `execute`, and triggers set `reset_dag_run`, so clearing
-  or retrying a trigger reruns the same child run instead of failing on the
-  existing ID or starting a second run. Triggers do not retry unless the caller
-  raises `retries`.
+- The run ID names the parent DAG, the trigger task and the map index, and ends
+  in a digest of those, the parent run ID and `conf`. The digest includes
+  `conf` because `reset_dag_run` reruns an existing run with its old `conf`, so
+  a changed request needs a new ID. The ID is set in `execute`, and triggers set
+  `reset_dag_run`, so clearing or retrying a trigger reruns the same child run
+  instead of failing on the existing ID or starting a second run. Triggers do
+  not retry unless the caller raises `retries`.
 - `run_ids` takes the triggers' `trigger_run_id` XComs as a declared input and
   fails unless there is one per request. It carries the only rule that is not
   `all_success` (`NONE_FAILED_MIN_ONE_SUCCESS`): an empty request list skips the
@@ -228,9 +237,6 @@ groups and collision suffixes need no handling.
 - A trigger that waits for its child run cannot return that run's output, so the
   helper returns run IDs and leaves reading a child's XCom to the caller.
 
-Provider gates, normalization, completion markers, ordering/concurrency and
-assemble belong to the consumer, and so do the input sources, the matcher job,
-metadata publication and the result sink.
 See [matching usage](docs/matching.md) and
 [child DAG runs](docs/child-dag-runs.md).
 

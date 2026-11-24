@@ -137,11 +137,11 @@ def test_matching_example_registered_without_optional_sdk_imports():
     dag_ids = {row["dag_id"] for row in airflow_json("dags", "list")}
     assert dag_id in dag_ids
     listed = airflow("tasks", "list", dag_id)
-    for provider in ("osm", "linz"):
-        assert f"providers.{provider}.match.matcher.spark.execute_spark_job" in listed
-        assert f"providers.{provider}.match.sink.load.run_ids" in listed
-        assert f"providers.{provider}.match.complete" in listed
-        assert f"providers.{provider}.finalize_source" in listed
+    for provider in ("osm", "linz", "dados_abertos", "geoboundaries"):
+        assert f"{provider}.match.matcher.spark.execute_spark_job" in listed
+        assert f"{provider}.match.sink.load.run_ids" in listed
+        assert f"{provider}.match.complete" in listed
+        assert f"{provider}.finalize_source" in listed
 
 
 def test_setup_info_xcom_roundtrip():

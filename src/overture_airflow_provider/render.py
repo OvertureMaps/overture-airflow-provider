@@ -362,12 +362,12 @@ def _wherobots_cli(payload_path_var: str = "$PAYLOAD") -> list[str]:
 
 
 def _local_cli(built: dict) -> list[str]:
-    env = " ".join(f"{k}={shlex.quote(v)}" for k, v in built["env"].items())
+    env = " ".join(shlex.quote(f"{k}={v}") for k, v in built["env"].items())
     return [
         "# Direct preview command: the provider's LOCAL opt-in guard is not enforced here.",
         "# Add hadoop-aws matching your installed Hadoop to --packages when S3A is enabled.",
         *(f"# {w}" for w in built["warnings"]),
-        f"{env} {shlex.join(built['argv'])}",
+        f"env {env} {shlex.join(built['argv'])}",
     ]
 
 
@@ -434,7 +434,14 @@ def render_spark_job(
     family: SparkFamily = setup_info["spark_family"]
 
     # Resolve which Iceberg config variant applies for this family.
-    iceberg_spark_config = resolve_iceberg_spark_config(iceberg_config, family) or None
+    iceberg_spark_config = (
+        resolve_iceberg_spark_config(
+            iceberg_config,
+            family,
+            local_override=setup_info.get("local_iceberg_spark_config"),
+        )
+        or None
+    )
 
     if family == SparkFamily.GLUE:
         package_info = _stub_package_info_glue(setup_info, pre_resolved_package_info)

@@ -65,6 +65,7 @@ from overture_airflow_provider.config import (
 )
 from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
+from overture_airflow_provider.spark import SparkFamily, SparkImpl
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
 
 # Task Documentation for these two: see test_task_doc_md.py for why doc_md is
@@ -252,6 +253,24 @@ def spark_agnostic_mapped_task_group(
 # =============================================================================
 
 
+def _local_iceberg_override_active(
+    spark_impl_name: str, local_spark_config: LocalSparkConfig | None
+) -> bool:
+    if local_spark_config is None or spark_impl_name not in SparkImpl.__members__:
+        return False
+    if SparkImpl[spark_impl_name].get_family() != SparkFamily.LOCAL:
+        return False
+    try:
+        return bool(
+            coerce_config_dict(
+                local_spark_config.iceberg_spark_config,
+                field_name="LocalSparkConfig.iceberg_spark_config",
+            )
+        )
+    except ValueError:
+        return False
+
+
 @task_group
 def _spark_agnostic_task_group(
     *,
@@ -367,7 +386,9 @@ def _spark_agnostic_task_group(
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
             iceberg_spark_config=resolve_iceberg_spark_config(
-                iceberg_config, setup_info["spark_family_name"]
+                iceberg_config,
+                setup_info["spark_family_name"],
+                local_override=full.get("local_iceberg_spark_config"),
             ),
         )
 
@@ -386,6 +407,9 @@ def _spark_agnostic_task_group(
     )
     jar_result = download_jars_task(setup_info=setup_result)
     iceberg_config = iceberg_config or IcebergConfig()
+    if _local_iceberg_override_active(spark_impl_name, local_spark_config):
+        # The shared config is unused, so do not template or parse it.
+        iceberg_config = IcebergConfig()
     cluster_result = setup_cluster_task(
         setup_info=setup_result,
         extra_spark_conf=extra_spark_conf,

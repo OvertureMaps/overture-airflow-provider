@@ -275,6 +275,47 @@ class TestBuildCommand:
         with pytest.raises(ValueError, match="Spark Connect"):
             _build(info, module_name="", class_name="com.example.Main")
 
+    def test_rejects_invalid_environment_variable_names(self):
+        with pytest.raises(ValueError, match="Invalid environment variable names"):
+            build_local_command(
+                _setup_info(),
+                module_name="pkg.mod",
+                class_name="Job",
+                merged_spark_conf={},
+                runner_path="/runner.py",
+                python_executable="/venv/bin/python",
+                spark_submit="/venv/bin/spark-submit",
+                extra_spark_env_vars='{"A;touch x": "1"}',
+            )
+
+    def test_standalone_master_forwards_environment_to_executors(self):
+        config = LocalSparkConfig(master="spark://h:7077", aws_profile="p")
+        built = build_local_command(
+            _setup_info(config),
+            module_name="pkg.mod",
+            class_name="Job",
+            merged_spark_conf={"spark.executorEnv.AWS_PROFILE": "user"},
+            runner_path="/runner.py",
+            python_executable="/venv/bin/python",
+            spark_submit="/venv/bin/spark-submit",
+            extra_spark_env_vars='{"EXAMPLE_VAR": "v"}',
+        )
+        argv = built["argv"]
+        assert "spark.executorEnv.EXAMPLE_VAR=v" in argv
+        assert "spark.executorEnv.AWS_PROFILE=user" in argv
+        assert "spark.executorEnv.AWS_PROFILE=p" not in argv
+
+    def test_local_master_keeps_environment_out_of_argv(self):
+        built = _build(_setup_info(LocalSparkConfig(aws_profile="p")))
+        assert not any("executorEnv" in a for a in built["argv"])
+
+    def test_relative_jar_paths_become_absolute(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        info = _setup_info(spark_jar_paths=["app.jar", "s3://b/dep.jar"])
+        argv = _build(info, module_name="", class_name="com.example.Main")["argv"]
+        assert argv[argv.index("--jars") + 1] == "s3://b/dep.jar"
+        assert argv[argv.index("--class") + 2] == str(tmp_path / "app.jar")
+
 
 class TestSetupCluster:
     def _merged(self, config, iceberg):
@@ -289,6 +330,17 @@ class TestSetupCluster:
         assert merged["spark.hadoop.fs.s3.impl"].endswith("S3AFileSystem")
         assert merged["spark.user"] == "u"
         assert "sedona.join.numpartition" not in merged
+
+    def test_local_iceberg_override_skips_invalid_shared_config(self):
+        from overture_airflow_provider.config import IcebergConfig
+        from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
+
+        resolved = resolve_iceberg_spark_config(
+            IcebergConfig(spark_config="not json"),
+            SparkFamily.LOCAL,
+            local_override={"spark.sql.catalog.dev": "hadoop"},
+        )
+        assert resolved == {"spark.sql.catalog.dev": "hadoop"}
 
     def test_local_iceberg_config_replaces_shared_one(self):
         config = LocalSparkConfig(iceberg_spark_config='{"spark.sql.catalog.dev": "hadoop"}')
@@ -395,6 +447,56 @@ class TestDescribeFailure:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="LOCAL process control requires POSIX")
+class TestPackageCheck:
+    def test_reports_missing_and_version_mismatch(self):
+        missing = _local.find_missing_packages(
+            sys.executable, "pytest pytest==0.0.0 surely-not-installed-pkg"
+        )
+        assert missing[0].startswith("pytest==0.0.0 (installed ")
+        assert missing[1] == "surely-not-installed-pkg (not installed)"
+
+
+class TestSupervisor:
+    def test_stops_job_when_task_process_goes_away(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
+        pid_file = tmp_path / "pid"
+        job = (
+            "import os, sys, time; "
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+            "print('ready', flush=True); time.sleep(60)"
+        )
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", job]),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            assert proc.stdout.readline().strip() == "ready"
+            proc.stdin.close()
+            proc.wait(timeout=10)
+            job_pid = int(pid_file.read_text())
+            with pytest.raises(ProcessLookupError):
+                os.kill(job_pid, 0)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, 9)
+                proc.wait()
+            proc.stdout.close()
+
+    def test_returns_job_exit_code(self):
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", "import sys; sys.exit(3)"]),
+            stdin=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            assert proc.wait(timeout=10) == 3
+        finally:
+            proc.stdin.close()
+
+
 class TestCancel:
     def test_refuses_other_host(self):
         with pytest.raises(RuntimeError, match="only be cancelled there"):
@@ -476,6 +578,34 @@ def test_render_local_includes_extra_environment(deny_local):
     assert "EXAMPLE_VAR=value" in result.cli[-1]
 
 
+def test_render_quotes_environment_values(deny_local):
+    result = render_spark_job(
+        spark_impl_name="LOCAL_v3_5",
+        module_name="pkg.mod",
+        class_name="Job",
+        parameters={},
+        extra_spark_env_vars='{"EXAMPLE_VAR": "a $(touch x)"}',
+    )
+    assert result.cli[-1].startswith("env ")
+    assert "'EXAMPLE_VAR=a $(touch x)'" in result.cli[-1]
+
+
+def test_render_local_override_ignores_invalid_shared_iceberg_config(deny_local):
+    from overture_airflow_provider.config import IcebergConfig
+
+    result = render_spark_job(
+        spark_impl_name="LOCAL_v3_5",
+        module_name="pkg.mod",
+        class_name="Job",
+        parameters={},
+        iceberg_config=IcebergConfig(spark_config="not json"),
+        local_spark_config=LocalSparkConfig(
+            iceberg_spark_config='{"spark.sql.catalog.dev": "hadoop"}'
+        ),
+    )
+    assert "spark.sql.catalog.dev=hadoop" in result.operator_kwargs["argv"]
+
+
 def test_render_cli_passes_extra_environment(deny_local, tmp_path, capsys):
     config = tmp_path / "config.json"
     config.write_text(
@@ -524,3 +654,60 @@ def test_local_runner_does_not_silence_unexpected_conf_errors(monkeypatch):
     )
     with pytest.raises(ValueError, match="invalid setting"):
         runpy.run_path(str(get_runner_path("local")))
+
+
+def _run_runner(monkeypatch, job_cls, *, connect):
+    sql = types.ModuleType("pyspark.sql")
+    sql.SparkSession = MagicMock()
+    job = types.ModuleType("local_test_job")
+    job.Job = job_cls
+    monkeypatch.setitem(sys.modules, "pyspark.sql", sql)
+    monkeypatch.setitem(sys.modules, "local_test_job", job)
+    if connect:
+        monkeypatch.setenv("SPARK_REMOTE", "sc://localhost:15002")
+    else:
+        monkeypatch.delenv("SPARK_REMOTE", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["job_runner_local.py", "--module_name", "local_test_job", "--class_name", "Job"],
+    )
+    runpy.run_path(str(get_runner_path("local")))
+    return sql.SparkSession
+
+
+class _PlatformJob:
+    calls: list = []
+
+    def init_spark_for_platform(self, extra_spark_conf):
+        self.calls.append("init")
+
+    def run(self, params):
+        return None
+
+
+def test_local_runner_creates_session_before_job_builds_its_own(monkeypatch):
+    _PlatformJob.calls = []
+    session = _run_runner(monkeypatch, _PlatformJob, connect=False)
+    session.builder.getOrCreate.assert_called_once()
+    assert _PlatformJob.calls == ["init"]
+
+
+def test_local_runner_rejects_platform_jobs_over_spark_connect(monkeypatch):
+    with pytest.raises(RuntimeError, match="Spark Connect"):
+        _run_runner(monkeypatch, _PlatformJob, connect=True)
+
+
+@pytest.mark.parametrize(
+    ("impl", "config", "expected"),
+    [
+        ("LOCAL_v3_5", LocalSparkConfig(iceberg_spark_config='{"k": "v"}'), True),
+        ("LOCAL_v3_5", LocalSparkConfig(), False),
+        ("LOCAL_v3_5", None, False),
+        ("{{ params.impl }}", LocalSparkConfig(iceberg_spark_config='{"k": "v"}'), False),
+    ],
+)
+def test_local_iceberg_override_active(impl, config, expected):
+    from overture_airflow_provider.spark_agnostic_taskgroup import _local_iceberg_override_active
+
+    assert _local_iceberg_override_active(impl, config) is expected

@@ -126,6 +126,8 @@ _WHEROBOTS_DEFAULTS = {
 # Glue-like defaults without sedona.join.numpartition, which is far too many
 # partitions for a single machine.
 _LOCAL_DEFAULTS = {
+    "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
+    "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
     "spark.driver.extraJavaOptions": "-Djts.overlay=ng",
     "spark.executor.extraJavaOptions": "-Djts.overlay=ng",
     "spark.kryoserializer.buffer": "128m",

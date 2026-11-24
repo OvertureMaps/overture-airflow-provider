@@ -40,16 +40,48 @@ for p in sorted(jars.glob("hadoop-client-api-*.jar")):
 print(json.dumps({"spark_version": pyspark.__version__, "hadoop_version": hadoop}))
 """
 
-_MISSING_PACKAGES_SCRIPT = """
+_INSTALLED_VERSIONS_SCRIPT = """
 import importlib.metadata as m, json, sys
-missing = []
+versions = {}
 for name in sys.argv[1:]:
     try:
-        m.version(name)
+        versions[name] = m.version(name)
     except m.PackageNotFoundError:
-        missing.append(name)
-print(json.dumps(missing))
+        versions[name] = None
+print(json.dumps(versions))
 """
+
+# Runs the job in the same process group and stops that group when the task
+# process goes away (its stdin pipe closes) or on SIGTERM, so a killed Airflow
+# task cannot leave the job writing alongside a retry.
+_SUPERVISOR_SCRIPT = """
+import os, signal, subprocess, sys, threading, time
+grace = float(sys.argv[1])
+child = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL)
+
+def stop(*_):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    os.killpg(0, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while child.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+    os.killpg(0, signal.SIGKILL)
+
+def watch_parent():
+    while os.read(0, 4096):
+        pass
+    if child.poll() is None:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+signal.signal(signal.SIGTERM, stop)
+threading.Thread(target=watch_parent, daemon=True).start()
+rc = child.wait()
+sys.stdout.flush()
+os._exit(rc if rc >= 0 else 128 - rc)
+"""
+
+_ENV_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 
 S3A_SPARK_CONF = {
     "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
@@ -198,13 +230,36 @@ def _requirement_name(requirement: str) -> str:
     return re.split(r"[<>=!~\[;@ ]", requirement.strip(), maxsplit=1)[0]
 
 
+def _unsatisfied(requirement: str, installed: str | None) -> str | None:
+    if installed is None:
+        return f"{requirement} (not installed)"
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+        from packaging.version import InvalidVersion
+
+        specifier = Requirement(requirement).specifier
+    except (ImportError, InvalidRequirement):
+        return None
+    try:
+        if specifier and not specifier.contains(installed, prereleases=True):
+            return f"{requirement} (installed {installed})"
+    except InvalidVersion:
+        return None
+    return None
+
+
 def find_missing_packages(python_executable: str, python_packages: str) -> list[str]:
-    """Names from ``python_packages`` not installed in ``python_executable``."""
-    names = [n for n in (_requirement_name(r) for r in python_packages.split()) if n]
-    if not names:
+    """Requirements from ``python_packages`` that ``python_executable`` does not satisfy.
+
+    Each entry names the requirement and why: not installed, or the installed
+    version is outside its specifier. Environment markers are not evaluated.
+    """
+    requirements = {r: _requirement_name(r) for r in python_packages.split()}
+    requirements = {r: n for r, n in requirements.items() if n}
+    if not requirements:
         return []
     proc = subprocess.run(
-        [python_executable, "-c", _MISSING_PACKAGES_SCRIPT, *names],
+        [python_executable, "-c", _INSTALLED_VERSIONS_SCRIPT, *sorted(set(requirements.values()))],
         capture_output=True,
         text=True,
         timeout=120,
@@ -212,7 +267,9 @@ def find_missing_packages(python_executable: str, python_packages: str) -> list[
     )
     if proc.returncode != 0:
         raise RuntimeError(f"Could not inspect packages in {python_executable}: {proc.stderr}")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    installed = json.loads(proc.stdout.strip().splitlines()[-1])
+    unsatisfied = (_unsatisfied(r, installed.get(n)) for r, n in requirements.items())
+    return [u for u in unsatisfied if u]
 
 
 def is_spark_connect(master: str) -> bool:
@@ -277,15 +334,12 @@ def build_local_command(
     ``"spark-submit"`` or ``"spark-connect"``.
     """
     master = setup_info.get("local_master") or "local[*]"
-    jar_paths = [j for j in setup_info.get("spark_jar_paths") or [] if j]
+    jar_paths = [_absolute_path(j) for j in setup_info.get("spark_jar_paths") or [] if j]
     parameters = setup_info["parameters"]
-    env = {
-        "PYSPARK_PYTHON": python_executable,
-        "PYSPARK_DRIVER_PYTHON": python_executable,
-    }
+    job_env = {}
     if setup_info.get("local_aws_profile"):
-        env["AWS_PROFILE"] = setup_info["local_aws_profile"]
-    env.update(
+        job_env["AWS_PROFILE"] = setup_info["local_aws_profile"]
+    job_env.update(
         {
             k: _conf_value(v)
             for k, v in coerce_config_dict(
@@ -293,6 +347,14 @@ def build_local_command(
             ).items()
         }
     )
+    invalid = sorted(k for k in job_env if not _ENV_VAR_NAME.match(k))
+    if invalid:
+        raise ValueError(f"Invalid environment variable names in extra_spark_env_vars: {invalid}")
+    env = {
+        "PYSPARK_PYTHON": python_executable,
+        "PYSPARK_DRIVER_PYTHON": python_executable,
+        **job_env,
+    }
     warnings: list[str] = []
 
     if is_spark_connect(master):
@@ -302,6 +364,11 @@ def build_local_command(
             "Spark Connect: --packages/--jars and static Spark confs are not applied; "
             "the server must already have Sedona and any catalogs configured."
         )
+        if job_env:
+            warnings.append(
+                "Spark Connect: environment variables reach only the client process, "
+                "not the Spark Connect server or its executors."
+            )
         env["SPARK_REMOTE"] = master
         argv = [
             python_executable,
@@ -329,6 +396,11 @@ def build_local_command(
     packages = local_maven_packages(setup_info)
     if packages:
         argv.extend(["--packages", ",".join(packages)])
+    if master.startswith("spark://"):
+        # Standalone executors do not inherit the driver's environment.
+        for k, v in job_env.items():
+            if f"spark.executorEnv.{k}" not in merged_spark_conf:
+                argv.extend(["--conf", f"spark.executorEnv.{k}={v}"])
     for k, v in merged_spark_conf.items():
         # spark-submit ignores non-"spark." keys; the runner applies them instead.
         if k.startswith("spark."):
@@ -362,22 +434,55 @@ def build_local_command(
     return {"argv": argv, "env": env, "mode": "spark-submit", "warnings": warnings}
 
 
+def _absolute_path(path: str) -> str:
+    """Make a filesystem path absolute so it survives the job's working directory."""
+    return path if _URI_SCHEME.match(path) else os.path.abspath(path)
+
+
+def supervised_argv(argv: list[str]) -> list[str]:
+    """Wrap ``argv`` in the supervisor that stops the job when the task process dies."""
+    return [sys.executable, "-c", _SUPERVISOR_SCRIPT, str(_KILL_GRACE_SECONDS), *argv]
+
+
 def _kill_process_group(pid: int, sig=signal.SIGTERM) -> None:
     try:
         os.killpg(pid, sig)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 
-def _terminate(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    _kill_process_group(proc.pid)
+def _process_group_alive(pgid: int) -> bool:
+    """Whether ``pgid`` has members we can signal (macOS reports EPERM for zombies only)."""
     try:
-        proc.wait(timeout=_KILL_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        _kill_process_group(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
-        proc.wait()
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _stop_group_members(pgid: int) -> None:
+    """Stop processes left in the job's group after its leader has exited."""
+    if not _process_group_alive(pgid):
+        return
+    _kill_process_group(pgid)
+    deadline = time.monotonic() + _KILL_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        if not _process_group_alive(pgid):
+            return
+        time.sleep(0.1)
+    _kill_process_group(pgid, signal.SIGKILL)
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        _kill_process_group(proc.pid)
+        try:
+            # The supervisor itself escalates after _KILL_GRACE_SECONDS.
+            proc.wait(timeout=_KILL_GRACE_SECONDS + 5)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc.pid, signal.SIGKILL)
+            proc.wait()
+    _stop_group_members(proc.pid)
 
 
 def _agnostic_xcom_payload(setup_info: dict, job_url: str) -> str:
@@ -448,9 +553,10 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
     log.info("Running local Spark job (%s) in %s", built["mode"], work_dir)
 
     proc = subprocess.Popen(
-        built["argv"],
+        supervised_argv(built["argv"]),
         cwd=work_dir,
         env=env,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -464,8 +570,8 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
     def _on_timeout():
         timed_out.set()
         _kill_process_group(proc.pid)
-        if not finished.wait(_KILL_GRACE_SECONDS):
-            _kill_process_group(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        if not finished.wait(_KILL_GRACE_SECONDS + 5):
+            _kill_process_group(proc.pid, signal.SIGKILL)
 
     timer = threading.Timer(max_timeout_hours * 3600, _on_timeout)
     timer.daemon = True
@@ -494,6 +600,7 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
         finished.set()
         timer.cancel()
         _terminate(proc)
+        proc.stdin.close()
 
     if returncode != 0 or timed_out.is_set():
         raise LocalSparkJobFailed(
@@ -537,10 +644,10 @@ def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
         log.info("Local run %s (pid %s) is no longer running", run_id, pid)
         return
     _kill_process_group(pid)
-    deadline = time.monotonic() + _KILL_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        if not _is_local_run_process(pid, marker):
-            return
+    deadline = time.monotonic() + _KILL_GRACE_SECONDS + 5
+    while time.monotonic() < deadline and _is_local_run_process(pid, marker):
         time.sleep(0.1)
     if _is_local_run_process(pid, marker):
-        _kill_process_group(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        _kill_process_group(pid, signal.SIGKILL)
+    # The verified leader held this group id, so remaining members are the job's.
+    _stop_group_members(pid)

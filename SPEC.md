@@ -192,19 +192,25 @@ checks it.
   and `spark-submit` against the impl's Spark `major.minor`. Spark Connect
   requires only the client PySpark version check.
 - Python packages are not downloaded: they must already be installed in
-  `python_executable`; missing ones are logged as warnings. JARs (Sedona,
+  `python_executable`; missing ones, or ones installed outside their version
+  specifier, are logged as warnings. JARs (Sedona,
   `hadoop-aws` matching the detected Hadoop, `extra_packages`) are resolved by
   `spark-submit --packages`.
 - `master` is `local[...]` or `spark://...` (runs `spark-submit`) or `sc://...`
   (Spark Connect: runs the runner with `python` and `SPARK_REMOTE`; PySpark only).
 - Scala jobs use the first `spark_jar_paths` entry as the application JAR and
   receive the same argument contract as Glue.
-- Execution is synchronous, like Wherobots. The process runs in its own
-  session; timeout and task kill terminate its process group. `cancel_run`
-  only kills a pid on the same host whose command line still carries the run
-  marker.
+- Execution is synchronous, like Wherobots. The job runs under a stdlib
+  supervisor in its own session; timeout and task kill terminate its process
+  group, and the supervisor stops the group when the task process dies (its
+  stdin pipe closes). `cancel_run` only kills a pid on the same host whose
+  command line still carries the run marker.
+- Under `spark-submit` the runner creates the session first, so jobs that
+  build their own keep the submitted master. `extra_spark_env_vars` become
+  `spark.executorEnv.*` on `spark://` masters.
 - Cluster sizing is ignored. `LocalSparkConfig.iceberg_spark_config`, when
-  set, replaces the `IcebergConfig` values for LOCAL runs.
+  set, replaces the `IcebergConfig` values for LOCAL runs; the shared config
+  is then not templated or parsed.
 
 ## Failure enrichment
 

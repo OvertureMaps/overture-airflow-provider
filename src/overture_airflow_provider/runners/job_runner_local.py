@@ -11,6 +11,12 @@ Args (``--key value`` pairs via ``sys.argv``):
     --extra_spark_conf: JSON-encoded dict of SparkConf key/value pairs. Set on
         the active ``SparkSession`` when ``run()`` accepts ``spark``, otherwise
         forwarded to ``init_spark_for_platform()``.
+
+Under ``spark-submit`` the session is created here first, so a job that builds
+its own session (e.g. one hardcoding ``master("local[*]")``) reuses the
+submitted master, packages and confs instead of replacing them. Jobs that
+need ``init_spark_for_platform()`` cannot run over Spark Connect, which has
+no ``SparkContext``.
 """
 
 import inspect
@@ -45,18 +51,28 @@ instance = job_cls()
 
 run_kwargs: dict = {"params": params}
 sig = inspect.signature(instance.run)
-if "spark" in sig.parameters:
+spark_connect = bool(os.environ.get("SPARK_REMOTE"))
+wants_spark = "spark" in sig.parameters
+if spark_connect and not wants_spark and hasattr(instance, "init_spark_for_platform"):
+    raise RuntimeError(
+        f"{class_name} needs init_spark_for_platform(), which requires a SparkContext; "
+        "Spark Connect (sc://) has none. Use a local[*] or spark:// master, or accept a "
+        "`spark` argument in run()."
+    )
+if wants_spark or not spark_connect:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
+
+if wants_spark:
     for k, v in json.loads(extra_spark_conf_raw).items():
-        if not os.environ.get("SPARK_REMOTE") and k.startswith("spark."):
+        if not spark_connect and k.startswith("spark."):
             continue
         try:
             spark.conf.set(k, v)
         except Exception as exc:
             if (
-                not os.environ.get("SPARK_REMOTE")
+                not spark_connect
                 or getattr(exc, "getErrorClass", lambda: None)() != "CANNOT_MODIFY_CONFIG"
             ):
                 raise

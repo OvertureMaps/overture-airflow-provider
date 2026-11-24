@@ -562,7 +562,7 @@ class LocalSparkConfig:
 
     The job's own Python code (and ``apache-sedona``) must already be
     installed in ``python_executable``'s environment; ``python_packages`` is
-    only checked, never downloaded. ``package_registry`` / ``artifact_store``
+    only checked (name and version specifier), never downloaded. ``package_registry`` / ``artifact_store``
     are accepted but not used.
 
     Args:
@@ -582,7 +582,8 @@ class LocalSparkConfig:
         aws_profile: Optional ``AWS_PROFILE`` exported to the job process.
         iceberg_spark_config: JSON object (string or dict) that replaces
             ``IcebergConfig.spark_config`` / ``s3tables_spark_config`` for
-            ``LOCAL`` runs, e.g. a Hadoop catalog in a temp directory. Empty
+            ``LOCAL`` runs, e.g. a Hadoop catalog in a temp directory. When set,
+            the shared ``IcebergConfig`` is not templated or parsed. Empty
             reuses the ``IcebergConfig`` the other platforms use.
         extra_packages: Extra Maven coordinates for ``--packages`` (e.g. the
             Iceberg Spark runtime and AWS bundle when using a REST catalog).

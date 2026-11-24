@@ -398,7 +398,10 @@ class DatabricksConfig:
             Defaults to ``"NONE"`` (no-isolation shared, the provider's
             historical behavior). Workspaces created on/after 2026-10-08 have
             no-isolation clusters disabled; set e.g. ``"SINGLE_USER"``
-            (dedicated access mode) there.
+            (dedicated access mode) there. **Transitional:** the ``"NONE"``
+            default is legacy and is expected to change in a future major
+            version (see OvertureMaps/overture-airflow-provider#87); set it
+            explicitly to stay stable across that change.
         single_user_name: Written to ``new_cluster.single_user_name`` (e.g. the
             Airflow service principal's application ID), required for
             ``"SINGLE_USER"``. Empty (default) omits the key.
@@ -409,8 +412,13 @@ class DatabricksConfig:
             ``spark_jar_paths`` (default ``"dbfs:/FileStore/deploy/"``). Entries
             that already carry a URI scheme are passed through verbatim. Point
             at a Unity Catalog volume or object-store path to avoid DBFS root.
+            **Transitional:** the DBFS default (like ``dbfs_root_template``) is
+            legacy and is expected to be replaced in a future major version
+            (see OvertureMaps/overture-airflow-provider#87); set it explicitly
+            to stay stable across that change.
             The bundled init script's shared Sedona jar cache defaults to
-            ``/dbfs/databricks/shared/sedona/${SEDONA_VERSION}``; set the
+            ``/dbfs/databricks/shared/sedona/${SEDONA_VERSION}`` (same
+            transitional status); set the
             ``SEDONA_CACHE_DIR`` env var via ``spark_env_vars`` to relocate it
             off DBFS.
         cluster_init_script_name: Filename of the cluster init script. Left at

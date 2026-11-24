@@ -394,6 +394,34 @@ class DatabricksConfig:
             the fixed paths ``{workspace_scripts_path_template}/job_runner_databricks``
             and ``{workspace_scripts_path_template}/{cluster_init_script_name}``
             (the provider's behavior before 0.15.0).
+        data_security_mode: Written to ``new_cluster.data_security_mode``.
+            Defaults to ``"NONE"`` (no-isolation shared, the provider's
+            historical behavior). Databricks provisions workspaces created on
+            or after 2026-10-08 without no-isolation clusters (see
+            https://docs.databricks.com/aws/en/admin/account-settings/legacy-features);
+            set e.g. ``"SINGLE_USER"``
+            (dedicated access mode) there. The ``"NONE"`` default is legacy
+            and is expected to change in a future major version (see
+            OvertureMaps/overture-airflow-provider#87); set it explicitly to
+            stay stable across that change.
+        single_user_name: Written to ``new_cluster.single_user_name`` (e.g. the
+            Airflow service principal's application ID), required for
+            ``"SINGLE_USER"``. Empty (default) omits the key.
+        policy_id: Written to ``new_cluster.policy_id`` so a workspace cluster
+            policy applies to provider-launched clusters. Empty (default) omits
+            the key.
+        jar_path_prefix: Prefix prepended to bare filenames in
+            ``spark_jar_paths`` (default ``"dbfs:/FileStore/deploy/"``). Entries
+            that already carry a URI scheme are passed through verbatim. Point
+            at a Unity Catalog volume or object-store path to avoid DBFS root.
+            The DBFS default (like ``dbfs_root_template``) is legacy and is
+            expected to be replaced in a future major version (see
+            OvertureMaps/overture-airflow-provider#87); set it explicitly to
+            stay stable across that change. The bundled init script's shared
+            Sedona jar cache defaults to
+            ``/dbfs/databricks/shared/sedona/${SEDONA_VERSION}`` (same
+            status); set the ``SEDONA_CACHE_DIR`` env var via
+            ``spark_env_vars`` to relocate it off DBFS.
         cluster_init_script_name: Filename of the cluster init script. Left at
             its default, the provider's bundled, Overture-free init script is
             used (auto-staged when ``stage_workspace_assets`` is on). Set a
@@ -501,6 +529,10 @@ class DatabricksConfig:
     dbfs_root_template: str = "dbfs:/FileStore/deploy/{s3_assets_root}"
     workspace_scripts_path_template: str = "/Shared/{s3_assets_root}"
     stage_workspace_assets: bool = True
+    data_security_mode: str = "NONE"
+    single_user_name: str = ""
+    policy_id: str = ""
+    jar_path_prefix: str = "dbfs:/FileStore/deploy/"
     cluster_init_script_name: str = "agnostic_operator_cluster_init_databricks.sh"
     custom_tags: dict[str, str] = field(default_factory=dict)
     spark_conf: dict[str, Any] = field(default_factory=dict)

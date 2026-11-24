@@ -7,6 +7,7 @@ import runpy
 import socket
 import subprocess
 import sys
+import time
 import types
 from unittest.mock import MagicMock, patch
 
@@ -301,13 +302,15 @@ class TestBuildCommand:
             extra_spark_env_vars='{"EXAMPLE_VAR": "v"}',
         )
         argv = built["argv"]
-        assert "spark.executorEnv.EXAMPLE_VAR=v" in argv
+        names = json.loads(argv[argv.index("--executor_env_names") + 1])
+        assert names == ["AWS_PROFILE", "EXAMPLE_VAR"]
         assert "spark.executorEnv.AWS_PROFILE=user" in argv
-        assert "spark.executorEnv.AWS_PROFILE=p" not in argv
+        assert not any(a.endswith("=v") or a.endswith("=p") for a in argv)
 
     def test_local_master_keeps_environment_out_of_argv(self):
         built = _build(_setup_info(LocalSparkConfig(aws_profile="p")))
         assert not any("executorEnv" in a for a in built["argv"])
+        assert "--executor_env_names" not in built["argv"]
 
     def test_relative_jar_paths_become_absolute(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -446,7 +449,6 @@ class TestDescribeFailure:
         assert "python_executable" in info.hint
 
 
-@pytest.mark.skipif(os.name != "posix", reason="LOCAL process control requires POSIX")
 class TestPackageCheck:
     def test_reports_missing_and_version_mismatch(self):
         missing = _local.find_missing_packages(
@@ -456,6 +458,7 @@ class TestPackageCheck:
         assert missing[1] == "surely-not-installed-pkg (not installed)"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LOCAL process control requires POSIX")
 class TestSupervisor:
     def test_stops_job_when_task_process_goes_away(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
@@ -485,6 +488,39 @@ class TestSupervisor:
                 proc.wait()
             proc.stdout.close()
 
+    def test_stops_descendants_left_after_job_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
+        pid_file = tmp_path / "pid"
+        grandchild = (
+            f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+        )
+        job = (
+            "import subprocess, sys, time, os; "
+            f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+            f"[time.sleep(0.05) for _ in range(100) if not os.path.exists({str(pid_file)!r})]; "
+            "print('ready', flush=True)"
+        )
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", job]),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            out = proc.stdout.read()
+            assert proc.wait(timeout=15) == 0
+            assert "ready" in out
+            grandchild_pid = int(pid_file.read_text())
+            with pytest.raises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, 9)
+                proc.wait()
+            proc.stdin.close()
+            proc.stdout.close()
+
     def test_returns_job_exit_code(self):
         proc = subprocess.Popen(
             _local.supervised_argv([sys.executable, "-c", "import sys; sys.exit(3)"]),
@@ -497,6 +533,7 @@ class TestSupervisor:
             proc.stdin.close()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LOCAL process control requires POSIX")
 class TestCancel:
     def test_refuses_other_host(self):
         with pytest.raises(RuntimeError, match="only be cancelled there"):
@@ -516,6 +553,41 @@ class TestCancel:
         finally:
             if proc.poll() is None:
                 proc.kill()
+
+    def test_stops_group_left_by_dead_supervisor(self):
+        leader = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess, sys; "
+                "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                "print(p.pid, flush=True)",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        orphan = int(leader.stdout.readline())
+        leader.wait()
+        leader.stdout.close()
+        try:
+            cancel_local_run(
+                "r", {"pid": leader.pid, "hostname": socket.gethostname(), "marker": "m"}
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(orphan, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail("orphaned job process survived cancel")
+        finally:
+            try:
+                os.kill(orphan, 9)
+            except ProcessLookupError:
+                pass
 
     def test_skips_process_without_marker(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -656,11 +728,15 @@ def test_local_runner_does_not_silence_unexpected_conf_errors(monkeypatch):
         runpy.run_path(str(get_runner_path("local")))
 
 
-def _run_runner(monkeypatch, job_cls, *, connect):
+def _run_runner(monkeypatch, job_cls, *, connect, extra_argv=()):
     sql = types.ModuleType("pyspark.sql")
     sql.SparkSession = MagicMock()
     job = types.ModuleType("local_test_job")
     job.Job = job_cls
+    if not hasattr(sys.modules.get("pyspark"), "SparkContext"):
+        pyspark = types.ModuleType("pyspark")
+        pyspark.SparkContext = MagicMock()
+        monkeypatch.setitem(sys.modules, "pyspark", pyspark)
     monkeypatch.setitem(sys.modules, "pyspark.sql", sql)
     monkeypatch.setitem(sys.modules, "local_test_job", job)
     if connect:
@@ -670,7 +746,14 @@ def _run_runner(monkeypatch, job_cls, *, connect):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["job_runner_local.py", "--module_name", "local_test_job", "--class_name", "Job"],
+        [
+            "job_runner_local.py",
+            "--module_name",
+            "local_test_job",
+            "--class_name",
+            "Job",
+            *extra_argv,
+        ],
     )
     runpy.run_path(str(get_runner_path("local")))
     return sql.SparkSession
@@ -686,11 +769,34 @@ class _PlatformJob:
         return None
 
 
-def test_local_runner_creates_session_before_job_builds_its_own(monkeypatch):
+def test_local_runner_keeps_submitted_master_and_lets_job_build_session(monkeypatch):
     _PlatformJob.calls = []
     session = _run_runner(monkeypatch, _PlatformJob, connect=False)
-    session.builder.getOrCreate.assert_called_once()
+    session.builder.getOrCreate.assert_not_called()
+    builder = object()
+    assert session.Builder.master(builder, "local[*]") is builder
     assert _PlatformJob.calls == ["init"]
+
+
+def test_local_runner_sets_executor_env_as_jvm_properties(monkeypatch):
+    _PlatformJob.calls = []
+    props = {"spark.executorEnv.KEEP": "user"}
+    system = MagicMock()
+    system.getProperty.side_effect = props.get
+    system.setProperty.side_effect = props.__setitem__
+    pyspark = types.ModuleType("pyspark")
+    pyspark.SparkContext = MagicMock()
+    pyspark.SparkContext._jvm.java.lang.System = system
+    monkeypatch.setitem(sys.modules, "pyspark", pyspark)
+    monkeypatch.setenv("SECRET_VAR", "s3cr3t")
+    monkeypatch.setenv("KEEP", "env")
+    _run_runner(
+        monkeypatch,
+        _PlatformJob,
+        connect=False,
+        extra_argv=["--executor_env_names", '["SECRET_VAR", "KEEP", "UNSET_VAR"]'],
+    )
+    assert props == {"spark.executorEnv.KEEP": "user", "spark.executorEnv.SECRET_VAR": "s3cr3t"}
 
 
 def test_local_runner_rejects_platform_jobs_over_spark_connect(monkeypatch):
@@ -704,7 +810,9 @@ def test_local_runner_rejects_platform_jobs_over_spark_connect(monkeypatch):
         ("LOCAL_v3_5", LocalSparkConfig(iceberg_spark_config='{"k": "v"}'), True),
         ("LOCAL_v3_5", LocalSparkConfig(), False),
         ("LOCAL_v3_5", None, False),
-        ("{{ params.impl }}", LocalSparkConfig(iceberg_spark_config='{"k": "v"}'), False),
+        ("GLUE_v5", LocalSparkConfig(iceberg_spark_config='{"k": "v"}'), False),
+        ("{{ params.impl }}", LocalSparkConfig(iceberg_spark_config='{"k": "v"}'), None),
+        ("{{ params.impl }}", LocalSparkConfig(), False),
     ],
 )
 def test_local_iceberg_override_active(impl, config, expected):

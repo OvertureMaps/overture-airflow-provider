@@ -205,12 +205,17 @@ checks it.
   group, and the supervisor stops the group when the task process dies (its
   stdin pipe closes). `cancel_run` only kills a pid on the same host whose
   command line still carries the run marker.
-- Under `spark-submit` the runner creates the session first, so jobs that
-  build their own keep the submitted master. `extra_spark_env_vars` become
-  `spark.executorEnv.*` on `spark://` masters.
+- Under `spark-submit` the runner makes `SparkSession.Builder.master()` a
+  no-op, so jobs that build their own session keep the submitted master and
+  their own static settings. On `spark://` masters the runner forwards
+  `extra_spark_env_vars` to executors as `spark.executorEnv.*` JVM properties
+  set before the session starts, so values never appear in process arguments;
+  Scala jobs get a warning instead.
 - Cluster sizing is ignored. `LocalSparkConfig.iceberg_spark_config`, when
   set, replaces the `IcebergConfig` values for LOCAL runs; the shared config
-  is then not templated or parsed.
+  is then not templated or parsed. With a templated `spark_impl_name`, the
+  shared config is shielded from task templating and rendered in
+  `setup_cluster` only when the resolved platform uses it.
 
 ## Failure enrichment
 

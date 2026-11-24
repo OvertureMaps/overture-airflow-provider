@@ -12,11 +12,14 @@ Args (``--key value`` pairs via ``sys.argv``):
         the active ``SparkSession`` when ``run()`` accepts ``spark``, otherwise
         forwarded to ``init_spark_for_platform()``.
 
-Under ``spark-submit`` the session is created here first, so a job that builds
-its own session (e.g. one hardcoding ``master("local[*]")``) reuses the
-submitted master, packages and confs instead of replacing them. Jobs that
-need ``init_spark_for_platform()`` cannot run over Spark Connect, which has
-no ``SparkContext``.
+    --executor_env_names: JSON list of environment variable names to forward to
+        executors as ``spark.executorEnv.*``. Values are read from this
+        process's environment so they never appear on a command line.
+
+Under ``spark-submit`` the submitted ``--master`` wins over a master the job
+hardcodes with ``SparkSession.builder.master(...)``; the job still configures
+the rest of its own session. Jobs that need ``init_spark_for_platform()``
+cannot run over Spark Connect, which has no ``SparkContext``.
 """
 
 import inspect
@@ -59,12 +62,29 @@ if spark_connect and not wants_spark and hasattr(instance, "init_spark_for_platf
         "Spark Connect (sc://) has none. Use a local[*] or spark:// master, or accept a "
         "`spark` argument in run()."
     )
-if wants_spark or not spark_connect:
+if not spark_connect:
+    from pyspark import SparkContext
+    from pyspark.sql import SparkSession
+
+    def _keep_submitted_master(builder, master):
+        return builder
+
+    SparkSession.Builder.master = _keep_submitted_master
+
+    executor_env_names = json.loads(args.get("executor_env_names") or "[]")
+    if executor_env_names:
+        # SparkConf reads JVM system properties when the session is created.
+        SparkContext._ensure_initialized()
+        system = SparkContext._jvm.java.lang.System
+        for name in executor_env_names:
+            key = f"spark.executorEnv.{name}"
+            if name in os.environ and system.getProperty(key) is None:
+                system.setProperty(key, os.environ[name])
+
+if wants_spark:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-
-if wants_spark:
     for k, v in json.loads(extra_spark_conf_raw).items():
         if not spark_connect and k.startswith("spark."):
             continue

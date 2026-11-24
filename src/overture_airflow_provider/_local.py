@@ -51,32 +51,76 @@ for name in sys.argv[1:]:
 print(json.dumps(versions))
 """
 
-# Runs the job in the same process group and stops that group when the task
-# process goes away (its stdin pipe closes) or on SIGTERM, so a killed Airflow
-# task cannot leave the job writing alongside a retry.
+# Runs the job in the supervisor's process group and stays alive until every
+# other process in that group has exited, stopping the group when the task process goes away
+# (its stdin pipe closes) or on SIGTERM, so a killed Airflow task cannot leave
+# the job writing alongside a retry. Job output is relayed so a lingering
+# descendant cannot hold the task's stdout pipe open.
 _SUPERVISOR_SCRIPT = """
 import os, signal, subprocess, sys, threading, time
 grace = float(sys.argv[1])
-child = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL)
+me, group = os.getpid(), os.getpgid(0)
+child = subprocess.Popen(
+    sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+)
 
-def stop(*_):
+def relay():
+    while True:
+        chunk = os.read(child.stdout.fileno(), 65536)
+        if not chunk:
+            return
+        os.write(1, chunk)
+
+def others():
+    child.poll()
+    ps = subprocess.Popen(["ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
+                          stdout=subprocess.PIPE, text=True)
+    out = ps.communicate()[0]
+    pids = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[2].startswith("Z"):
+            continue
+        pid, pgid = int(parts[0]), int(parts[1])
+        if pgid == group and pid not in (me, ps.pid):
+            pids.append(pid)
+    return pids
+
+def stop_group():
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    os.killpg(0, signal.SIGTERM)
+    pids = others()
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
     deadline = time.monotonic() + grace
-    while child.poll() is None and time.monotonic() < deadline:
+    while pids and time.monotonic() < deadline:
         time.sleep(0.1)
-    os.killpg(0, signal.SIGKILL)
+        pids = others()
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+def on_term(*_):
+    stop_group()
+    relayer.join(1)
+    os._exit(143)
 
 def watch_parent():
     while os.read(0, 4096):
         pass
-    if child.poll() is None:
-        os.kill(os.getpid(), signal.SIGTERM)
+    os.kill(me, signal.SIGTERM)
 
-signal.signal(signal.SIGTERM, stop)
+relayer = threading.Thread(target=relay, daemon=True)
+relayer.start()
+signal.signal(signal.SIGTERM, on_term)
 threading.Thread(target=watch_parent, daemon=True).start()
 rc = child.wait()
-sys.stdout.flush()
+stop_group()
+relayer.join(5)
 os._exit(rc if rc >= 0 else 128 - rc)
 """
 
@@ -396,11 +440,14 @@ def build_local_command(
     packages = local_maven_packages(setup_info)
     if packages:
         argv.extend(["--packages", ",".join(packages)])
-    if master.startswith("spark://"):
-        # Standalone executors do not inherit the driver's environment.
-        for k, v in job_env.items():
-            if f"spark.executorEnv.{k}" not in merged_spark_conf:
-                argv.extend(["--conf", f"spark.executorEnv.{k}={v}"])
+    # Standalone executors do not inherit the driver's environment. Only the
+    # names go on the command line; the runner reads the values from its env.
+    executor_env_names = sorted(job_env) if master.startswith("spark://") else []
+    if executor_env_names and not module_name:
+        warnings.append(
+            "spark:// with a Scala job: extra_spark_env_vars reach only the driver; "
+            "set spark.executorEnv.* in extra_spark_conf for executors."
+        )
     for k, v in merged_spark_conf.items():
         # spark-submit ignores non-"spark." keys; the runner applies them instead.
         if k.startswith("spark."):
@@ -422,6 +469,8 @@ def build_local_command(
                 json.dumps(merged_spark_conf),
             ]
         )
+        if executor_env_names:
+            argv.extend(["--executor_env_names", json.dumps(executor_env_names)])
     else:
         if not jar_paths:
             raise ValueError(
@@ -591,11 +640,10 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
         if ti is not None and callable(getattr(ti, "xcom_push", None)):
             ti.xcom_push(key="spark_agnostic", value=_agnostic_xcom_payload(setup_info, ui_url))
         timer.start()
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            tail.append(line)
-            log.info("%s", line)
+        reader = threading.Thread(target=_stream_output, args=(proc.stdout, tail), daemon=True)
+        reader.start()
         returncode = proc.wait()
+        reader.join(_KILL_GRACE_SECONDS)
     finally:
         finished.set()
         timer.cancel()
@@ -607,6 +655,13 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
             returncode, "\n".join(tail), timed_out=timed_out.is_set(), run_id=run_id
         )
     return {"job_url": ui_url, "status": "SUCCEEDED", "run_id": run_id}
+
+
+def _stream_output(stream, tail: collections.deque) -> None:
+    for line in stream:
+        line = line.rstrip("\n")
+        tail.append(line)
+        log.info("%s", line)
 
 
 def _process_marker(setup_info: dict, mode: str) -> str:
@@ -626,6 +681,16 @@ def _is_local_run_process(pid: int, marker: str) -> bool:
     return proc.returncode == 0 and marker in proc.stdout
 
 
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
     """Stop a local run left over from a killed try, only on the host that started it."""
     extra = extra or {}
@@ -641,6 +706,10 @@ def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
     pid = int(pid)
     marker = extra.get("marker") or _RUNNER_MARKER
     if not _is_local_run_process(pid, marker):
+        if not _pid_exists(pid):
+            # A process group id is not reused while it has members, so any left
+            # under the dead supervisor's id are the job's.
+            _stop_group_members(pid)
         log.info("Local run %s (pid %s) is no longer running", run_id, pid)
         return
     _kill_process_group(pid)

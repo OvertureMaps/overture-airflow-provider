@@ -48,7 +48,9 @@ See ``overture_airflow_provider.config`` for the dataclasses callers should
 construct.
 """
 
-from overture_airflow_provider._airflow_compat import task, task_group
+import dataclasses
+
+from overture_airflow_provider._airflow_compat import get_current_context, task, task_group
 from overture_airflow_provider._operator import SparkAgnosticExecuteOperator
 from overture_airflow_provider._setup import setup_spark_job
 from overture_airflow_provider.config import (
@@ -255,13 +257,15 @@ def spark_agnostic_mapped_task_group(
 
 def _local_iceberg_override_active(
     spark_impl_name: str, local_spark_config: LocalSparkConfig | None
-) -> bool:
-    if local_spark_config is None or spark_impl_name not in SparkImpl.__members__:
-        return False
-    if SparkImpl[spark_impl_name].get_family() != SparkFamily.LOCAL:
+) -> bool | None:
+    """Whether ``LocalSparkConfig.iceberg_spark_config`` replaces the shared config.
+
+    ``None`` when that depends on a templated ``spark_impl_name``.
+    """
+    if local_spark_config is None:
         return False
     try:
-        return bool(
+        has_override = bool(
             coerce_config_dict(
                 local_spark_config.iceberg_spark_config,
                 field_name="LocalSparkConfig.iceberg_spark_config",
@@ -269,6 +273,23 @@ def _local_iceberg_override_active(
         )
     except ValueError:
         return False
+    if not has_override:
+        return False
+    if spark_impl_name not in SparkImpl.__members__:
+        return None
+    return SparkImpl[spark_impl_name].get_family() == SparkFamily.LOCAL
+
+
+_RAW_START, _RAW_END = "{% raw %}", "{% endraw %}"
+
+
+def _defer_templating(value):
+    """Shield ``value`` from task templating so it is rendered only if used."""
+    return f"{_RAW_START}{value}{_RAW_END}" if isinstance(value, str) else value
+
+
+def _render_deferred(value, context):
+    return context["task"].render_template(value, context)
 
 
 @task_group
@@ -369,15 +390,26 @@ def _spark_agnostic_task_group(
         iceberg_wherobots_config: str = "{}",
         iceberg_s3tables_config: str = "{}",
         iceberg_wherobots_s3tables_config: str = "{}",
+        iceberg_templating_deferred: bool = False,
     ):
         """Compute merged Spark config and (for Databricks) the cluster spec."""
         full = rehydrate(setup_info)
-        iceberg_config = IcebergConfig(
-            spark_config=iceberg_primary_config,
-            wherobots_spark_config=iceberg_wherobots_config,
-            s3tables_spark_config=iceberg_s3tables_config,
-            wherobots_s3tables_spark_config=iceberg_wherobots_s3tables_config,
-        )
+        iceberg_fields = {
+            "spark_config": iceberg_primary_config,
+            "wherobots_spark_config": iceberg_wherobots_config,
+            "s3tables_spark_config": iceberg_s3tables_config,
+            "wherobots_s3tables_spark_config": iceberg_wherobots_s3tables_config,
+        }
+        local_override = full.get("local_iceberg_spark_config")
+        if iceberg_templating_deferred:
+            if full["spark_family"] == SparkFamily.LOCAL and local_override:
+                iceberg_fields = {}
+            else:
+                context = get_current_context()
+                iceberg_fields = {
+                    k: _render_deferred(v, context) for k, v in iceberg_fields.items()
+                }
+        iceberg_config = IcebergConfig(**iceberg_fields)
         return get_platform_handler(full["spark_family"], full).setup_cluster(
             python_packages=python_packages,
             spark_jar_paths=spark_jar_paths,
@@ -388,7 +420,7 @@ def _spark_agnostic_task_group(
             iceberg_spark_config=resolve_iceberg_spark_config(
                 iceberg_config,
                 setup_info["spark_family_name"],
-                local_override=full.get("local_iceberg_spark_config"),
+                local_override=local_override,
             ),
         )
 
@@ -407,9 +439,24 @@ def _spark_agnostic_task_group(
     )
     jar_result = download_jars_task(setup_info=setup_result)
     iceberg_config = iceberg_config or IcebergConfig()
-    if _local_iceberg_override_active(spark_impl_name, local_spark_config):
+    local_override_active = _local_iceberg_override_active(spark_impl_name, local_spark_config)
+    if local_override_active is None and any(
+        "endraw" in (value or "") for value in dataclasses.astuple(iceberg_config)
+    ):
+        # Cannot be shielded safely; template eagerly as before.
+        local_override_active = False
+    if local_override_active:
         # The shared config is unused, so do not template or parse it.
         iceberg_config = IcebergConfig()
+    elif local_override_active is None:
+        iceberg_config = IcebergConfig(
+            spark_config=_defer_templating(iceberg_config.spark_config),
+            wherobots_spark_config=_defer_templating(iceberg_config.wherobots_spark_config),
+            s3tables_spark_config=_defer_templating(iceberg_config.s3tables_spark_config),
+            wherobots_s3tables_spark_config=_defer_templating(
+                iceberg_config.wherobots_s3tables_spark_config
+            ),
+        )
     cluster_result = setup_cluster_task(
         setup_info=setup_result,
         extra_spark_conf=extra_spark_conf,
@@ -422,6 +469,7 @@ def _spark_agnostic_task_group(
         iceberg_wherobots_config=iceberg_config.wherobots_spark_config,
         iceberg_s3tables_config=iceberg_config.s3tables_spark_config,
         iceberg_wherobots_s3tables_config=iceberg_config.wherobots_s3tables_spark_config,
+        iceberg_templating_deferred=local_override_active is None,
     )
 
     SparkAgnosticExecuteOperator(

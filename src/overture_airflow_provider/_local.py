@@ -57,14 +57,19 @@ print(json.dumps(versions))
 # job writing alongside a retry. A group id cannot be reused while the group has
 # members, so the group is identified without inspecting other processes. Job
 # output is relayed so a lingering descendant cannot hold the task's stdout open.
+# The job's group id is written to the given file so the task (or a later cancel)
+# can still stop the job if the supervisor itself is killed with SIGKILL.
 _SUPERVISOR_SCRIPT = """
 import os, signal, subprocess, sys, threading, time
 grace = float(sys.argv[1])
 child = subprocess.Popen(
-    sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    sys.argv[3:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT, start_new_session=True,
 )
 group = child.pid
+if sys.argv[2]:
+    with open(sys.argv[2], "w") as f:
+        f.write(str(group))
 
 def relay():
     while True:
@@ -485,9 +490,16 @@ def _absolute_path(path: str) -> str:
     return path if _URI_SCHEME.match(path) else os.path.abspath(path)
 
 
-def supervised_argv(argv: list[str]) -> list[str]:
+def supervised_argv(argv: list[str], job_pgid_file: str = "") -> list[str]:
     """Wrap ``argv`` in the supervisor that stops the job when the task process dies."""
-    return [sys.executable, "-c", _SUPERVISOR_SCRIPT, str(_KILL_GRACE_SECONDS), *argv]
+    return [
+        sys.executable,
+        "-c",
+        _SUPERVISOR_SCRIPT,
+        str(_KILL_GRACE_SECONDS),
+        job_pgid_file,
+        *argv,
+    ]
 
 
 def _kill_process_group(pid: int, sig=signal.SIGTERM) -> None:
@@ -575,8 +587,11 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
 
     log.info("Running local Spark job (%s) in %s", built["mode"], work_dir)
 
+    marker = _process_marker(setup_info, built["mode"])
+    fd, job_pgid_file = tempfile.mkstemp(prefix="overture-local-spark-", suffix=".pgid")
+    os.close(fd)
     proc = subprocess.Popen(
-        supervised_argv(built["argv"]),
+        supervised_argv(built["argv"], job_pgid_file),
         cwd=work_dir,
         env=env,
         stdin=subprocess.PIPE,
@@ -607,7 +622,8 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
             extra={
                 "pid": proc.pid,
                 "hostname": socket.gethostname(),
-                "marker": _process_marker(setup_info, built["mode"]),
+                "marker": marker,
+                "job_pgid_file": job_pgid_file,
             },
         )
         ti = context.get("ti") if hasattr(context, "get") else None
@@ -623,6 +639,13 @@ def _run_process(built, env, work_dir, ui_url, setup_info, max_timeout_hours, co
         timer.cancel()
         _terminate(proc)
         proc.stdin.close()
+        if proc.returncode is not None and proc.returncode < 0:
+            # The supervisor was killed by a signal, so it could not stop the job.
+            try:
+                _stop_orphaned_job(job_pgid_file, marker)
+            except RuntimeError as exc:
+                log.warning("%s", exc)
+        pathlib.Path(job_pgid_file).unlink(missing_ok=True)
 
     if returncode != 0 or timed_out.is_set():
         raise LocalSparkJobFailed(
@@ -646,13 +669,46 @@ def _process_marker(setup_info: dict, mode: str) -> str:
 
 
 def _is_local_run_process(pid: int, marker: str) -> bool:
-    proc = subprocess.run(
-        ["ps", "-o", "command=", "-p", str(pid)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Cannot verify local Spark process {pid}: the `ps` command is not available"
+        ) from exc
     return proc.returncode == 0 and marker in proc.stdout
+
+
+def _is_job_group_leader(pid: int, marker: str) -> bool:
+    try:
+        if os.getpgid(pid) != pid:
+            return False
+    except OSError:
+        return False
+    return _is_local_run_process(pid, marker)
+
+
+def _stop_orphaned_job(job_pgid_file: str | None, marker: str) -> None:
+    """Stop the job's group after its supervisor is gone, if its leader is still this run's job."""
+    if not job_pgid_file:
+        return
+    try:
+        pgid = int(pathlib.Path(job_pgid_file).read_text().strip())
+    except (OSError, ValueError):
+        return
+    if not _is_job_group_leader(pgid, marker):
+        return
+    log.warning("Stopping local Spark job group %s left running by its supervisor", pgid)
+    _kill_process_group(pgid)
+    deadline = time.monotonic() + _KILL_GRACE_SECONDS
+    while time.monotonic() < deadline and _is_job_group_leader(pgid, marker):
+        time.sleep(0.1)
+    if _is_job_group_leader(pgid, marker):
+        _kill_process_group(pgid, signal.SIGKILL)
 
 
 def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
@@ -669,15 +725,15 @@ def cancel_local_run(run_id: str, extra: dict | None = None) -> None:
         )
     pid = int(pid)
     marker = extra.get("marker") or _RUNNER_MARKER
-    if not _is_local_run_process(pid, marker):
-        # The supervisor stops the job's group before it exits, so nothing
-        # verifiable is left to signal.
-        log.info("Local run %s (pid %s) is no longer running", run_id, pid)
-        return
-    # The verified supervisor stops the job's group, escalating after the grace period.
-    _kill_process_group(pid)
-    deadline = time.monotonic() + _KILL_GRACE_SECONDS + 5
-    while time.monotonic() < deadline and _is_local_run_process(pid, marker):
-        time.sleep(0.1)
     if _is_local_run_process(pid, marker):
-        _kill_process_group(pid, signal.SIGKILL)
+        # The verified supervisor stops the job's group, escalating after the grace period.
+        _kill_process_group(pid)
+        deadline = time.monotonic() + _KILL_GRACE_SECONDS + 5
+        while time.monotonic() < deadline and _is_local_run_process(pid, marker):
+            time.sleep(0.1)
+        if _is_local_run_process(pid, marker):
+            _kill_process_group(pid, signal.SIGKILL)
+    else:
+        log.info("Local run %s supervisor (pid %s) is no longer running", run_id, pid)
+    # Covers a supervisor killed with SIGKILL, here or earlier, before it stopped the job.
+    _stop_orphaned_job(extra.get("job_pgid_file"), marker)

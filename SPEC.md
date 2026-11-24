@@ -203,7 +203,10 @@ checks it.
 - Execution is synchronous, like Wherobots. The job runs under a stdlib
   supervisor in its own session; timeout and task kill terminate its process
   group, and the supervisor stops the group when the task process dies (its
-  stdin pipe closes). `cancel_run` only kills a pid on the same host whose
+  stdin pipe closes). The job runs in its own process group, whose id the
+  supervisor writes to a private file; if the supervisor itself is killed by a
+  signal, the task and `cancel_run` stop that group only while its leader still
+  carries the run marker. `cancel_run` only kills a pid on the same host whose
   command line still carries the run marker.
 - Under `spark-submit` the runner makes `SparkSession.Builder.master()` a
   no-op, so jobs that build their own session keep the submitted master and

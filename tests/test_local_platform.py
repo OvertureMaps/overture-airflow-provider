@@ -4,9 +4,11 @@ import json
 import logging
 import os
 import runpy
+import signal
 import socket
 import subprocess
 import sys
+import time
 import types
 from unittest.mock import MagicMock, patch
 
@@ -351,6 +353,19 @@ class TestSetupCluster:
         assert "spark.sql.catalog.rest" not in merged
 
 
+def _gone(probe, timeout=5.0) -> bool:
+    # An orphan is briefly a zombie until init reaps it; macOS reports EPERM for
+    # a group holding only zombies.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            probe()
+        except (ProcessLookupError, PermissionError):
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def _context():
     ti = MagicMock()
     return {"ti": ti}, ti
@@ -422,6 +437,24 @@ class TestRunLocalJob:
             _run(info, script, max_timeout_hours=0.5 / 3600)
         assert exc_info.value.timed_out
         assert "ready" in exc_info.value.log_tail
+
+    def test_stops_job_when_supervisor_is_sigkilled(self, allow_local, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
+        info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
+        pid_file = tmp_path / "pid"
+        # The run marker must appear in the job's command line, as it does for spark-submit.
+        script = (
+            f"# {info['run_identifier']}\n"
+            "import os, signal, time\n"
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            "os.kill(os.getppid(), signal.SIGKILL)\n"
+            "time.sleep(60)\n"
+        )
+        with pytest.raises(LocalSparkJobFailed) as exc_info:
+            _run(info, script)
+        assert exc_info.value.returncode == -signal.SIGKILL
+        job_pid = int(pid_file.read_text())
+        assert _gone(lambda: os.kill(job_pid, 0))
 
     def test_job_command_is_not_logged(self, allow_local, tmp_path, caplog):
         info = _setup_info(LocalSparkConfig(work_dir=str(tmp_path)))
@@ -631,6 +664,57 @@ class TestCancel:
             cancel_local_run(
                 "r", {"pid": proc.pid, "hostname": socket.gethostname(), "marker": "nope"}
             )
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_stops_job_left_by_a_sigkilled_supervisor(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_local, "_KILL_GRACE_SECONDS", 0.5)
+        marker = "local-cancel-orphan-marker"
+        pgid_file = tmp_path / "job.pgid"
+        job = "import time; print('ready', flush=True); time.sleep(60)"
+        proc = subprocess.Popen(
+            _local.supervised_argv([sys.executable, "-c", job, marker], str(pgid_file)),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        job_pgid = None
+        try:
+            assert proc.stdout.readline().strip() == "ready"
+            job_pgid = int(pgid_file.read_text())
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=10)
+            os.killpg(job_pgid, 0)
+            cancel_local_run(
+                "r",
+                {
+                    "pid": proc.pid,
+                    "hostname": socket.gethostname(),
+                    "marker": marker,
+                    "job_pgid_file": str(pgid_file),
+                },
+            )
+            assert _gone(lambda: os.killpg(job_pgid, 0))
+        finally:
+            if job_pgid:
+                try:
+                    os.killpg(job_pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+            proc.stdin.close()
+            proc.stdout.close()
+
+    def test_leaves_job_group_without_marker_alone(self, tmp_path):
+        pgid_file = tmp_path / "job.pgid"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+        )
+        pgid_file.write_text(str(proc.pid))
+        try:
+            _local._stop_orphaned_job(str(pgid_file), "not-this-run")
             assert proc.poll() is None
         finally:
             proc.kill()

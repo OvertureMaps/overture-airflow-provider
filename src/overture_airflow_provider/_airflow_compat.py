@@ -13,6 +13,7 @@ Symbol                Source
 ``AirflowException``      ``airflow.exceptions.AirflowException``
 ``AirflowFailException``  ``airflow.sdk.exceptions.AirflowFailException``
 ``TaskDeferred``          ``airflow.sdk.exceptions.TaskDeferred``
+``get_current_context``   ``airflow.sdk.get_current_context``
 ====================  =============================================
 
 Callers should import from this module rather than directly from
@@ -20,7 +21,7 @@ Callers should import from this module rather than directly from
 """
 
 from airflow.exceptions import AirflowException
-from airflow.sdk import DAG, BaseOperator, task, task_group
+from airflow.sdk import DAG, BaseOperator, get_current_context, task, task_group
 from airflow.sdk.bases.hook import BaseHook
 from airflow.sdk.bases.operatorlink import BaseOperatorLink
 from airflow.sdk.exceptions import AirflowFailException, TaskDeferred
@@ -35,6 +36,7 @@ __all__ = [
     "BaseOperatorLink",
     "TaskDeferred",
     "XCom",
+    "get_current_context",
     "task",
     "task_group",
 ]

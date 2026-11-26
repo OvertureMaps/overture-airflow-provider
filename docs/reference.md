@@ -18,6 +18,7 @@ Pass one of these names as `spark_impl_name`:
 | `DATABRICKS_v14`   | Databricks Runtime 14.3 LTS | 3.5.0 | 2.12  | 3.10.12        |
 | `DATABRICKS_v15`   | Databricks Runtime 15.4 LTS | 3.5.0 | 2.12  | 3.11.0         |
 | `WHEROBOTS_v1_5_0` | Wherobots Cloud 1.5.0       | 3.5.0 | 2.12  | 3.11           |
+| `LOCAL_v3_5`       | Local Spark (development)   | 3.5.x | 2.12  | worker's       |
 
 > `SYNAPSE_v3_3_1` and `SYNAPSE_v3_4_1` are defined but not yet active (Azure Synapse support reserved).
 

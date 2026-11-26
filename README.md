@@ -28,6 +28,7 @@ Write a DAG once and target any supported engine by switching one argument. Clus
 - [Failure messages](#failure-messages)
 - [Wherobots runtime selection](#wherobots-runtime-selection)
 - [Databricks runner deployment](#databricks-runner-deployment)
+- [Local Spark (development only)](#local-spark-development-only)
 - [Local rendering](#local-rendering)
 - [Bundle Inspector plugin](#bundle-inspector-plugin)
 - [Reference](#reference)
@@ -117,6 +118,47 @@ Set `spark_cluster_size_name` (for example `"large-himem"`) to pick a specific W
 
 `setup_cluster` stages the runner notebook and init script into the workspace by default; `stage_workspace_assets=False` keeps deployment manual. See [`docs/databricks-runner-deployment.md`](docs/databricks-runner-deployment.md).
 
+## Local Spark (development only)
+
+`LOCAL_v3_5` runs the job on the Airflow worker's own Spark install, so you can iterate on a DAG without cloud cost. It is refused unless the worker environment sets:
+
+```bash
+export OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1
+```
+
+Never set this in staging or production: a DAG pointed at LOCAL there fails at `setup_spark_job` before anything runs.
+The guard applies to provider-managed tasks, not direct Spark commands, including commands produced by `render`.
+LOCAL is not a data sandbox: S3A and the default Iceberg configuration can access real resources using the worker's credentials.
+
+```python
+from overture_airflow_provider import LocalSparkConfig
+
+spark_agnostic_task_group(
+    group_id="my_spark_job",
+    spark_impl_name="LOCAL_v3_5",
+    local_spark_config=LocalSparkConfig(
+        master="local[*]",  # or "spark://host:7077", or "sc://host:15002" (Spark Connect, PySpark only)
+        python_executable="/path/to/venv/bin/python",  # default: the worker's interpreter
+        aws_profile="my-dev-profile",  # for s3a:// reads and writes
+        extra_packages=["org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1"],
+    ),
+    # ... rest of config unchanged
+)
+```
+
+- The installed PySpark and `spark-submit` must match the impl's Spark `major.minor` (3.5); use a matching Hadoop distribution for S3A. Spark Connect requires only PySpark on the client.
+- Your job's Python packages must already be installed in `python_executable`. The provider does not download wheels for LOCAL runs; it warns about requirements that are missing or installed at a version outside their specifier.
+- Sedona and `hadoop-aws` (matched to the installed PySpark Hadoop) are fetched by `spark-submit --packages`. Add anything else, such as the Iceberg runtime, to `extra_packages`. Spark Connect needs these dependencies and its static configuration on the server instead.
+- `iceberg_spark_config`, when set, replaces the `IcebergConfig` values for LOCAL runs, for example to point at a local Hadoop catalog. The shared `IcebergConfig` is then neither templated nor parsed, including when `spark_impl_name` is a template that resolves to LOCAL.
+- `extra_spark_env_vars` reach the driver process. On a `spark://` master, Python jobs also pass them to executors as `spark.executorEnv.*` without putting values on the command line; Scala jobs log a warning. Over Spark Connect they reach only the client. Relative `spark_jar_paths` are resolved against the worker's current directory.
+- Under `spark-submit`, `SparkSession.builder.master(...)` in job code is ignored, so a job that builds its own session keeps the submitted master while its other settings still apply. Jobs that use `init_spark_for_platform()` cannot run over Spark Connect.
+- Cluster sizing arguments are ignored. The task's job link points at `ui_url` (default `http://localhost:4040`).
+- LOCAL runs on a POSIX Airflow worker (Linux or macOS). Opt in and install matching dependencies on every worker that can run its tasks; `localhost` URLs refer to that worker. The default temporary working directory is retained, including any relative output.
+- Cancellation, timeout and task kill terminate the local process group. The job runs under a small supervisor that also stops it if the Airflow task process dies, so a retry cannot overlap an orphaned run on the same worker. For Spark Connect, server-side execution and cleanup depend on the remote server.
+- AWS SSO profiles that use a `credential_process` can fail inside containers. Export plain credentials first: `eval "$(aws configure export-credentials --profile <p> --format env)"`.
+
+See [`examples/example_local_dag.py`](examples/example_local_dag.py) for a LOCAL configuration example.
+
 ## Local rendering
 
 `python -m overture_airflow_provider.render` produces the platform submission payload without running Airflow. See [`docs/local-rendering.md`](docs/local-rendering.md).
@@ -127,7 +169,7 @@ Installing the package also registers an Airflow UI plugin for browsing Overture
 
 ## Reference
 
-Supported versions, the Spark platform matrix (`GLUE_v4`/`GLUE_v5`, `DATABRICKS_v14`/`DATABRICKS_v15`, `WHEROBOTS_v1_5_0`) and tested Apache Sedona pairings are in [`docs/reference.md`](docs/reference.md).
+Supported versions, the Spark platform matrix (`GLUE_v4`/`GLUE_v5`, `DATABRICKS_v14`/`DATABRICKS_v15`, `WHEROBOTS_v1_5_0`, `LOCAL_v3_5`) and tested Apache Sedona pairings are in [`docs/reference.md`](docs/reference.md).
 
 ## Development
 

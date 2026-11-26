@@ -23,7 +23,7 @@ from overture_airflow_provider.runners import SCALA_RUNNER_SOURCE
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots"])
+@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots", "local"])
 def test_get_runner_path(platform):
     p = get_runner_path(platform)
     assert p.exists(), f"Runner not found at {p}"
@@ -53,7 +53,7 @@ def test_get_runner_path_unknown():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots"])
+@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots", "local"])
 def test_runner_has_no_overture_imports(platform):
     import ast
 
@@ -71,14 +71,14 @@ def test_runner_has_no_overture_imports(platform):
                 pytest.fail(f"{platform} runner imports from overture_spark: {node.module}")
 
 
-@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots"])
+@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots", "local"])
 def test_runner_uses_dynamic_import(platform):
     p = get_runner_path(platform)
     source = p.read_text(encoding="utf-8")
     assert "import_module" in source
 
 
-@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots"])
+@pytest.mark.parametrize("platform", ["glue", "databricks", "wherobots", "local"])
 def test_runner_handles_job_result(platform):
     p = get_runner_path(platform)
     source = p.read_text(encoding="utf-8")

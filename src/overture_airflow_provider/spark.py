@@ -17,6 +17,7 @@ class SparkFamily(IntEnum):
     DATABRICKS = auto()
     SYNAPSE = auto()
     WHEROBOTS = auto()
+    LOCAL = auto()
 
 
 class SparkImpl(Enum):
@@ -32,6 +33,8 @@ class SparkImpl(Enum):
     SYNAPSE_v3_3_1 = SparkPlatform(SparkFamily.SYNAPSE, "?", "3.3.1", "2.12", "3.10")
     SYNAPSE_v3_4_1 = SparkPlatform(SparkFamily.SYNAPSE, "?", "3.4.1", "2.12", "3.10")
     WHEROBOTS_v1_5_0 = SparkPlatform(SparkFamily.WHEROBOTS, "1.5.0", "3.5.0", "2.12", "3.11")
+    # Development only: runs on a local Spark install (see LocalSparkConfig).
+    LOCAL_v3_5 = SparkPlatform(SparkFamily.LOCAL, "local", "3.5.0", "2.12", "3.11")
 
     @classmethod
     def from_str(cls, name: str) -> "SparkImpl":

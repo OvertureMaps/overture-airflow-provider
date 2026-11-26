@@ -171,6 +171,32 @@ def test_render_glue_max_timeout_hours_op_kwarg_override():
     assert result.submit_payload["create_job_kwargs"]["Timeout"] == 60 * 2
 
 
+def test_render_glue_max_timeout_hours_positional_compatibility():
+    result = render_spark_job(
+        "GLUE_v5",
+        "my_module",
+        "MyJob",
+        {},
+        "1.7.0",
+        "",
+        "",
+        "",
+        None,
+        "{}",
+        "",
+        "40",
+        "",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "2",
+    )
+    assert result.submit_payload["create_job_kwargs"]["Timeout"] == 120
+
+
 def test_render_databricks_emits_submit_payload():
     result = render_spark_job(spark_impl_name="DATABRICKS_v15", **_COMMON_KWARGS)
 

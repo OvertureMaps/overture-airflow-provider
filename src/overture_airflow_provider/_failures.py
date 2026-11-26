@@ -65,6 +65,7 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 PLATFORM_GLUE = "GLUE"
 PLATFORM_DATABRICKS = "DATABRICKS"
 PLATFORM_WHEROBOTS = "WHEROBOTS"
+PLATFORM_LOCAL = "LOCAL"
 
 #: Glue ``ErrorMessage`` text for a run rejected for lack of account capacity (DPU ceiling).
 GLUE_CAPACITY_ERROR_RE = re.compile(
@@ -162,6 +163,19 @@ _HEURISTICS: list[_Heuristic] = [
         re.compile(r"entitynotfound", re.I),
         "Not found: a referenced Glue job/resource is missing. Check job_name and region.",
         frozenset({PLATFORM_GLUE}),
+    ),
+    _Heuristic(
+        re.compile(r"modulenotfounderror|no module named", re.I),
+        "Local: a Python package is missing. Install it into LocalSparkConfig.python_executable.",
+        frozenset({PLATFORM_LOCAL}),
+    ),
+    _Heuristic(
+        re.compile(
+            r"no aws credentials|unable to load aws credentials|nocredentialsprovider", re.I
+        ),
+        "Local S3: no AWS credentials. Set LocalSparkConfig.aws_profile, or export them with "
+        "`eval $(aws configure export-credentials --format env)` before starting the worker.",
+        frozenset({PLATFORM_LOCAL}),
     ),
     _Heuristic(
         re.compile(r"resourcedoesnotexist|resource_does_not_exist", re.I),

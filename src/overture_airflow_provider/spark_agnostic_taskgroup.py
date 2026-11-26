@@ -3,7 +3,8 @@
 Two public entry points:
 
 - ``spark_agnostic_task_group`` — single TaskGroup that runs one Spark job on
-  a caller-selected platform (Glue, Databricks, or Wherobots).
+  a caller-selected platform (Glue, Databricks, Wherobots, or the
+  development-only LOCAL platform).
 - ``spark_agnostic_mapped_task_group`` — same TaskGroup, dynamically mapped
   over a list of parameter sets so one DAG can fan out N parallel Spark jobs.
 
@@ -47,7 +48,9 @@ See ``overture_airflow_provider.config`` for the dataclasses callers should
 construct.
 """
 
-from overture_airflow_provider._airflow_compat import task, task_group
+import dataclasses
+
+from overture_airflow_provider._airflow_compat import get_current_context, task, task_group
 from overture_airflow_provider._operator import SparkAgnosticExecuteOperator
 from overture_airflow_provider._setup import setup_spark_job
 from overture_airflow_provider.config import (
@@ -56,6 +59,7 @@ from overture_airflow_provider.config import (
     DatabricksConfig,
     GlueConfig,
     IcebergConfig,
+    LocalSparkConfig,
     PackageRegistryConfig,
     ReportIssueConfig,
     WherobotsConfig,
@@ -63,6 +67,7 @@ from overture_airflow_provider.config import (
 )
 from overture_airflow_provider.iceberg import resolve_iceberg_spark_config
 from overture_airflow_provider.setup_info import rehydrate, to_xcom
+from overture_airflow_provider.spark import SparkFamily, SparkImpl
 from overture_airflow_provider.spark_platform_handlers import get_platform_handler
 
 # Task Documentation for these two: see test_task_doc_md.py for why doc_md is
@@ -118,6 +123,7 @@ def spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
     max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     report_issue_config: ReportIssueConfig | None = None,
 ):
@@ -169,6 +175,9 @@ def spark_agnostic_task_group(
             the ``databricks_default`` connection and the default workspace paths.
         wherobots_config: Wherobots execution settings (role ARN, external ID,
             AWS region). Required for Wherobots runs that use Iceberg.
+        local_spark_config: Development-only ``LOCAL`` platform settings (master,
+            interpreter, S3A, Iceberg override). ``LOCAL`` runs refuse to start
+            unless the worker sets ``OVERTURE_AIRFLOW_PROVIDER_ALLOW_LOCAL_SPARK=1``.
         max_timeout_hours: Job run timeout, in hours. Defaults to ``"8"``.
 
         report_issue_config: Opt-in "Report Issue" operator link. Off by
@@ -204,6 +213,7 @@ def spark_agnostic_task_group(
         glue_config=glue_config,
         databricks_config=databricks_config,
         wherobots_config=wherobots_config,
+        local_spark_config=local_spark_config,
         max_timeout_hours=max_timeout_hours,
         report_issue_config=report_issue_config,
     )
@@ -245,6 +255,31 @@ def spark_agnostic_mapped_task_group(
 # =============================================================================
 
 
+def _local_iceberg_override_active(
+    spark_impl_name: str, local_spark_config: LocalSparkConfig | None
+) -> bool | None:
+    """Whether ``LocalSparkConfig.iceberg_spark_config`` replaces the shared config.
+
+    ``None`` when that depends on a templated ``spark_impl_name``.
+    """
+    if local_spark_config is None:
+        return False
+    try:
+        has_override = bool(
+            coerce_config_dict(
+                local_spark_config.iceberg_spark_config,
+                field_name="LocalSparkConfig.iceberg_spark_config",
+            )
+        )
+    except ValueError:
+        return False
+    if not has_override:
+        return False
+    if spark_impl_name not in SparkImpl.__members__:
+        return None
+    return SparkImpl[spark_impl_name].get_family() == SparkFamily.LOCAL
+
+
 @task_group
 def _spark_agnostic_task_group(
     *,
@@ -272,6 +307,7 @@ def _spark_agnostic_task_group(
     glue_config: GlueConfig | None = None,
     databricks_config: DatabricksConfig | None = None,
     wherobots_config: WherobotsConfig | None = None,
+    local_spark_config: LocalSparkConfig | None = None,
     max_timeout_hours: str = DEFAULT_MAX_TIMEOUT_HOURS,
     report_issue_config: ReportIssueConfig | None = None,
 ):
@@ -311,6 +347,7 @@ def _spark_agnostic_task_group(
             glue_config=glue_config,
             databricks_config=databricks_config,
             wherobots_config=wherobots_config,
+            local_spark_config=local_spark_config,
         )
         print(f"Platform: {setup_info['spark_family'].name}")
         print(f"Spark / Sedona: {setup_info['spark_version']} / {setup_info['sedona_version']}")
@@ -341,15 +378,29 @@ def _spark_agnostic_task_group(
         iceberg_wherobots_config: str = "{}",
         iceberg_s3tables_config: str = "{}",
         iceberg_wherobots_s3tables_config: str = "{}",
+        iceberg_templating_deferred: bool = False,
     ):
         """Compute merged Spark config and (for Databricks) the cluster spec."""
         full = rehydrate(setup_info)
-        iceberg_config = IcebergConfig(
-            spark_config=iceberg_primary_config,
-            wherobots_spark_config=iceberg_wherobots_config,
-            s3tables_spark_config=iceberg_s3tables_config,
-            wherobots_s3tables_spark_config=iceberg_wherobots_s3tables_config,
-        )
+        iceberg_fields = {
+            "spark_config": iceberg_primary_config,
+            "wherobots_spark_config": iceberg_wherobots_config,
+            "s3tables_spark_config": iceberg_s3tables_config,
+            "wherobots_s3tables_spark_config": iceberg_wherobots_s3tables_config,
+        }
+        local_override = full.get("local_iceberg_spark_config")
+        if iceberg_templating_deferred:
+            if full["spark_family"] == SparkFamily.LOCAL and local_override:
+                iceberg_fields = {}
+            else:
+                # Render the original text exactly once, as eager templating would.
+                context = get_current_context()
+                task = context["task"]
+                iceberg_fields = {
+                    field.name: task.render_template(getattr(deferred_iceberg, field.name), context)
+                    for field in dataclasses.fields(IcebergConfig)
+                }
+        iceberg_config = IcebergConfig(**iceberg_fields)
         return get_platform_handler(full["spark_family"], full).setup_cluster(
             python_packages=python_packages,
             spark_jar_paths=spark_jar_paths,
@@ -358,7 +409,9 @@ def _spark_agnostic_task_group(
             spark_cluster_desired_worker_cores=spark_cluster_desired_worker_cores,
             spark_cluster_desired_workers=spark_cluster_desired_workers,
             iceberg_spark_config=resolve_iceberg_spark_config(
-                iceberg_config, setup_info["spark_family_name"]
+                iceberg_config,
+                setup_info["spark_family_name"],
+                local_override=local_override,
             ),
         )
 
@@ -377,6 +430,12 @@ def _spark_agnostic_task_group(
     )
     jar_result = download_jars_task(setup_info=setup_result)
     iceberg_config = iceberg_config or IcebergConfig()
+    local_override_active = _local_iceberg_override_active(spark_impl_name, local_spark_config)
+    # Kept out of op_kwargs when the platform is only known at runtime, so task
+    # templating never touches a config that may go unused.
+    deferred_iceberg = iceberg_config
+    if local_override_active is not False:
+        iceberg_config = IcebergConfig()
     cluster_result = setup_cluster_task(
         setup_info=setup_result,
         extra_spark_conf=extra_spark_conf,
@@ -389,6 +448,7 @@ def _spark_agnostic_task_group(
         iceberg_wherobots_config=iceberg_config.wherobots_spark_config,
         iceberg_s3tables_config=iceberg_config.s3tables_spark_config,
         iceberg_wherobots_s3tables_config=iceberg_config.wherobots_s3tables_spark_config,
+        iceberg_templating_deferred=local_override_active is None,
     )
 
     SparkAgnosticExecuteOperator(

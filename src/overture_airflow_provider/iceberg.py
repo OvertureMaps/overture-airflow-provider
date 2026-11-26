@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from overture_airflow_provider.spark import SparkFamily
 
 WHEROBOTS_FAMILY_NAME = "WHEROBOTS"
+LOCAL_FAMILY_NAME = "LOCAL"
 
 
 def _family_name(spark_family: SparkFamily | str) -> str:
@@ -37,6 +38,7 @@ def _family_name(spark_family: SparkFamily | str) -> str:
 def resolve_iceberg_spark_config(
     iceberg_config: IcebergConfig | None,
     spark_family: SparkFamily | str,
+    local_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Pick the right Iceberg config variants for ``spark_family`` and merge them.
 
@@ -54,11 +56,16 @@ def resolve_iceberg_spark_config(
             (the live DAG path and the Airflow-free render path) resolve the
             family at a different point in their pipeline, so both shapes are
             accepted rather than forcing one to convert.
+        local_override: ``LocalSparkConfig.iceberg_spark_config``. When
+            non-empty on ``LOCAL`` it is returned as is and ``iceberg_config``
+            is not parsed.
 
     Returns:
         The merged Spark config dict. Empty when ``iceberg_config`` is
         ``None`` or all its relevant fields are unset.
     """
+    if local_override and _family_name(spark_family) == LOCAL_FAMILY_NAME:
+        return dict(local_override)
     if iceberg_config is None:
         return {}
 
